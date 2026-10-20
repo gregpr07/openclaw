@@ -81,9 +81,7 @@ export function buildWidgetThemeMessage(): WidgetThemeMessage {
 }
 
 export function postWidgetTheme(frame: HTMLIFrameElement, targetOrigin = "*"): void {
-  const message = buildWidgetThemeMessage();
-  frame.style.colorScheme = message.mode;
-  frame.contentWindow?.postMessage(message, targetOrigin);
+  frame.contentWindow?.postMessage(buildWidgetThemeMessage(), targetOrigin);
 }
 
 /** Explicit registration also reaches widgets inside a chat component's shadow root. */
