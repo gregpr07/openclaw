@@ -48,6 +48,7 @@ const {
 
 // mock-isolation: OAuth fetch is fixture-owned; never read real credentials in transport tests.
 vi.mock("./mcp-oauth-fetch.js", () => ({ withMcpOAuthBearer: oauthBearerMock }));
+// mock-isolation: Inspect transport wiring here; the composed test runs the real enterprise bearer owner.
 vi.mock("./mcp-enterprise-fetch.js", () => ({ withMcpEnterpriseBearer: enterpriseBearerMock }));
 vi.mock("node:dns/promises", () => ({ lookup: lookupMock }));
 
