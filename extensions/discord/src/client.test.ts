@@ -1,5 +1,4 @@
-// Discord tests cover client plugin behavior.
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import type { DiscordConfig, OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
@@ -17,19 +16,16 @@ afterEach(() => {
   clearGateways();
 });
 
-describe("createDiscordClient", () => {
+function config(discord: DiscordConfig): OpenClawConfig {
+  return { channels: { discord } };
+}
+
+describe("Discord clients", () => {
   it("keeps explicit-token retries bound to the REST account", async () => {
     registerGateway("default", { isConnected: false } as GatewayPlugin);
     registerGateway("ops", { isConnected: true } as GatewayPlugin);
     const client = createDiscordClient({
-      cfg: {
-        channels: {
-          discord: {
-            defaultAccount: "ops",
-            accounts: { ops: { token: "configured-token" } },
-          },
-        },
-      },
+      cfg: config({ defaultAccount: "ops", accounts: { ops: { token: "configured-token" } } }),
       token: "explicit-token",
       rest: {} as RequestClient,
       retry: { attempts: 3, minDelayMs: 0, maxDelayMs: 0, jitter: 0 },
@@ -45,24 +41,15 @@ describe("createDiscordClient", () => {
     await expect(client.request(operation, "send")).resolves.toBe("sent");
     expect(operation).toHaveBeenCalledTimes(4);
   });
-});
-
-describe("createDiscordRestClient", () => {
   const fakeRest = {} as RequestClient;
 
   it("keeps a resolved account token when a command has only pinned its unresolved config", async () => {
-    const sourceConfig: OpenClawConfig = {
-      channels: {
-        discord: {
-          accounts: {
-            work: { token: { source: "env", provider: "default", id: "DISCORD_WORK_TOKEN" } },
-          },
-        },
+    const sourceConfig = config({
+      accounts: {
+        work: { token: { source: "env", provider: "default", id: "DISCORD_WORK_TOKEN" } },
       },
-    };
-    const resolvedConfig: OpenClawConfig = {
-      channels: { discord: { accounts: { work: { token: "Bot resolved-work-token" } } } },
-    };
+    });
+    const resolvedConfig = config({ accounts: { work: { token: "Bot resolved-work-token" } } });
     // Command startup can pin source config before command-scoped resolution returns
     // a separate resolved object; that cache is not an activated secrets snapshot.
     setRuntimeConfigSnapshot(sourceConfig);
@@ -70,14 +57,9 @@ describe("createDiscordRestClient", () => {
     const { rest, getMock, postMock } = makeDiscordRest();
     getMock.mockResolvedValue({ id: "789", type: 0 });
     postMock.mockResolvedValue({ id: "sent-message", channel_id: "789" });
-    const client = createDiscordRestClient({
-      cfg: resolvedConfig,
-      accountId: "work",
-      rest,
-    });
+    const client = createDiscordRestClient({ cfg: resolvedConfig, accountId: "work", rest });
 
-    expect(client.token).toBe("resolved-work-token");
-    expect(client.account.accountId).toBe("work");
+    expect(client).toMatchObject({ token: "resolved-work-token", account: { accountId: "work" } });
     const { sendMessageDiscord } = await import("./send.js");
     await expect(
       sendMessageDiscord("channel:789", "hello", { cfg: resolvedConfig, accountId: "work", rest }),
@@ -89,26 +71,16 @@ describe("createDiscordRestClient", () => {
   });
 
   it("applies a caller timeout to a dedicated REST client", () => {
-    const cfg = { channels: { discord: { token: "discord-token" } } } as OpenClawConfig;
-
-    const result = createDiscordRestClient({ cfg, timeoutMs: 250 });
-
+    const result = createDiscordRestClient({
+      cfg: config({ token: "discord-token" }),
+      timeoutMs: 250,
+    });
     expect(result.rest.options.timeout).toBe(250);
   });
 
   it("still fails closed when no explicit token is provided and config token is unresolved", () => {
     vi.stubEnv("DISCORD_BOT_TOKEN", "env-token");
-    const cfg = {
-      channels: {
-        discord: {
-          token: {
-            source: "file",
-            provider: "default",
-            id: "/discord/token",
-          },
-        },
-      },
-    } as OpenClawConfig;
+    const cfg = config({ token: { source: "file", provider: "default", id: "/discord/token" } });
 
     expect(() => createDiscordRestClient({ cfg, rest: fakeRest })).toThrow(
       /configured for account "default" is unavailable/i,
