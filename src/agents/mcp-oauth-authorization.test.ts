@@ -1,9 +1,17 @@
+import { createHash } from "node:crypto";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
+import { OpenClawSchema } from "../config/zod-schema.js";
+import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import * as workerAdmission from "../infra/sqlite-worker-operation-admission.js";
 import type { SqliteWorkerOperationSettlement } from "../infra/sqlite-worker-operation-settlement.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
+import type { DB as OpenClawStateDatabase } from "../state/openclaw-state-db.generated.js";
+import {
+  closeOpenClawStateDatabaseAsync,
+  openOpenClawStateDatabase,
+  runOpenClawStateWriteTransaction,
+} from "../state/openclaw-state-db.js";
 import type { OpenClawStateAsyncLeaseContext } from "../state/openclaw-state-lease-context.js";
 import { createOpenClawStateLeaseWorkerOwner } from "../state/openclaw-state-lease-worker-owner.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
@@ -56,6 +64,75 @@ const clear = () =>
   withMcpOAuthTestLease(identity.storeKey, (lease, context) =>
     clearMcpOAuthStore({ storeKey: identity.storeKey, lease, context }),
   );
+
+it("reads v2026.10.5 OAuth settings and credential rows after enterprise support is added", async () => {
+  await withOpenClawTestState({ label: "mcp-oauth-stable-upgrade" }, async () => {
+    const stableConfig = {
+      mcp: {
+        servers: {
+          docs: {
+            url: identity.serverUrl,
+            transport: "streamable-http" as const,
+            auth: "oauth" as const,
+            oauth: { identity: "per-requester" as const, scope: "docs.read" },
+          },
+        },
+      },
+    };
+    expect(OpenClawSchema.parse(stableConfig).mcp?.servers?.docs).toMatchObject(
+      stableConfig.mcp.servers.docs,
+    );
+    const stableOperatorHash = createHash("sha256")
+      .update(identity.serverName)
+      .update("\0")
+      .update(identity.serverUrl)
+      .digest("hex");
+    const stableRequesterHash = createHash("sha256")
+      .update("discord")
+      .update("\0")
+      .update("fixture-bot")
+      .update("\0")
+      .update("fixture-requester")
+      .digest("hex");
+    expect(identity.storeKey).toBe(
+      `events-${stableOperatorHash.slice(0, 16)}-r-${stableRequesterHash.slice(0, 16)}`,
+    );
+    // v2026.10.5 wrote format_version=1 and JSON without authorizationId.
+    const stableRow = {
+      tokens: {
+        access_token: "stable-access",
+        refresh_token: "stable-refresh",
+        token_type: "Bearer",
+      },
+    };
+    const database = openOpenClawStateDatabase();
+    runOpenClawStateWriteTransaction(
+      ({ db }) => {
+        executeSqliteQuerySync(
+          db,
+          getNodeSqliteKysely<OpenClawStateDatabase>(db)
+            .insertInto("mcp_oauth_stores")
+            .values({
+              store_key: identity.storeKey,
+              format_version: 1,
+              store_json: JSON.stringify(stableRow),
+              updated_at: Date.now(),
+            }),
+        );
+      },
+      { database },
+    );
+    expect(await readMcpOAuthStoreReadOnly(identity.storeKey)).toMatchObject(stableRow);
+    const retained = await capture();
+    try {
+      retained.assertCurrent();
+      expect(retained.authorizationId).toBeTruthy();
+    } finally {
+      retained.dispose();
+    }
+    expect(await readMcpOAuthStoreReadOnly(identity.storeKey)).toMatchObject(stableRow);
+  });
+});
 
 it("binds legacy requester grants, preserves refresh, and never revives logout or replacement handles", async () => {
   await withOpenClawTestState({ label: "mcp-oauth-authorization" }, async () => {
