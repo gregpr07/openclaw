@@ -33,6 +33,7 @@ it.each([
   ["resource-as", "preparation", "replacement"],
   ["resource-retry", "preparation", "logout"],
   ["resource-retry", "preparation", "replacement"],
+  ["resource-retry", "preparation", "unchanged"],
 ] as const)("stops enterprise %s at %s during %s", async (blockedAt, pauseAt, change) => {
   await withOpenClawTestState(
     { label: `mcp-enterprise-${blockedAt}-${pauseAt}-${change}` },
@@ -149,7 +150,7 @@ it.each([
         await withMcpOAuthTestLease(storeKey, (lease, context) =>
           clearMcpOAuthStore({ storeKey, lease, context }),
         );
-      } else {
+      } else if (change === "replacement") {
         await withMcpOAuthTestLease(storeKey, (lease, context) =>
           mutateMcpOAuthStore(
             { storeKey, lease, context },
@@ -167,6 +168,11 @@ it.each([
         );
       }
       release.resolve();
+      if (change === "unchanged") {
+        expect((await first).status).toBe(200);
+        expect(requests.filter((url) => url === resource)).toHaveLength(2);
+        return;
+      }
       await expect(first).rejects.toThrow(/expired|changed|disconnected|replaced/i);
       expect(requests.filter((url) => url === resource)).toHaveLength(1);
       expect(requests.filter((url) => url === `${authorizationServer}/token`)).toHaveLength(

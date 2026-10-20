@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { McpConnectionAuthorityError } from "./mcp-connection-authority-error.js";
 import { withMcpEnterpriseBearer } from "./mcp-enterprise-fetch.js";
+import { captureMcpOAuthAuthorization } from "./mcp-oauth-authorization.js";
 
 const oauthStore = vi.hoisted(() => ({ authorizationId: "first-login" as string | undefined }));
 
@@ -16,6 +18,7 @@ vi.mock("./mcp-oauth-store.js", () => ({
   })),
   mutateMcpOAuthStore: vi.fn(),
 }));
+// mock-isolation: Keep authority captures deterministic; real SQLite revocation is covered by the composed test.
 vi.mock("./mcp-oauth-authorization.js", () => ({
   captureMcpOAuthAuthorization: vi.fn(async () => {
     const authorizationId = oauthStore.authorizationId;
@@ -42,6 +45,7 @@ const metadata = `${resource}/metadata`;
 
 beforeEach(() => {
   oauthStore.authorizationId = "first-login";
+  vi.mocked(captureMcpOAuthAuthorization).mockClear();
 });
 
 function fixture(
@@ -147,6 +151,16 @@ function fixture(
 }
 
 describe("enterprise MCP bearer exchange", () => {
+  it("retries a concurrent first credential observation before sending the resource request", async () => {
+    vi.mocked(captureMcpOAuthAuthorization).mockRejectedValueOnce(
+      new McpConnectionAuthorityError("unavailable"),
+    );
+    const { fetch, requests } = fixture();
+    expect((await fetch(resource)).status).toBe(200);
+    expect(captureMcpOAuthAuthorization).toHaveBeenCalledTimes(2);
+    expect(requests.filter((request) => request.url === resource)).toHaveLength(2);
+  });
+
   it("rejects a challenge requesting scope outside the configured grant", async () => {
     const { fetch, requests } = fixture(authorizationServer, undefined, "mcp.write");
     await expect(fetch(resource)).rejects.toThrow(/scope/i);

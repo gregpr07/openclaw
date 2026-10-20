@@ -1,4 +1,5 @@
 import { auth, extractWWWAuthenticateParams, type FetchLike } from "@modelcontextprotocol/client";
+import { McpConnectionAuthorityError } from "./mcp-connection-authority-error.js";
 import {
   createMcpEnterpriseProvider,
   mcpEnterpriseIdpIdentity,
@@ -14,6 +15,23 @@ async function requestInit(request: Request): Promise<RequestInit> {
     body: request.body ? await request.arrayBuffer() : undefined,
     signal: request.signal,
   };
+}
+
+async function captureEnterpriseAuthorization(config: McpEnterpriseConfig) {
+  const params = { identity: mcpEnterpriseIdpIdentity(config), assertCurrent() {} };
+  try {
+    return await captureMcpOAuthAuthorization(params);
+  } catch (error) {
+    // Concurrent first reads can both observe an empty live owner. One publishes
+    // the same canonical grant and invalidates the other's read revision.
+    if (
+      !(error instanceof McpConnectionAuthorityError) ||
+      error.code !== "MCP_AUTHORIZATION_UNAVAILABLE"
+    ) {
+      throw error;
+    }
+    return await captureMcpOAuthAuthorization(params);
+  }
 }
 
 /** Keep resource tokens bound to one server and one transport instance. */
@@ -103,10 +121,7 @@ export function withMcpEnterpriseBearer(params: {
     if (new URL(request.url).origin !== resourceOrigin) {
       return params.fetchFn(request.url, await requestInit(request));
     }
-    const authority = await captureMcpOAuthAuthorization({
-      identity: mcpEnterpriseIdpIdentity(params.config),
-      assertCurrent() {},
-    });
+    const authority = await captureEnterpriseAuthorization(params.config);
     try {
       const { resourceFetch, authFetch } = params.createAuthenticatedFetches(
         authority.assertCurrent,
@@ -136,7 +151,7 @@ export function withMcpEnterpriseBearer(params: {
       await assertAuthorization(authorizationId);
       const retryHeaders = new Headers(original.headers);
       retryHeaders.set("authorization", `Bearer ${freshToken}`);
-      return resourceFetch(request.url, { ...original, headers: retryHeaders });
+      return await resourceFetch(request.url, { ...original, headers: retryHeaders });
     } finally {
       authority.dispose();
     }
