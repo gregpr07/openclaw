@@ -105,24 +105,27 @@ export function createDiscordGatewayCaptureFixture(params: {
   });
   const decoding = new Set<Promise<void>>();
   const receiving = new Set<Promise<void>>();
+  function track(pending: Promise<void>, active: Set<Promise<void>>) {
+    active.add(pending);
+    const settled = () => active.delete(pending);
+    void pending.then(settled, settled);
+    return pending;
+  }
   const receiveSpies: Array<{ mockRestore(): void }> = [];
   const codecSpy = testVi
     .spyOn(audio, "decodeOpusStreamChunks")
     .mockImplementation((input, options) => {
-      const work = (async () => {
-        for await (const packet of input) {
-          // One synthetic packet is 20 ms of stereo PCM. Preserve packet identity for receipts.
-          const pcm = Buffer.alloc(960 * 2 * 2);
-          pcm.fill(packet[0]);
-          await options.onChunk(pcm, packet);
-        }
-      })();
-      decoding.add(work);
-      void work.then(
-        () => decoding.delete(work),
-        () => decoding.delete(work),
+      return track(
+        (async () => {
+          for await (const packet of input) {
+            // One synthetic packet is 20 ms of stereo PCM. Preserve packet identity for receipts.
+            const pcm = Buffer.alloc(960 * 2 * 2);
+            pcm.fill(packet[0]);
+            await options.onChunk(pcm, packet);
+          }
+        })(),
+        decoding,
       );
-      return work;
     });
   const lateStt = createDeferred<void>();
   const wavPaths: string[] = [];
@@ -175,14 +178,14 @@ export function createDiscordGatewayCaptureFixture(params: {
           : undefined,
   } as unknown as Client;
   function restore() {
-    for (const spy of sttSpies.values()) {
-      spy.mockRestore();
-    }
-    codecSpy.mockRestore();
-    wavSpy.mockRestore();
-    sdkSpy.mockRestore();
-    workerSpy.mockRestore();
-    for (const spy of receiveSpies) {
+    for (const spy of [
+      ...sttSpies.values(),
+      codecSpy,
+      wavSpy,
+      sdkSpy,
+      workerSpy,
+      ...receiveSpies,
+    ]) {
       spy.mockRestore();
     }
   }
@@ -205,15 +208,9 @@ export function createDiscordGatewayCaptureFixture(params: {
     const receive = createdManager["receive"];
     const handleSpeakingStart = receive.handleSpeakingStart.bind(receive);
     receiveSpies.push(
-      testVi.spyOn(receive, "handleSpeakingStart").mockImplementation((...args) => {
-        const pending = handleSpeakingStart(...args);
-        receiving.add(pending);
-        void pending.then(
-          () => receiving.delete(pending),
-          () => receiving.delete(pending),
-        );
-        return pending;
-      }),
+      testVi
+        .spyOn(receive, "handleSpeakingStart")
+        .mockImplementation((...args) => track(handleSpeakingStart(...args), receiving)),
     );
     setDiscordTranscriptsVoiceManager({
       accountId: captureTarget.accountId,
@@ -237,9 +234,7 @@ export function createDiscordGatewayCaptureFixture(params: {
     await Promise.all(receiving);
     await expect
       .poll(() =>
-        transports.every((ownedTransport) =>
-          ownedTransport.streams.every((stream) => stream.listenerCount("data") === 0),
-        ),
+        transports.every(({ streams }) => streams.every((s) => s.listenerCount("data") === 0)),
       )
       .toBe(true);
     await Promise.all(
