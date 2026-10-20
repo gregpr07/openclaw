@@ -1,13 +1,17 @@
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, onTestFinished, vi } from "vitest";
 // @vitest-environment node
-import { GATEWAY_STARTUP_ADMISSION_WAIT_MS } from "../../../../packages/gateway-protocol/src/startup-unavailable.js";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { ChatQueueItem } from "../../lib/chat/chat-types.ts";
 import { outboxStorageScope } from "../../lib/chat/outbox-payload-store.runtime.ts";
 import type { ChatHistoryResult } from "./chat-history-snapshot.ts";
 import { getChatHistoryLoadState } from "./chat-history-state.ts";
 import { loadChatHistory } from "./chat-history.ts";
-import { findChatSendPayload, makeChatHost } from "./chat-host.test-support.ts";
+import {
+  expectRpc,
+  findChatSendPayload,
+  makeChatHost,
+  requestCalls,
+} from "./chat-host.test-support.ts";
 import { chatOutboxOwner } from "./chat-outbox-owner.ts";
 import { readQueuedMessageById } from "./chat-queue.ts";
 import { handleSendChat } from "./chat-send-submit.ts";
@@ -16,35 +20,32 @@ import { prepareInitialTurnHandoff } from "./initial-turn-handoff.ts";
 import { useChatSendBrowserFixture } from "./outbox-browser.test-support.ts";
 
 useChatSendBrowserFixture();
+afterEach(() => vi.useRealTimers());
 
 it.each([false, true])(
   "never lets another account consume an initial-turn handoff (owned: %s)",
   async (owned) => {
     vi.useFakeTimers();
-    try {
-      const host = makeChatHost({ requestHandlers: {}, sessionKey: "agent:main:initial-owner" });
-      const client = host.client!;
-      const original = client.recoveryScope;
-      const scope = outboxStorageScope(host);
-      prepareInitialTurnHandoff(host.sessionKey, {
-        id: "private-initial",
-        text: "Only account A",
-        createdAt: 1,
-        ...(owned ? { storageScope: scope } : {}),
-      });
-      const recovery = vi.spyOn(client, "recoveryScope", "get").mockReturnValue("account-b");
-      expect(admitInitialTurnHandoff(host, host.sessionKey)).toBe(false);
-      expect(host.chatQueue).toEqual([]);
-      recovery.mockReturnValue(original);
-      expect(admitInitialTurnHandoff(host, host.sessionKey)).toBe(owned);
-      expect(host.chatQueue).toEqual(
-        owned ? [expect.objectContaining({ text: "Only account A", storageScope: scope })] : [],
-      );
-      expect(host.request).not.toHaveBeenCalled();
-      await vi.advanceTimersByTimeAsync(60_000);
-    } finally {
-      vi.useRealTimers();
-    }
+    const host = makeChatHost({ requestHandlers: {}, sessionKey: "agent:main:initial-owner" });
+    const client = host.client!;
+    const original = client.recoveryScope;
+    const scope = outboxStorageScope(host);
+    prepareInitialTurnHandoff(host.sessionKey, {
+      id: "private-initial",
+      text: "Only account A",
+      createdAt: 1,
+      ...(owned ? { storageScope: scope } : {}),
+    });
+    const recovery = vi.spyOn(client, "recoveryScope", "get").mockReturnValue("account-b");
+    expect(admitInitialTurnHandoff(host, host.sessionKey)).toBe(false);
+    expect(host.chatQueue).toEqual([]);
+    recovery.mockReturnValue(original);
+    expect(admitInitialTurnHandoff(host, host.sessionKey)).toBe(owned);
+    expect(host.chatQueue).toEqual(
+      owned ? [expect.objectContaining({ text: "Only account A", storageScope: scope })] : [],
+    );
+    expect(host.request).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(60_000);
   },
 );
 
@@ -55,35 +56,26 @@ it.each([
   "keeps the active reply on a $queueMode $status custody ACK",
   async ({ queueMode, status }) => {
     const acknowledgement = createDeferred<{ runId: string; status: string }>();
-    const host = makeChatHost({
-      chatMessage: "A follow-up while another participant's reply is streaming",
+    const activeReply = () => ({
       chatRunId: "active-reply",
       chatStream: "Already visible response text",
       chatStreamStartedAt: 100,
       chatStreamSegments: [{ text: "Earlier live commentary", ts: 90, itemId: "commentary" }],
-      chatRunStartup: { state: "activity", runId: "active-reply" },
+      chatRunStartup: { state: "activity" as const, runId: "active-reply" },
+    });
+    const host = makeChatHost({
+      ...activeReply(),
+      chatMessage: "A follow-up while another participant's reply is streaming",
       requestHandlers: { "chat.send": () => acknowledgement.promise },
     });
-    const sending = handleSendChat(host, undefined, {
-      followUpMode: queueMode,
-    });
-    await vi.waitFor(() =>
-      expect(host.request).toHaveBeenCalledWith("chat.send", expect.anything(), {
-        timeoutMs: GATEWAY_STARTUP_ADMISSION_WAIT_MS,
-        signal: expect.any(AbortSignal),
-        retainSentResultOnAbort: true,
-      }),
-    );
+    const sending = handleSendChat(host, undefined, { followUpMode: queueMode });
+    await vi.waitFor(() => expectRpc(host.request, "chat.send"));
     expect(host.chatStream).toBe("Already visible response text");
     acknowledgement.resolve({ runId: "accepted-input", status });
     await sending;
-    expect(host.chatRunId).toBe("active-reply");
-    expect(host.chatStream).toBe("Already visible response text");
-    expect(host.chatStreamStartedAt).toBe(100);
-    expect(host.chatStreamSegments).toEqual([
-      { text: "Earlier live commentary", ts: 90, itemId: "commentary" },
-    ]);
-    expect(host.chatRunStartup).toEqual({ state: "activity", runId: "active-reply" });
+    expect(host).toMatchObject(activeReply());
+    expect(host.chatStreamSegments).toEqual(activeReply().chatStreamSegments);
+    expect(host.chatRunStartup).toEqual(activeReply().chatRunStartup);
   },
 );
 
@@ -103,6 +95,7 @@ it.each([false, true])(
         "chat.send": { status: "started", runId: "confirmed-first-message" },
       },
     });
+    onTestFinished(() => host.sessions.dispose());
     host.captureComposerRecoveryOwner = () => ({
       resolveOwner: () => {
         ownerChecked.resolve();
@@ -150,25 +143,18 @@ it.each([false, true])(
         updatedAt: 1,
       },
     });
-    try {
-      await Promise.all([loading, edit]);
-      await new Promise<void>((resolve) => {
-        setImmediate(resolve);
-      });
-      const sends = host.request.mock.calls.filter(([method]) => method === "chat.send");
-      if (edited) {
-        expect(sends).toEqual([]);
-        expect(readQueuedMessageById(host, item.id)?.text).toBe("A newer unconfirmed edit");
-      } else {
-        await vi.waitFor(() =>
-          expect(findChatSendPayload(host)).toMatchObject({ message: item.text }),
-        );
-        expect(host.request.mock.calls.filter(([method]) => method === "chat.send")).toHaveLength(
-          1,
-        );
-      }
-    } finally {
-      host.sessions.dispose();
+    await Promise.all([loading, edit]);
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    if (edited) {
+      expect(requestCalls(host.request, "chat.send")).toEqual([]);
+      expect(readQueuedMessageById(host, item.id)?.text).toBe("A newer unconfirmed edit");
+    } else {
+      await vi.waitFor(() =>
+        expect(findChatSendPayload(host)).toMatchObject({ message: item.text }),
+      );
+      expect(requestCalls(host.request, "chat.send")).toHaveLength(1);
     }
   },
 );

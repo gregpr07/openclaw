@@ -1,7 +1,6 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, expect, it, onTestFinished, vi } from "vitest";
-import { GATEWAY_STARTUP_ADMISSION_WAIT_MS } from "../../../../packages/gateway-protocol/src/startup-unavailable.js";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { SessionsListResult, SessionsPatchResult } from "../../api/types.ts";
 import {
@@ -11,27 +10,28 @@ import {
 import { sessionMutationGatewayHello } from "../../test-helpers/gateway-methods.ts";
 import { createStorageMock } from "../../test-helpers/storage.ts";
 import { waitForFast } from "../../test-helpers/wait-for.ts";
-import { makeChatHost } from "./chat-host.test-support.ts";
+import { expectRpc, makeChatHost } from "./chat-host.test-support.ts";
 import { handleSendChat } from "./chat-send-submit.ts";
 import { switchChatModel } from "./chat-session.ts";
 import { getPendingChatPickerPatch } from "./chat-settings-patches.ts";
 
 afterEach(() => vi.unstubAllGlobals());
+const mainHello = () => ({
+  ...sessionMutationGatewayHello(),
+  snapshot: {
+    sessionDefaults: {
+      defaultAgentId: "main",
+      mainKey: "main",
+      mainSessionKey: "agent:main:main",
+    },
+  },
+});
 
 it("does not patch the model for a locked session", async () => {
   const host = makeChatHost({
     requestHandlers: {},
     sessionKey: "main",
-    hello: {
-      ...sessionMutationGatewayHello(),
-      snapshot: {
-        sessionDefaults: {
-          defaultAgentId: "main",
-          mainKey: "main",
-          mainSessionKey: "agent:main:main",
-        },
-      },
-    },
+    hello: mainHello(),
     sessionsResult: {
       ...createSessionsListResult(),
       sessions: [
@@ -67,16 +67,10 @@ it("dispatches a fresh-pane send without waiting for background roster loading",
     expect(getPendingChatPickerPatch(host, host.sessionKey)).toBeUndefined();
     await handleSendChat(host);
     expect(host.request.mock.calls.some(([method]) => method === "sessions.patch")).toBe(false);
-    expect(host.request).toHaveBeenCalledWith(
+    expectRpc(
+      host.request,
       "chat.send",
-      expect.objectContaining({
-        message: "send without changing a picker",
-      }),
-      {
-        timeoutMs: GATEWAY_STARTUP_ADMISSION_WAIT_MS,
-        signal: expect.any(AbortSignal),
-        retainSentResultOnAbort: true,
-      },
+      expect.objectContaining({ message: "send without changing a picker" }),
     );
   } finally {
     roster.resolve(createSessionsListResult());
@@ -104,16 +98,7 @@ it.each(["success", "failure"] as const)(
     let lists = 0;
     const host = makeChatHost({
       sessionKey: "main",
-      hello: {
-        ...sessionMutationGatewayHello(),
-        snapshot: {
-          sessionDefaults: {
-            defaultAgentId: "main",
-            mainKey: "main",
-            mainSessionKey: "agent:main:main",
-          },
-        },
-      },
+      hello: mainHello(),
       requestHandlers: {
         "sessions.patch": () => patch.promise,
         "sessions.list": () => {

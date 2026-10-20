@@ -16,6 +16,17 @@ import { handleAbortChat } from "./run-lifecycle.ts";
 useChatSendBrowserFixture();
 
 afterEach(() => vi.useRealTimers());
+function pendingRequests(id: string) {
+  const pending = new GatewayPendingRequests({ createRequestId: () => id, nowMs: Date.now });
+  onTestFinished(() => pending.flush(new Error("test request owner disposed")));
+  return pending;
+}
+
+function pendingClient(pending: GatewayPendingRequests, wire: { send: (raw: string) => void }) {
+  return createTestGatewayClient((method, params, options) =>
+    pending.request(wire, method, params, options),
+  );
+}
 
 it.each(["send", "send-consumed", "receipt"] as const)(
   "bounds the actual %s request without a client-wide deadline",
@@ -23,14 +34,8 @@ it.each(["send", "send-consumed", "receipt"] as const)(
     vi.useFakeTimers();
     const issued = Promise.withResolvers<void>();
     const wire = { send: vi.fn(() => issued.resolve()) };
-    const pending = new GatewayPendingRequests({
-      createRequestId: () => "deadline",
-      nowMs: Date.now,
-    });
-    onTestFinished(() => pending.flush(new Error("test request owner disposed")));
-    const client = createTestGatewayClient((method, params, options) =>
-      pending.request(wire, method, params, options),
-    );
+    const pending = pendingRequests("deadline");
+    const client = pendingClient(pending, wire);
     const host = makeChatHost({
       client,
       connected: true,
@@ -94,15 +99,9 @@ it.each(["send", "send-consumed", "receipt"] as const)(
 
 it("retains an audio send through slow transcription and settles on the captured connection", async () => {
   vi.useFakeTimers();
-  const pending = new GatewayPendingRequests({
-    createRequestId: () => "audio-ack",
-    nowMs: Date.now,
-  });
-  onTestFinished(() => pending.flush(new Error("test request owner disposed")));
+  const pending = pendingRequests("audio-ack");
   const wire = { send: vi.fn<(frame: string) => void>() };
-  const client = createTestGatewayClient((method, params, options) =>
-    pending.request(wire, method, params, options),
-  );
+  const client = pendingClient(pending, wire);
   const host = makeChatHost({ client, connected: true, sessionKey: "agent:main:audio-deadline" });
   const send = requestChatSend(host, {
     message: "caption",
@@ -146,8 +145,7 @@ async function startPreparingSend(
   const attempts: string[] = [];
   const writes: RequestFrame[] = [];
   const issued = Promise.withResolvers<void>();
-  const pending = new GatewayPendingRequests({ createRequestId: () => "startup", nowMs: Date.now });
-  onTestFinished(() => pending.flush(new Error("test request owner disposed")));
+  const pending = pendingRequests("startup");
   const wire = {
     send(raw: string) {
       const request = JSON.parse(raw) as RequestFrame;
@@ -194,57 +192,42 @@ async function startPreparingSend(
   return { host, pending, attempts, writes, sending, ready: () => (ready = true) };
 }
 
-it.each([45_000, 240_000])("delivers one UI send after %i ms of startup", async (delay) => {
-  const fixture = await startPreparingSend();
-  await vi.advanceTimersByTimeAsync(delay);
-  expect(fixture.pending.hasPending).toBe(true);
-  expect(fixture.writes).toHaveLength(0);
-  fixture.ready();
-  await vi.advanceTimersByTimeAsync(1_000);
-  await fixture.sending;
-  expect(fixture.writes).toHaveLength(1);
-  expect(new Set(fixture.attempts).size).toBe(1);
-  await vi.advanceTimersByTimeAsync(GATEWAY_STARTUP_ADMISSION_WAIT_MS);
-  expect(fixture.writes).toHaveLength(1);
-});
-
-it("Stop during startup retires the UI send before readiness", async () => {
-  const fixture = await startPreparingSend();
-  await vi.advanceTimersByTimeAsync(45_000);
-  await handleAbortChat(fixture.host, { scope: "session" });
-  await fixture.sending;
-  fixture.ready();
-  await vi.advanceTimersByTimeAsync(GATEWAY_STARTUP_ADMISSION_WAIT_MS);
-  expect(fixture.pending.hasPending).toBe(false);
-  expect(fixture.writes).toHaveLength(0);
-});
-
 it.each([
+  ["send", 45_000],
+  ["send", 240_000],
   ["steer", 45_000],
   ["steer", 240_000],
   ["redirect", 45_000],
   ["redirect", 240_000],
-] as const)("delivers one /%s send after %i ms of startup", async (command, delay) => {
-  const fixture = await startPreparingSend(`/${command} Wait for this agent`);
+] as const)("delivers one %s send after %i ms of startup", async (command, delay) => {
+  const message = command === "send" ? "Wait for this agent" : `/${command} Wait for this agent`;
+  const fixture = await startPreparingSend(message);
   await vi.advanceTimersByTimeAsync(delay);
   expect(fixture.pending.hasPending).toBe(true);
+  expect(fixture.writes).toHaveLength(0);
   fixture.ready();
   await vi.advanceTimersByTimeAsync(1_000);
   await fixture.sending;
   expect(fixture.writes).toHaveLength(1);
   expect(new Set(fixture.attempts).size).toBe(1);
+  await vi.advanceTimersByTimeAsync(GATEWAY_STARTUP_ADMISSION_WAIT_MS);
+  expect(fixture.writes).toHaveLength(1);
 });
 
-it.each(["steer", "redirect"] as const)("Stop retires a startup /%s send", async (command) => {
-  const fixture = await startPreparingSend(`/${command} Wait for this agent`);
-  await vi.advanceTimersByTimeAsync(45_000);
-  await handleAbortChat(fixture.host, { scope: "session" });
-  await fixture.sending;
-  fixture.ready();
-  await vi.advanceTimersByTimeAsync(GATEWAY_STARTUP_ADMISSION_WAIT_MS);
-  expect(fixture.pending.hasPending).toBe(false);
-  expect(fixture.writes).toHaveLength(0);
-});
+it.each(["send", "steer", "redirect"] as const)(
+  "Stop retires a startup %s send",
+  async (command) => {
+    const message = command === "send" ? "Wait for this agent" : `/${command} Wait for this agent`;
+    const fixture = await startPreparingSend(message);
+    await vi.advanceTimersByTimeAsync(45_000);
+    await handleAbortChat(fixture.host, { scope: "session" });
+    await fixture.sending;
+    fixture.ready();
+    await vi.advanceTimersByTimeAsync(GATEWAY_STARTUP_ADMISSION_WAIT_MS);
+    expect(fixture.pending.hasPending).toBe(false);
+    expect(fixture.writes).toHaveLength(0);
+  },
+);
 
 it.each([
   ["send", false],

@@ -3,7 +3,7 @@ import { expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { ChatHistoryResult } from "./chat-history-snapshot.ts";
 import { loadChatHistory } from "./chat-history.ts";
-import { findChatSendPayload, makeChatHost } from "./chat-host.test-support.ts";
+import { findChatSendPayload, makeChatHost, requestCalls } from "./chat-host.test-support.ts";
 import { resumeStoredChatOutboxes } from "./chat-send-actions.ts";
 import { handleSendChat } from "./chat-send-submit.ts";
 import { useChatSendBrowserFixture } from "./outbox-browser.test-support.ts";
@@ -51,12 +51,11 @@ it("retains foreground attachment custody when history settles during the input 
   let runId: string | undefined;
   try {
     await vi.waitFor(() => expect(host.chatQueue).toHaveLength(1));
-    expect(host.chatQueue).toHaveLength(1);
     expect(postInput).toHaveBeenCalledOnce();
-    expect(host.request.mock.calls.some(([method]) => method === "chat.send")).toBe(false);
+    expect(requestCalls(host.request, "chat.send")).toHaveLength(0);
     runId = host.chatQueue[0]!.sendRunId;
     expect(runId).toBeTypeOf("string");
-    expect(host.request.mock.calls.filter(([method]) => method === "chat.history")).toHaveLength(1);
+    expect(requestCalls(host.request, "chat.history")).toHaveLength(1);
     history.resolve(result);
     await loading;
     await Promise.all([
@@ -65,7 +64,7 @@ it("retains foreground attachment custody when history settles during the input 
     ]);
     // Main now retains this admission in the shared outbox owner. Neither
     // history settlement nor a passive drain may deliver before input resumes.
-    expect(host.request.mock.calls.some(([method]) => method === "chat.send")).toBe(false);
+    expect(requestCalls(host.request, "chat.send")).toHaveLength(0);
   } finally {
     history.resolve(result);
     release(undefined);
@@ -73,7 +72,7 @@ it("retains foreground attachment custody when history settles during the input 
     channel.port1.close();
     channel.port2.close();
   }
-  expect(host.request.mock.calls.filter(([method]) => method === "chat.send")).toHaveLength(1);
+  expect(requestCalls(host.request, "chat.send")).toHaveLength(1);
   expect(findChatSendPayload(host)).toMatchObject({
     expectedLeafEntryId: "held-enter-terminal",
     idempotencyKey: runId,
@@ -123,7 +122,7 @@ it.each([false, true])(
     });
     try {
       await admitted.promise;
-      expect(host.request.mock.calls.some(([method]) => method === "chat.send")).toBe(false);
+      expect(requestCalls(host.request, "chat.send")).toHaveLength(0);
       if (!refreshBeforeSend) {
         refresh = loadChatHistory(host, { supersedeInFlight: true, deferBranches: true });
       }
@@ -134,7 +133,7 @@ it.each([false, true])(
       await Promise.all([loading, refresh, sending]);
       expect(reads).toBe(2);
       expect(host.chatDisplayedLeafEntryId).toBe("active-leaf");
-      expect(host.request.mock.calls.filter(([method]) => method === "chat.send")).toHaveLength(1);
+      expect(requestCalls(host.request, "chat.send")).toHaveLength(1);
       expect(findChatSendPayload(host)).toMatchObject({
         sessionKey,
         message: "Correct the active reply",

@@ -13,42 +13,42 @@ import { handleSendChat } from "./chat-send-submit.ts";
 import { useChatSendBrowserFixture } from "./outbox-browser.test-support.ts";
 
 const attachmentDataUrl = "data:application/pdf;base64,JVBERi0xLjQK";
+const sentAttachments = [
+  {
+    type: "file",
+    mimeType: "application/pdf",
+    fileName: "brief.pdf",
+    content: "JVBERi0xLjQK",
+  },
+];
 
 useChatSendBrowserFixture();
 
 describe.each(["steer", "redirect"] as const)("handleSendChat /%s recovery", (command) => {
   const draft = `/${command} keep the correction available`;
+  const commandHost = (response: unknown, overrides: Parameters<typeof makeChatHost>[0] = {}) =>
+    makeChatHost({ chatMessage: draft, requestHandlers: { "chat.send": response }, ...overrides });
 
   it.each(["timeout", "error", "rejected"] as const)(
     "restores submitted input after the %s acknowledgment",
     async (outcome) => {
       const attachment = createStagedAttachment(`${command}-${outcome}`);
-      const host = makeChatHost({
-        chatMessage: draft,
-        chatAttachments: [attachment],
-        requestHandlers: {
-          "chat.send": () => {
-            if (outcome === "rejected") {
-              throw new GatewayRequestError({ code: "UNAVAILABLE", message: "Request rejected" });
-            }
-            return { runId: "command-run", status: outcome };
-          },
+      const host = commandHost(
+        () => {
+          if (outcome === "rejected") {
+            throw new GatewayRequestError({ code: "UNAVAILABLE", message: "Request rejected" });
+          }
+          return { runId: "command-run", status: outcome };
         },
-      });
+        { chatAttachments: [attachment] },
+      );
 
       await handleSendChat(host);
 
       expect(findChatSendPayload(host)).toMatchObject({
         message: "keep the correction available",
         queueMode: command === "steer" ? "steer" : "interrupt",
-        attachments: [
-          {
-            type: "file",
-            mimeType: "application/pdf",
-            fileName: "brief.pdf",
-            content: "JVBERi0xLjQK",
-          },
-        ],
+        attachments: sentAttachments,
       });
       expect(host.chatMessage).toBe(draft);
       expect(host.chatAttachments).toEqual([expect.objectContaining({ id: attachment.id })]);
@@ -62,26 +62,18 @@ describe.each(["steer", "redirect"] as const)("handleSendChat /%s recovery", (co
     "retires the submitted draft after a successful %s acknowledgment",
     async (status) => {
       const attachment = createStagedAttachment(`${command}-${status}`);
-      const host = makeChatHost({
-        chatMessage: draft,
-        chatAttachments: [attachment],
-        chatRunId: "active-run",
-        requestHandlers: { "chat.send": { runId: "command-run", status } },
-      });
+      const host = commandHost(
+        { runId: "command-run", status },
+        {
+          chatAttachments: [attachment],
+          chatRunId: "active-run",
+        },
+      );
 
       await handleSendChat(host);
 
       expect(host.chatMessage).toBe("");
-      expect(findChatSendPayload(host)).toMatchObject({
-        attachments: [
-          {
-            type: "file",
-            mimeType: "application/pdf",
-            fileName: "brief.pdf",
-            content: "JVBERi0xLjQK",
-          },
-        ],
-      });
+      expect(findChatSendPayload(host)).toMatchObject({ attachments: sentAttachments });
       expect(host.chatAttachments).toEqual([]);
       expect(getChatAttachmentDataUrl(attachment)).toBeNull();
       expect(host.chatComposerFallbackByScope).toEqual({});
@@ -95,10 +87,7 @@ describe.each(["steer", "redirect"] as const)("handleSendChat /%s recovery", (co
   it("does not restore a failed command over a newer draft", async () => {
     const acknowledgment = createDeferred<{ runId: string; status: "timeout" }>();
     const newerAttachment = createStagedAttachment(`${command}-newer`);
-    const host = makeChatHost({
-      chatMessage: draft,
-      requestHandlers: { "chat.send": () => acknowledgment.promise },
-    });
+    const host = commandHost(() => acknowledgment.promise);
 
     const send = handleSendChat(host);
     await vi.waitFor(() => expect(findChatSendPayload(host)).toBeDefined());
@@ -115,11 +104,9 @@ describe.each(["steer", "redirect"] as const)("handleSendChat /%s recovery", (co
   it("retains a failed command in its submitted session after navigation", async () => {
     const acknowledgment = createDeferred<{ runId: string; status: "timeout" }>();
     const attachment = createStagedAttachment(`${command}-submitted-session`);
-    const host = makeChatHost({
+    const host = commandHost(() => acknowledgment.promise, {
       sessionKey: "agent:main:first",
-      chatMessage: draft,
       chatAttachments: [attachment],
-      requestHandlers: { "chat.send": () => acknowledgment.promise },
     });
     const submittedScopeKey = storedChatOutboxScopeKey(
       captureChatOutboxAdmission(host, host.sessionKey).scope,
@@ -146,11 +133,12 @@ describe.each(["steer", "redirect"] as const)("handleSendChat /%s recovery", (co
   if (command === "redirect") {
     it("does not send captured files into a conversation selected during the route wait", async () => {
       const attachment = createStagedAttachment("redirect-route");
-      const host = makeChatHost({
-        chatMessage: draft,
-        chatAttachments: [attachment],
-        requestHandlers: { "chat.send": { status: "ok" } },
-      });
+      const host = commandHost(
+        { status: "ok" },
+        {
+          chatAttachments: [attachment],
+        },
+      );
       const send = handleSendChat(host);
       host.sessionKey = "agent:main:other";
       await send;

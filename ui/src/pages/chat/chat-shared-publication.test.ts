@@ -27,6 +27,8 @@ const published = {
   headCommit: "a".repeat(40),
 };
 const completed = { result: published, confirmation: null };
+const publicationCalls = (request: ReturnType<typeof setup>["request"]) =>
+  request.mock.calls.filter(([method]) => method === "sessions.github.publish");
 
 describe("shared publication observation", () => {
   it("retires an obsolete shared failure when discovery confirms it is no longer actionable", async () => {
@@ -60,9 +62,7 @@ describe("shared publication observation", () => {
     const fresh = await settled(controller);
     expect(fresh.result).toBeNull();
     expect(fresh.onPublish).toBeTypeOf("function");
-    expect(
-      request.mock.calls.filter(([method]) => method === "sessions.github.publish"),
-    ).toHaveLength(0);
+    expect(publicationCalls(request)).toHaveLength(0);
   });
 
   it("checks an accepted shared request by reading its receipt, never replaying publish", async () => {
@@ -81,12 +81,11 @@ describe("shared publication observation", () => {
       throw new Error("An observation must not execute publication");
     });
     const container = document.createElement("div");
-    let unmount: (() => void) | undefined;
+    const { unmount } = mountSolid(
+      () => createComponent(GitHubPublicationAction, { publication: controller.view()! }),
+      { container },
+    );
     try {
-      unmount = mountSolid(
-        () => createComponent(GitHubPublicationAction, { publication: controller.view()! }),
-        { container },
-      ).unmount;
       flush();
       container.querySelector<HTMLButtonElement>("button.chat-pr__create")!.click();
       expect((await settled(controller)).result).toEqual(published);
@@ -95,11 +94,9 @@ describe("shared publication observation", () => {
         agentId: "main",
         requestId,
       });
-      expect(
-        request.mock.calls.filter(([method]) => method === "sessions.github.publish"),
-      ).toHaveLength(1);
+      expect(publicationCalls(request)).toHaveLength(1);
     } finally {
-      unmount?.();
+      unmount();
     }
   });
 
@@ -109,12 +106,13 @@ describe("shared publication observation", () => {
     request.mockRejectedValueOnce(new Error("GitHub publication options timed out"));
     controller.view()?.onRefresh();
     const failed = await settled(controller);
-    expect(failed.optionsUnavailable).toBe(true);
-    expect(failed.error).toBe("GitHub publication options timed out");
+    expect(failed).toMatchObject({
+      optionsUnavailable: true,
+      error: "GitHub publication options timed out",
+    });
     controller.view()?.onRefresh();
     const recovered = await settled(controller);
-    expect(recovered.optionsUnavailable).toBe(false);
-    expect(recovered.error).toBeNull();
+    expect(recovered).toMatchObject({ optionsUnavailable: false, error: null });
   });
 
   it("recovers an unknown shared outcome only through its exact invocation key", async () => {
@@ -123,8 +121,7 @@ describe("shared publication observation", () => {
     request.mockRejectedValueOnce(new Error("The acknowledgement was lost"));
     controller.view()?.onPublish?.();
     const unknown = await settled(controller);
-    expect(unknown.locked).toBe(true);
-    expect(unknown.optionsUnavailable).toBe(false);
+    expect(unknown).toMatchObject({ locked: true, optionsUnavailable: false });
     const key = request.mock.calls.at(-1)![1].idempotencyKey;
     request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
       if (method !== "sessions.github.options") {
@@ -140,8 +137,6 @@ describe("shared publication observation", () => {
       agentId: "main",
       idempotencyKey: key,
     });
-    expect(
-      request.mock.calls.filter(([method]) => method === "sessions.github.publish"),
-    ).toHaveLength(1);
+    expect(publicationCalls(request)).toHaveLength(1);
   });
 });

@@ -20,6 +20,9 @@ const recovery = vi.hoisted(() => ({
   review: vi.fn<() => Promise<boolean>>(),
   toast: vi.fn<(options: { onAction?: () => void; message: string }) => boolean>(() => true),
 }));
+const conflict = QUEUED_MESSAGE_EDIT_CONFLICT_ERROR;
+const storageError = OFFLINE_QUEUE_STORAGE_ERROR;
+const historyError = "History could not be refreshed";
 vi.mock("./components/private-composer-recovery-dialog.tsx", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./components/private-composer-recovery-dialog.tsx")>()),
   reviewPrivateComposerDraft: recovery.review,
@@ -37,9 +40,7 @@ afterEach(() => {
 });
 
 function createControllerFixture(withClient = false) {
-  const controller = createChatState<ChatPageHost>({
-    awaitDomCommit: async () => true,
-  });
+  const controller = createChatState<ChatPageHost>({ awaitDomCommit: async () => true });
   const dispose = controller.dispose;
   const state = createPageState(createInitializationContext(), controller.createRenderLifecycle(), {
     dispatchEvent: () => true,
@@ -53,19 +54,9 @@ function createControllerFixture(withClient = false) {
 
 describe("queued edit page callbacks", () => {
   it.each([
-    [QUEUED_MESSAGE_EDIT_CONFLICT_ERROR, QUEUED_MESSAGE_EDIT_CONFLICT_ERROR, null, null],
-    [
-      QUEUED_MESSAGE_EDIT_CONFLICT_ERROR,
-      OFFLINE_QUEUE_STORAGE_ERROR,
-      null,
-      OFFLINE_QUEUE_STORAGE_ERROR,
-    ],
-    [
-      "History could not be refreshed",
-      OFFLINE_QUEUE_STORAGE_ERROR,
-      "History could not be refreshed",
-      OFFLINE_QUEUE_STORAGE_ERROR,
-    ],
+    [conflict, conflict, null, null],
+    [conflict, storageError, null, storageError],
+    [historyError, storageError, historyError, storageError],
   ] as const)(
     "clears only resolved edit feedback when opening a queued editor (%s, %s)",
     (lastError, chatError, expectedLastError, expectedChatError) => {
@@ -82,8 +73,7 @@ describe("queued edit page callbacks", () => {
         expect(state.chatMessage).toBe("separate composer draft");
         state.chatMessage = "";
         expect(canReloadControlUiDocument()).toBe(false);
-        expect(state.lastError).toBe(expectedLastError);
-        expect(state.chatError).toBe(expectedChatError);
+        expect(state).toMatchObject({ lastError: expectedLastError, chatError: expectedChatError });
       } finally {
         dispose();
       }
@@ -101,10 +91,7 @@ describe("queued edit page callbacks", () => {
         storeChatComposerMemoryFallback(
           state,
           { sessionKey: state.sessionKey },
-          {
-            message: "private fallback",
-            attachments: [],
-          },
+          { message: "private fallback", attachments: [] },
         );
         state.chatMessage = "";
       }

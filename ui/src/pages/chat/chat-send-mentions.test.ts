@@ -10,12 +10,13 @@ import {
 import { handleSendChat } from "./chat-send-submit.ts";
 import { useChatSendBrowserFixture } from "./outbox-browser.test-support.ts";
 useChatSendBrowserFixture();
+const recipient = (profileId: string, start = 0) => ({ profileId, start, end: start + 5 });
 
 describe("human mention submission", () => {
   it("keeps only selected recipients after annotation and reply prefixes", async () => {
     const host = makeChatHost({
       chatMessage: "  🔎 @Alex please review  ",
-      chatMentions: [{ profileId: "profile-alex", start: 5, end: 10 }],
+      chatMentions: [recipient("profile-alex", 5)],
       chatAttachments: [createBrowserAnnotationAttachment("mention", "Unselected @Other context")],
       chatReplyTarget: {
         messageId: "synthetic-reply",
@@ -32,13 +33,7 @@ describe("human mention submission", () => {
       "> **Reader:** Unselected @Other quote\n\nUnselected @Other context\n\n🔎 @Alex please review";
     expect(findChatSendPayload(host)).toMatchObject({
       message: expected,
-      mentions: [
-        {
-          profileId: "profile-alex",
-          start: expected.indexOf("@Alex"),
-          end: expected.indexOf("@Alex") + 5,
-        },
-      ],
+      mentions: [recipient("profile-alex", expected.indexOf("@Alex"))],
     });
   });
 
@@ -46,7 +41,7 @@ describe("human mention submission", () => {
     const history = createDeferred<ChatHistoryResult>();
     const host = makeChatHost({
       chatMessage: "@Alex please review",
-      chatMentions: [{ profileId: "profile-first", start: 0, end: 5 }],
+      chatMentions: [recipient("profile-first")],
       chatLoading: true,
       currentSessionId: "existing-conversation",
       requestHandlers: {
@@ -63,7 +58,7 @@ describe("human mention submission", () => {
     );
     expect(host.chatMessage).toBe("");
     host.chatMessage = "@Alex please review";
-    host.chatMentions = [{ profileId: "profile-second", start: 0, end: 5 }];
+    host.chatMentions = [recipient("profile-second")];
     history.resolve({
       messages: [],
       sessionInfo: {
@@ -76,23 +71,15 @@ describe("human mention submission", () => {
     });
     await sending;
 
-    expect(findChatSendPayload(host).mentions).toEqual([
-      { profileId: "profile-first", start: 0, end: 5 },
-    ]);
+    expect(findChatSendPayload(host).mentions).toEqual([recipient("profile-first")]);
     expect(host.chatMessage).toBe("@Alex please review");
-    expect(host.chatMentions).toEqual([{ profileId: "profile-second", start: 0, end: 5 }]);
+    expect(host.chatMentions).toEqual([recipient("profile-second")]);
   });
 
   it.each(["/new @Alex", "/status @Alex", "/btw @Alex review"])(
     "preserves mention intent instead of dropping it in %s",
     async (message) => {
-      const mentions = [
-        {
-          profileId: "profile-alex",
-          start: message.indexOf("@Alex"),
-          end: message.indexOf("@Alex") + 5,
-        },
-      ];
+      const mentions = [recipient("profile-alex", message.indexOf("@Alex"))];
       const host = makeChatHost({
         chatMessage: message,
         chatMentions: mentions,
