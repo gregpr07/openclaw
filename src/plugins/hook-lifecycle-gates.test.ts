@@ -1,32 +1,22 @@
-/** Tests hook lifecycle gates for startup, activation, cleanup, and retired registries. */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { GlobalHookRunnerRegistry } from "./hook-registry.types.js";
 import type { PluginHookRegistration, PluginHookAgentContext } from "./hook-types.js";
 import { createHookRunner } from "./hooks.js";
 
-function makeRegistry(hooks: PluginHookRegistration[] = []): GlobalHookRunnerRegistry {
-  return {
-    hooks: [],
-    typedHooks: hooks,
-    plugins: [],
-  };
-}
-
-function makeGateRunner(
+function runGate(
   hooks: Pick<
     PluginHookRegistration<"before_agent_run">,
     "pluginId" | "handler" | "priority"
   >[] = [],
 ) {
-  return createHookRunner(
-    makeRegistry(
-      hooks.map<PluginHookRegistration<"before_agent_run">>((hook) => ({
-        ...hook,
-        hookName: "before_agent_run",
-        source: "test",
-      })),
-    ),
-  );
+  return createHookRunner({
+    hooks: [],
+    plugins: [],
+    typedHooks: hooks.map<PluginHookRegistration<"before_agent_run">>((hook) => ({
+      ...hook,
+      hookName: "before_agent_run",
+      source: "test",
+    })),
+  }).runBeforeAgentRun({ prompt: "test", messages: [] }, ctx);
 }
 
 const ctx: PluginHookAgentContext = {
@@ -42,9 +32,7 @@ describe("before_agent_run hook", () => {
   });
 
   it("returns undefined when no handlers registered", async () => {
-    const runner = makeGateRunner();
-    const result = await runner.runBeforeAgentRun({ prompt: "hello", messages: [] }, ctx);
-    expect(result).toBeUndefined();
+    expect(await runGate()).toBeUndefined();
   });
 
   it("blocks when one of multiple handlers passes and a later handler blocks", async () => {
@@ -55,27 +43,13 @@ describe("before_agent_run hook", () => {
     });
     const blockHandler = vi.fn(async () => {
       calls.push("block-plugin");
-      return {
-        outcome: "block" as const,
-        reason: "blocked",
-      };
+      return { outcome: "block" as const, reason: "blocked" };
     });
-    const runner = makeGateRunner([
-      {
-        pluginId: "pass-plugin",
-        handler: passHandler,
-        priority: 10,
-      },
-      {
-        pluginId: "block-plugin",
-        handler: blockHandler,
-        priority: 5,
-      },
+    const result = await runGate([
+      { pluginId: "pass-plugin", handler: passHandler, priority: 10 },
+      { pluginId: "block-plugin", handler: blockHandler, priority: 5 },
     ]);
-    const result = await runner.runBeforeAgentRun({ prompt: "test", messages: [] }, ctx);
-
-    expect(result?.decision.outcome).toBe("block");
-    expect(result?.pluginId).toBe("block-plugin");
+    expect(result).toMatchObject({ decision: { outcome: "block" }, pluginId: "block-plugin" });
     expect(passHandler).toHaveBeenCalledTimes(1);
     expect(blockHandler).toHaveBeenCalledTimes(1);
     expect(calls).toEqual(["pass-plugin", "block-plugin"]);
@@ -87,45 +61,23 @@ describe("before_agent_run hook", () => {
       reason: "blocked",
     }));
     const passHandler = vi.fn(async () => ({ outcome: "pass" as const }));
-    const runner = makeGateRunner([
-      {
-        pluginId: "block-plugin",
-        handler: blockHandler,
-        priority: 10,
-      },
-      {
-        pluginId: "pass-plugin",
-        handler: passHandler,
-        priority: 5,
-      },
+    const result = await runGate([
+      { pluginId: "block-plugin", handler: blockHandler, priority: 10 },
+      { pluginId: "pass-plugin", handler: passHandler, priority: 5 },
     ]);
-    const result = await runner.runBeforeAgentRun({ prompt: "test", messages: [] }, ctx);
-
-    expect(result?.decision.outcome).toBe("block");
-    expect(result?.pluginId).toBe("block-plugin");
+    expect(result).toMatchObject({ decision: { outcome: "block" }, pluginId: "block-plugin" });
     expect(blockHandler).toHaveBeenCalledTimes(1);
     expect(passHandler).not.toHaveBeenCalled();
   });
 
   it("treats void handler returns as pass (no effect)", async () => {
-    const runner = makeGateRunner([
-      {
-        pluginId: "void-plugin",
-        handler: async () => undefined,
-      },
-    ]);
-    const result = await runner.runBeforeAgentRun({ prompt: "test", messages: [] }, ctx);
-    expect(result).toBeUndefined();
+    expect(
+      await runGate([{ pluginId: "void-plugin", handler: async () => undefined }]),
+    ).toBeUndefined();
   });
 
   it("fails closed on null handler results", async () => {
-    const runner = makeGateRunner([
-      {
-        pluginId: "null-plugin",
-        handler: async () => null as never,
-      },
-    ]);
-    const result = await runner.runBeforeAgentRun({ prompt: "test", messages: [] }, ctx);
+    const result = await runGate([{ pluginId: "null-plugin", handler: async () => null as never }]);
     expect(result).toEqual({
       decision: {
         outcome: "block",
@@ -136,7 +88,7 @@ describe("before_agent_run hook", () => {
   });
 
   it("fails closed when handlers throw", async () => {
-    const runner = makeGateRunner([
+    const result = runGate([
       {
         pluginId: "throwing-plugin",
         handler: async () => {
@@ -144,20 +96,19 @@ describe("before_agent_run hook", () => {
         },
       },
     ]);
-    await expect(runner.runBeforeAgentRun({ prompt: "test", messages: [] }, ctx)).rejects.toThrow(
+    await expect(result).rejects.toThrow(
       "before_agent_run handler from throwing-plugin failed: policy unavailable",
     );
   });
 
   it("fails closed when handlers exceed the default timeout", async () => {
     vi.useFakeTimers();
-    const runner = makeGateRunner([
+    const resultPromise = runGate([
       {
         pluginId: "hanging-plugin",
         handler: async () => await new Promise<never>(() => {}),
       },
     ]);
-    const resultPromise = runner.runBeforeAgentRun({ prompt: "test", messages: [] }, ctx);
     const rejection = expect(resultPromise).rejects.toThrow(
       "before_agent_run handler from hanging-plugin failed: timed out after 15000ms",
     );
@@ -165,12 +116,9 @@ describe("before_agent_run hook", () => {
     await vi.advanceTimersByTimeAsync(15_000);
     await rejection;
   });
-});
-
-describe("before_agent_run invalid ask outcome", () => {
   it("short-circuits unsupported ask decisions", async () => {
     let secondHandlerCalled = false;
-    const runner = makeGateRunner([
+    const result = await runGate([
       {
         pluginId: "plugin-a",
         handler: async () =>
@@ -191,9 +139,7 @@ describe("before_agent_run invalid ask outcome", () => {
         priority: 5,
       },
     ]);
-    const result = await runner.runBeforeAgentRun({ prompt: "test", messages: [] }, ctx);
-    expect(result?.decision.outcome).toBe("block");
-    expect(result?.pluginId).toBe("plugin-a");
+    expect(result).toMatchObject({ decision: { outcome: "block" }, pluginId: "plugin-a" });
     expect(secondHandlerCalled).toBe(false);
   });
 });

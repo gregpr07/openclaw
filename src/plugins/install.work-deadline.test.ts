@@ -12,6 +12,32 @@ import { installPluginFromNpmSpec } from "./install-npm.js";
 import { installPluginFromArchive } from "./install-package.js";
 
 const runCommand = vi.hoisted(() => vi.fn());
+const fixtureId = "deadline-fixture";
+const source = "export default {};";
+const packageFiles = (name: string, dependencies?: Record<string, string>) => ({
+  "package.json": JSON.stringify({
+    name,
+    version: "1.0.0",
+    openclaw: { extensions: ["./index.js"] },
+    dependencies,
+  }),
+  "openclaw.plugin.json": JSON.stringify({ id: name, configSchema: { type: "object" } }),
+  "index.js": source,
+});
+const writeJson = (dir: string, file: string, value: unknown) =>
+  fs.writeFile(path.join(dir, file), JSON.stringify(value));
+const commandTimeouts = (matches: (argv: string[]) => boolean) =>
+  (runCommand.mock.calls as [string[], CommandOptions][])
+    .filter(([argv]) => matches(argv))
+    .map(([, opts]) => opts.timeoutMs);
+
+async function expectInstalled(result: Awaited<ReturnType<typeof installPluginFromNpmSpec>>) {
+  expect(result.ok).toBe(true);
+  if (!result.ok) {
+    throw new Error(result.error);
+  }
+  expect(await fs.readFile(path.join(result.targetDir, "index.js"), "utf8")).toBe(source);
+}
 vi.mock("../process/exec.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../process/exec.js")>()),
   runCommandWithTimeout: (...args: unknown[]) => runCommand(...args),
@@ -26,34 +52,21 @@ describe("plugin update work deadlines", () => {
     runCommand.mockImplementation(async (argv: string[], options: CommandOptions) => {
       let stdout = "";
       if (npmCommandArgs(argv)?.[0] === "view") {
-        stdout = JSON.stringify({ name: "deadline-fixture", version: "1.0.0" });
+        stdout = JSON.stringify({ name: fixtureId, version: "1.0.0" });
       } else if (npmCommandArgs(argv)?.[0] === "install") {
         const cwd = options.cwd!;
-        const packageDir = path.join(cwd, "node_modules", "deadline-fixture");
+        const packageDir = path.join(cwd, "node_modules", fixtureId);
         await fs.mkdir(packageDir, { recursive: true });
-        await fs.writeFile(
-          path.join(cwd, "package-lock.json"),
-          JSON.stringify({
-            lockfileVersion: 3,
-            packages: {
-              "": { dependencies: { "deadline-fixture": "1.0.0" } },
-              "node_modules/deadline-fixture": { version: "1.0.0" },
-            },
-          }),
-        );
-        await fs.writeFile(
-          path.join(packageDir, "package.json"),
-          JSON.stringify({
-            name: "deadline-fixture",
-            version: "1.0.0",
-            openclaw: { extensions: ["./index.js"] },
-          }),
-        );
-        await fs.writeFile(
-          path.join(packageDir, "openclaw.plugin.json"),
-          JSON.stringify({ id: "deadline-fixture", configSchema: { type: "object" } }),
-        );
-        await fs.writeFile(path.join(packageDir, "index.js"), "export default {};");
+        await writeJson(cwd, "package-lock.json", {
+          lockfileVersion: 3,
+          packages: {
+            "": { dependencies: { [fixtureId]: "1.0.0" } },
+            [`node_modules/${fixtureId}`]: { version: "1.0.0" },
+          },
+        });
+        for (const [file, content] of Object.entries(packageFiles(fixtureId))) {
+          await fs.writeFile(path.join(packageDir, file), content);
+        }
       } else {
         throw new Error(`Unexpected fixture command: ${argv.join(" ")}`);
       }
@@ -66,18 +79,12 @@ describe("plugin update work deadlines", () => {
   });
 
   it.each([
-    { mode: "install", timeoutMs: undefined, work: 300_000, planning: 120_000, metadata: 120_000 },
-    {
-      mode: "update",
-      timeoutMs: undefined,
-      work: undefined,
-      planning: undefined,
-      metadata: 120_000,
-    },
-    { mode: "update", timeoutMs: 37, work: 37, planning: 37, metadata: 60_000 },
+    ["install", undefined, 300_000, 120_000, 120_000],
+    ["update", undefined, undefined, undefined, 120_000],
+    ["update", 37, 37, 37, 60_000],
   ] as const)(
-    "preserves $mode work=$work while metadata stays bounded",
-    async ({ mode, timeoutMs, work, planning, metadata }) => {
+    "preserves %s work deadlines (timeout=%s, work=%s, planning=%s, metadata=%s)",
+    async (mode, timeoutMs, work, planning, metadata) => {
       const result = await installPluginFromNpmSpec({
         spec: "deadline-fixture@1.0.0",
         expectedPluginId: "deadline-fixture",
@@ -87,30 +94,17 @@ describe("plugin update work deadlines", () => {
         extensionsDir: path.join(state.root, "extensions"),
         config: {},
       });
-      expect(result.ok).toBe(true);
-      if (!result.ok) {
-        throw new Error(result.error);
-      }
-      expect(await fs.readFile(path.join(result.targetDir, "index.js"), "utf8")).toBe(
-        "export default {};",
-      );
-      const calls = runCommand.mock.calls as [string[], CommandOptions][];
+      await expectInstalled(result);
+      expect(commandTimeouts((argv) => npmCommandArgs(argv)?.[0] === "view")).toEqual([metadata]);
       expect(
-        calls
-          .filter(([argv]) => npmCommandArgs(argv)?.[0] === "view")
-          .map(([, opts]) => opts.timeoutMs),
-      ).toEqual([metadata]);
-      expect(
-        calls
-          .filter(
-            ([argv]) =>
-              npmCommandArgs(argv)?.[0] === "install" && !argv.includes("--package-lock-only"),
-          )
-          .map(([, opts]) => opts.timeoutMs),
+        commandTimeouts(
+          (argv) =>
+            npmCommandArgs(argv)?.[0] === "install" && !argv.includes("--package-lock-only"),
+        ),
       ).toEqual([work]);
-      const plans = calls.filter(([argv]) => argv.includes("--package-lock-only"));
+      const plans = commandTimeouts((argv) => argv.includes("--package-lock-only"));
       expect(plans.length).toBeGreaterThan(0);
-      expect(plans.every(([, opts]) => opts.timeoutMs === planning)).toBe(true);
+      expect(plans.every((timeout) => timeout === planning)).toBe(true);
     },
   );
   it.each([
@@ -121,20 +115,11 @@ describe("plugin update work deadlines", () => {
     "keeps $mode archive work policy through extraction and dependency installation",
     async ({ mode, timeoutMs, work }) => {
       const zip = new JSZip();
-      zip.file(
-        "package.json",
-        JSON.stringify({
-          name: "archive-fixture",
-          version: "1.0.0",
-          openclaw: { extensions: ["./index.js"] },
-          dependencies: { "deadline-fixture": "1.0.0" },
-        }),
-      );
-      zip.file(
-        "openclaw.plugin.json",
-        JSON.stringify({ id: "archive-fixture", configSchema: { type: "object" } }),
-      );
-      zip.file("index.js", "export default {};");
+      for (const [file, content] of Object.entries(
+        packageFiles("archive-fixture", { [fixtureId]: "1.0.0" }),
+      )) {
+        zip.file(file, content);
+      }
       const archivePath = path.join(state.root, "fixture.zip");
       await fs.writeFile(archivePath, await zip.generateAsync({ type: "nodebuffer" }));
       const result = await installPluginFromArchive({
@@ -143,13 +128,7 @@ describe("plugin update work deadlines", () => {
         timeoutMs,
         extensionsDir: path.join(state.root, "extensions"),
       });
-      expect(result.ok).toBe(true);
-      if (!result.ok) {
-        throw new Error(result.error);
-      }
-      expect(await fs.readFile(path.join(result.targetDir, "index.js"), "utf8")).toBe(
-        "export default {};",
-      );
+      await expectInstalled(result);
       expect(runCommand.mock.calls.map(([, opts]) => opts.timeoutMs)).toEqual([work]);
     },
   );

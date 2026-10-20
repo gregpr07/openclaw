@@ -121,24 +121,14 @@ export function registerNpmPayloadIdentityTests({
       }[identity];
       const versions = await packPlugins(rootDir, [
         { packageName, version: "1.0.0", pluginId },
-        {
-          packageName: payloadName,
-          version: payloadVersion,
-          pluginId,
-        },
+        { packageName: payloadName, version: payloadVersion, pluginId },
       ]);
       for (const [index, entry] of versions.entries()) {
         if (index === 1) {
           entry.version = "2.0.0";
         }
       }
-      await useStaticRegistry([
-        {
-          packageName,
-          latest: "2.0.0",
-          versions,
-        },
-      ]);
+      await useStaticRegistry([{ packageName, latest: "2.0.0", versions }]);
       const original = await installNpmPlugin({ spec: `${packageName}@1.0.0`, npmRoot });
       if (!original.ok) {
         throw new Error(original.error);
@@ -160,7 +150,7 @@ export function registerNpmPayloadIdentityTests({
       });
 
       expect(await fs.readFile(manifestPath, "utf8")).toBe(originalManifest);
-      if (identity !== "version" && identity !== "name") {
+      if (identity === "normalized-version") {
         expect(result).toMatchObject({
           ok: true,
           pluginId,

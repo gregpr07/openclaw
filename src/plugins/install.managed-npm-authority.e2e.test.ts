@@ -2,6 +2,7 @@ import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import type http from "node:http";
 import path from "node:path";
+import { promisify } from "node:util";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { normalizeComparablePath } from "../infra/install-package-dir.test-support.js";
@@ -18,15 +19,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   try {
     for (const server of servers.splice(0)) {
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => {
-          if (error) {
-            reject(error);
-          } else {
-            resolve();
-          }
-        });
-      });
+      await promisify(server.close).call(server);
     }
   } finally {
     try {
@@ -93,17 +86,16 @@ it.each(["npm", "npm-pack"] as const)(
       path.join(original.targetDir, "package.json"),
       path.join(original.targetDir, "dist", "index.js"),
     ];
-    const before = await Promise.all(protectedFiles.map((file) => fs.readFile(file)));
+    const readProtectedFiles = () => Promise.all(protectedFiles.map((file) => fs.readFile(file)));
+    const before = await readProtectedFiles();
     const events: string[] = [];
-    const preparedVersions: string[] = [];
     const onBeforePluginArtifactCommit: PluginInstallArtifactConsentHandler = async ({
       stagedArtifactDir,
     }) => {
       const manifest = JSON.parse(
         await fs.readFile(path.join(stagedArtifactDir, "package.json"), "utf8"),
       ) as { version: string };
-      preparedVersions.push(manifest.version);
-      events.push("prepared");
+      events.push(`prepared:${manifest.version}`);
     };
     const beforePersistentApply = vi.fn<() => unknown>(() => {
       events.push("asserted");
@@ -116,13 +108,12 @@ it.each(["npm", "npm-pack"] as const)(
       onBeforePluginArtifactCommit,
     });
 
-    expect(preparedVersions).toEqual(["2.0.0"]);
     expect(result).toEqual({
       ok: false,
       error:
         "Failed to publish managed npm project: TypeError: mutation authority must be synchronous",
     });
-    expect(events).toEqual(["prepared", "asserted"]);
+    expect(events).toEqual(["prepared:2.0.0", "asserted"]);
     expect(beforePersistentApply).toHaveBeenCalledOnce();
     const movesOriginalProject = ([from, to]: Parameters<typeof fs.rename>) =>
       [from, to].some(
@@ -134,7 +125,7 @@ it.each(["npm", "npm-pack"] as const)(
       dev: identity.dev,
       ino: identity.ino,
     });
-    expect(await Promise.all(protectedFiles.map((file) => fs.readFile(file)))).toEqual(before);
+    expect(await readProtectedFiles()).toEqual(before);
     expect(await fs.readFile(path.join(original.targetDir, "dist", "index.js"), "utf8")).toBe(
       "export const revision = 1;\n",
     );

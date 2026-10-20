@@ -1,5 +1,4 @@
-// Verifies plugin hook exec environment resolution.
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHookRunner } from "./hooks.js";
 import { addStaticTestHooks, addTestHook } from "./hooks.test-fixtures.js";
 import { createEmptyPluginRegistry } from "./registry-empty.js";
@@ -13,23 +12,40 @@ const ctx: PluginHookResolveExecEnvContext = {
 };
 
 describe("resolve_exec_env hook", () => {
+  let registry: ReturnType<typeof createEmptyPluginRegistry>;
+  let logger: {
+    error: ReturnType<typeof vi.fn>;
+    warn: ReturnType<typeof vi.fn>;
+    debug: ReturnType<typeof vi.fn>;
+  };
+  beforeEach(() => {
+    registry = createEmptyPluginRegistry();
+    logger = { error: vi.fn(), warn: vi.fn(), debug: vi.fn() };
+  });
+  const run = () =>
+    createHookRunner(registry, { logger }).runResolveExecEnv(
+      { sessionKey: ctx.sessionKey, toolName: "exec", host: "gateway" },
+      ctx,
+    );
+  const addFailingHook = (pluginId: string, handler: () => Promise<never>) => {
+    addTestHook({ registry, pluginId, hookName: "resolve_exec_env", handler, priority: 100 });
+    addTestHook({
+      registry,
+      pluginId: "healthy",
+      hookName: "resolve_exec_env",
+      handler: async () => ({ HEALTHY_ENV: "ok" }),
+      priority: 50,
+    });
+  };
   afterEach(() => {
     vi.useRealTimers();
   });
 
   it("returns an empty env when no handlers are registered", async () => {
-    const runner = createHookRunner(createEmptyPluginRegistry());
-
-    await expect(
-      runner.runResolveExecEnv(
-        { sessionKey: ctx.sessionKey, toolName: "exec", host: "gateway" },
-        ctx,
-      ),
-    ).resolves.toEqual({});
+    await expect(run()).resolves.toEqual({});
   });
 
   it("merges env vars from multiple plugins in priority order", async () => {
-    const registry = createEmptyPluginRegistry();
     addStaticTestHooks<Record<string, string>>(registry, {
       hookName: "resolve_exec_env",
       hooks: [
@@ -45,14 +61,7 @@ describe("resolve_exec_env hook", () => {
         },
       ],
     });
-    const runner = createHookRunner(registry);
-
-    await expect(
-      runner.runResolveExecEnv(
-        { sessionKey: ctx.sessionKey, toolName: "exec", host: "gateway" },
-        ctx,
-      ),
-    ).resolves.toEqual({
+    await expect(run()).resolves.toEqual({
       FIRST_ONLY: "1",
       SECOND_ONLY: "2",
       SHARED: "second",
@@ -60,33 +69,10 @@ describe("resolve_exec_env hook", () => {
   });
 
   it("isolates handler errors so other plugins can still contribute env", async () => {
-    const registry = createEmptyPluginRegistry();
-    const logger = { error: vi.fn(), warn: vi.fn(), debug: vi.fn() };
-    addTestHook({
-      registry,
-      pluginId: "crasher",
-      hookName: "resolve_exec_env",
-      handler: async () => {
-        throw new Error("plugin failed");
-      },
-      priority: 100,
+    addFailingHook("crasher", async () => {
+      throw new Error("plugin failed");
     });
-    addTestHook({
-      registry,
-      pluginId: "healthy",
-      hookName: "resolve_exec_env",
-      handler: async () => ({ HEALTHY_ENV: "ok" }),
-      priority: 50,
-    });
-
-    const runner = createHookRunner(registry, { logger });
-
-    await expect(
-      runner.runResolveExecEnv(
-        { sessionKey: ctx.sessionKey, toolName: "exec", host: "gateway" },
-        ctx,
-      ),
-    ).resolves.toEqual({ HEALTHY_ENV: "ok" });
+    await expect(run()).resolves.toEqual({ HEALTHY_ENV: "ok" });
     expect(logger.error).toHaveBeenCalledWith(
       expect.stringContaining("resolve_exec_env handler from crasher failed"),
     );
@@ -94,28 +80,8 @@ describe("resolve_exec_env hook", () => {
 
   it("skips handlers that exceed the default timeout", async () => {
     vi.useFakeTimers();
-    const logger = { error: vi.fn(), warn: vi.fn(), debug: vi.fn() };
-    const registry = createEmptyPluginRegistry();
-    addTestHook({
-      registry,
-      pluginId: "hanging",
-      hookName: "resolve_exec_env",
-      handler: () => new Promise<never>(() => {}),
-      priority: 100,
-    });
-    addTestHook({
-      registry,
-      pluginId: "healthy",
-      hookName: "resolve_exec_env",
-      handler: async () => ({ HEALTHY_ENV: "ok" }),
-      priority: 50,
-    });
-
-    const runner = createHookRunner(registry, { logger });
-    const resultPromise = runner.runResolveExecEnv(
-      { sessionKey: ctx.sessionKey, toolName: "exec", host: "gateway" },
-      ctx,
-    );
+    addFailingHook("hanging", () => new Promise<never>(() => {}));
+    const resultPromise = run();
 
     await vi.advanceTimersByTimeAsync(15_000);
     await expect(resultPromise).resolves.toEqual({ HEALTHY_ENV: "ok" });
