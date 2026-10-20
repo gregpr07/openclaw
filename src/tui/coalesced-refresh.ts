@@ -28,9 +28,7 @@ export function createTuiRefreshCoalescer(refresh: CoalescedRefreshWork, afterDr
       try {
         await current;
       } finally {
-        if (active === current) {
-          active = undefined;
-        }
+        active = undefined;
       }
     },
   };
