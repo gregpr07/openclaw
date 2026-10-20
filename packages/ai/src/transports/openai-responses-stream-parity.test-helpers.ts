@@ -1,5 +1,6 @@
-import type { AssistantMessage, AssistantMessageEvent, Model } from "@openclaw/llm-core";
-import { createZeroUsage } from "../usage.test-support.js";
+import type { AssistantMessage, AssistantMessageEvent } from "@openclaw/llm-core";
+import { makeProviderModel } from "../providers/provider-model.test-support.js";
+import { createAssistantOutput } from "./assistant-output.js";
 import {
   processResponsesStream as processTransportStream,
   type OpenAIResponsesStreamEvent,
@@ -37,31 +38,11 @@ export type ParityFixture = {
   canonical: ProcessResult;
 };
 
-const model = {
-  id: "gpt-5.6-luna",
+const model = makeProviderModel("openai-responses", "openai", "gpt-5.6-luna", {
   name: "GPT-5.6 Luna",
-  api: "openai-responses",
-  provider: "openai",
   baseUrl: "https://api.openai.com/v1",
-  reasoning: true,
-  input: ["text"],
-  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   contextWindow: 200_000,
-  maxTokens: 8192,
-} satisfies Model<"openai-responses">;
-
-function createOutput(): AssistantMessage {
-  return {
-    role: "assistant",
-    content: [],
-    api: model.api,
-    provider: model.provider,
-    model: model.id,
-    usage: createZeroUsage(),
-    stopReason: "stop",
-    timestamp: 0,
-  };
-}
+});
 
 async function* eventStream(
   events: readonly Record<string, unknown>[],
@@ -72,30 +53,14 @@ async function* eventStream(
 }
 
 function projectEvent(event: AssistantMessageEvent): ProjectedEvent | undefined {
-  if (
-    event.type !== "thinking_start" &&
-    event.type !== "thinking_delta" &&
-    event.type !== "thinking_end" &&
-    event.type !== "text_start" &&
-    event.type !== "text_delta" &&
-    event.type !== "text_end" &&
-    event.type !== "toolcall_start" &&
-    event.type !== "toolcall_delta" &&
-    event.type !== "toolcall_end"
-  ) {
+  if (!("contentIndex" in event)) {
     return undefined;
   }
   return {
     type: event.type,
     contentIndex: event.contentIndex,
-    ...(event.type === "thinking_delta" ||
-    event.type === "text_delta" ||
-    event.type === "toolcall_delta"
-      ? { delta: event.delta }
-      : {}),
-    ...(event.type === "thinking_end" || event.type === "text_end"
-      ? { content: event.content }
-      : {}),
+    ...("delta" in event ? { delta: event.delta } : {}),
+    ...("content" in event ? { content: event.content } : {}),
   };
 }
 
@@ -128,7 +93,7 @@ export async function runFixture(
   events: readonly Record<string, unknown>[],
   options?: Parameters<typeof processTransportStream>[4],
 ): Promise<ProcessResult> {
-  const output = createOutput();
+  const output = { ...createAssistantOutput(model), timestamp: 0 };
   const captured: AssistantMessageEvent[] = [];
   let error: string | null = null;
   try {
@@ -166,9 +131,7 @@ export function outputItem(event: "added" | "done", item: Record<string, unknown
 }
 export function message(id: string, text: string, phase?: "commentary" | "final_answer") {
   return {
-    id,
-    type: "message",
-    role: "assistant",
+    ...startedMessage(id),
     status: "completed",
     ...(phase ? { phase } : {}),
     content: [{ type: "output_text", text, annotations: [] }],

@@ -21,22 +21,47 @@ const answer: ResponseOutputMessage = {
   content: [{ type: "output_text", text: "answer", annotations: [] }],
 };
 const update = (effort: string) => ({ type: "configuration_update", reasoning: { effort } });
-const initial = (): ResponsesContinuationState => ({
+const initial = (
+  extra: Record<string, unknown> = {},
+  mode?: "pro",
+): ResponsesContinuationState => ({
   lastRequest: {
     model: "gpt-6-astra",
-    reasoning: { effort: "low", summary: "auto" },
+    reasoning: { effort: "low", summary: "auto", mode },
     input: [user("first")],
     store: true,
+    ...extra,
   },
   lastResponseId: "resp_1",
   lastResponseItems: [answer],
 });
-const next = (effort = "high") =>
+const next = (effort = "high", extra: Record<string, unknown> = {}, mode?: "pro") =>
   ({
     ...initial().lastRequest,
-    reasoning: { effort, summary: "auto" },
+    reasoning: { effort, summary: "auto", mode },
     input: [user("first"), answer, user("second")],
+    ...extra,
   }) satisfies ResponsesContinuationRequest;
+function expectContinuation(
+  result: ReturnType<typeof resolveResponsesContinuationRequest>,
+  id: string,
+  effort: string,
+  turn: string,
+) {
+  expect(result.request).toMatchObject({
+    previous_response_id: id,
+    reasoning: { effort: "low" },
+    input: [update(effort), user(turn)],
+  });
+  assert(result.fullRequest);
+  return result.fullRequest;
+}
+function expectUnchanged(request: ResponsesContinuationRequest, previous = initial()) {
+  const result = resolveResponsesContinuationRequest(previous, request);
+  expect(result.request).toBe(request);
+  expect(result.fullRequest).toBeUndefined();
+  return result.request;
+}
 
 afterEach(() => {
   cleanupSessionResources();
@@ -51,44 +76,22 @@ describe("cache-preserving Responses reasoning changes", () => {
       const second = next(effort);
       const before = structuredClone({ first, second });
       const high = resolveResponsesContinuationRequest(first, second);
-      expect(high.request).toMatchObject({
-        previous_response_id: "resp_1",
-        reasoning: { effort: "low" },
-        input: [update(effort), user("second")],
-      });
-      assert(high.fullRequest);
-      expect(high.fullRequest.input).toEqual([
-        user("first"),
-        answer,
-        update(effort),
-        user("second"),
-      ]);
+      const highFull = expectContinuation(high, "resp_1", effort, "second");
+      const prefix = [user("first"), answer, update(effort), user("second")];
+      expect(highFull.input).toEqual(prefix);
       expect({ first, second }).toEqual(before);
       const third = {
         ...next("medium"),
         input: [...second.input, answer, user("third")],
       };
       const medium = resolveResponsesContinuationRequest(
-        { ...first, lastRequest: high.fullRequest, lastResponseId: "resp_2" },
+        { ...first, lastRequest: highFull, lastResponseId: "resp_2" },
         third,
       );
-      expect(medium.request).toMatchObject({
-        previous_response_id: "resp_2",
-        reasoning: { effort: "low" },
-        input: [update("medium"), user("third")],
-      });
-      assert(medium.fullRequest);
-      expect(medium.fullRequest.input).toEqual([
-        user("first"),
-        answer,
-        update(effort),
-        user("second"),
-        answer,
-        update("medium"),
-        user("third"),
-      ]);
+      const mediumFull = expectContinuation(medium, "resp_2", "medium", "third");
+      expect(mediumFull.input).toEqual([...prefix, answer, update("medium"), user("third")]);
       const unchanged = resolveResponsesContinuationRequest(
-        { ...first, lastRequest: medium.fullRequest, lastResponseId: "resp_3" },
+        { ...first, lastRequest: mediumFull, lastResponseId: "resp_3" },
         { ...third, input: [...third.input, answer, user("fourth")] },
       );
       expect(unchanged.request.input).toEqual([user("fourth")]);
@@ -110,16 +113,7 @@ describe("cache-preserving Responses reasoning changes", () => {
       extra: { context_management: [{ type: "compaction", compact_threshold: 1000 }] },
     },
   ])("leaves $name on request-level effort", ({ extra, mode }) => {
-    const previous = initial();
-    previous.lastRequest = {
-      ...previous.lastRequest,
-      ...extra,
-      reasoning: { effort: "low", summary: "auto", mode },
-    };
-    const request = { ...next(), ...extra, reasoning: { effort: "high", summary: "auto", mode } };
-    const result = resolveResponsesContinuationRequest(previous, request);
-    expect(result.request).toBe(request);
-    expect(result.fullRequest).toBeUndefined();
+    expectUnchanged(next("high", extra, mode), initial(extra, mode));
   });
 
   it("drops provisional updates when the original history changed or no new user exists", () => {
@@ -128,10 +122,7 @@ describe("cache-preserving Responses reasoning changes", () => {
       [user("first"), answer],
     ]) {
       const request = { ...next(), input };
-      const result = resolveResponsesContinuationRequest(initial(), request);
-      expect(result.request).toBe(request);
-      expect(result.fullRequest).toBeUndefined();
-      expect(result.request.reasoning).toMatchObject({ effort: "high" });
+      expect(expectUnchanged(request).reasoning).toMatchObject({ effort: "high" });
     }
   });
 
@@ -151,9 +142,7 @@ describe("cache-preserving Responses reasoning changes", () => {
 
   it("replays unstored HTTP input and resets to the chosen effort after cache expiry", () => {
     vi.useFakeTimers();
-    // Must track HTTP_CONTINUATION_IDLE_TTL_MS in openai-responses-continuation.ts
-    // (a private module constant, not exported) -- this advance needs to
-    // exceed the real idle TTL for the expiry this test covers to actually fire.
+    // Exceed private HTTP_CONTINUATION_IDLE_TTL_MS.
     const idleTtlMs = 90 * 60 * 1000;
     const claim = (request: ResponsesContinuationRequest) =>
       claimOpenAIResponsesHttpContinuation({

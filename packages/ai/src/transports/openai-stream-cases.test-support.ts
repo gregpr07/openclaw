@@ -1,6 +1,6 @@
 import type { AssistantMessageEventStreamLike } from "@openclaw/llm-core";
 import { expect } from "vitest";
-import type { AssistantMessage, AssistantMessageEvent, TextContent } from "../types.js";
+import type { AssistantMessage, AssistantMessageEvent } from "../types.js";
 
 export async function collectEventTypes(
   stream: AssistantMessageEventStreamLike,
@@ -66,61 +66,40 @@ export type TextOrDelta = AssistantMessageEvent & {
   delta?: string;
 };
 
-/**
- * Mirrors the agent-core consumption contract
- * (agent-stream-response.ts resolveAssistantMessageUpdate): boundary events
- * with a partial replace the consumer state wholesale; text deltas append at
- * their content index. Deliberately guard-free — a correct stream never needs
- * the downstream replay guard. Returns the text observed before every append
- * so the caller can checkpoint intermediate states, not just the healed end.
- */
-function consumeLikeAgentCore(events: readonly AssistantMessageEvent[]): {
-  text: string;
-  prevBeforeAppend: string[];
-} {
-  let state: AssistantMessage | null = null;
-  const prevBeforeAppend: string[] = [];
-  for (const event of events) {
-    const typed = event as TextOrDelta;
-    if (typed.partial) {
-      state = typed.partial;
-      continue;
-    }
-    if (event.type === "text_delta") {
-      const content = [...(state?.content ?? [])];
-      const idx = typed.contentIndex ?? 0;
-      const current = content[idx] as TextContent | undefined;
-      const prev = current?.type === "text" ? current.text : "";
-      prevBeforeAppend.push(prev);
-      content[idx] =
-        current?.type === "text"
-          ? { ...current, text: prev + (typed.delta ?? "") }
-          : { type: "text", text: typed.delta ?? "" };
-      state = { ...(state ?? { content: [] }), content } as AssistantMessage;
-    }
-  }
-  const text = (state?.content ?? [])
-    .filter((block): block is Extract<typeof block, { type: "text" }> => block.type === "text")
-    .map((block) => block.text)
-    .join("");
-  return { text, prevBeforeAppend };
-}
-
+// Mirror agent-core's replace/append contract without its replay guard.
+// Check every prefix: a final snapshot can heal an aliased/doubled delta.
 export function expectReplaceAppendText(
   events: readonly AssistantMessageEvent[],
   wireText: string,
 ) {
-  const consumer = consumeLikeAgentCore(events);
-  // Intermediate prefixes catch aliased deltas even when the final snapshot heals them.
-  const deltas = events
-    .filter((event): event is typeof event & { delta: string } => event.type === "text_delta")
-    .map((event) => event.delta);
-  expect(consumer.prevBeforeAppend).toHaveLength(deltas.length);
+  let content: AssistantMessage["content"] = [];
   let accumulated = "";
-  for (const [index, prev] of consumer.prevBeforeAppend.entries()) {
-    expect(prev).toBe(accumulated);
-    accumulated += deltas[index];
+  for (const event of events) {
+    if (event.type === "text_delta") {
+      expect(event.partial).toBeUndefined();
+    }
+    if ("partial" in event && event.partial) {
+      content = event.partial.content;
+      continue;
+    }
+    if (event.type === "text_delta") {
+      content = [...content];
+      const idx = event.contentIndex ?? 0;
+      const current = content[idx];
+      const prev = current?.type === "text" ? current.text : "";
+      expect(prev).toBe(accumulated);
+      accumulated += event.delta;
+      content[idx] =
+        current?.type === "text"
+          ? { ...current, text: prev + event.delta }
+          : { type: "text", text: event.delta };
+    }
   }
   expect(accumulated).toBe(wireText);
-  expect(consumer.text).toBe(wireText);
+  expect(
+    content
+      .filter((block): block is Extract<typeof block, { type: "text" }> => block.type === "text")
+      .map((block) => block.text)
+      .join(""),
+  ).toBe(wireText);
 }

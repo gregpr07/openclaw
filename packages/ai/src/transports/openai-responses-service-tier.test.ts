@@ -1,23 +1,18 @@
-import type { Model } from "@openclaw/llm-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import OpenAI from "openai";
 import type { ResponseError, ResponseErrorEvent } from "openai/resources/responses/responses.js";
 import { describe, expect, it } from "vitest";
+import { makeProviderModel } from "../providers/provider-model.test-support.js";
 import { createResponsesStreamWithRecovery } from "./openai-responses-replay-internal.js";
 import { nextResponsesServiceTier } from "./openai-responses-service-tier.js";
 
-const model: Model<"openai-responses"> = {
-  id: "fixture-model",
+const model = makeProviderModel("openai-responses", "openai", "fixture-model", {
   name: "Fixture",
-  api: "openai-responses",
-  provider: "openai",
   baseUrl: "https://api.openai.com/v1",
   reasoning: false,
-  input: ["text"],
-  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   contextWindow: 10000,
   maxTokens: 100,
-};
+});
 const rejection = {
   type: "invalid_request_error",
   code: null,
@@ -36,7 +31,7 @@ const complete = {
 };
 async function fixture(
   respond: (attempt: number) => Response,
-  opts: { signal?: AbortSignal; native?: boolean; hookError?: Error; onRejected?: () => void } = {},
+  opts: { signal?: AbortSignal; native?: boolean; onRejected?: () => void } = {},
 ) {
   const bodies: Record<string, unknown>[] = [];
   const rejected: string[] = [];
@@ -54,7 +49,6 @@ async function fixture(
       return respond(bodies.length);
     },
   });
-  const hookError = opts.hookError;
   const stream = await createResponsesStreamWithRecovery({
     client,
     model: opts.native === false ? { ...model, baseUrl: "https://proxy.example/v1" } : model,
@@ -70,15 +64,6 @@ async function fixture(
       rejected.push(tier);
       opts.onRejected?.();
     },
-    ...(hookError
-      ? {
-          wrapStream: () => ({
-            [Symbol.asyncIterator]() {
-              return { next: () => Promise.reject(hookError) };
-            },
-          }),
-        }
-      : {}),
   });
   const events: unknown[] = [];
   let error: unknown;
@@ -90,6 +75,16 @@ async function fixture(
     error = caught;
   }
   return { bodies, rejected, events, error };
+}
+const failedResponse = () =>
+  sse([{ type: "response.failed", response: { error: rejection, output: [] } }]);
+function expectTiers(
+  result: Awaited<ReturnType<typeof fixture>>,
+  tiers: string[],
+  rejected: string[],
+) {
+  expect(result.bodies.map((body) => body.service_tier)).toEqual(tiers);
+  expect(result.rejected).toEqual(rejected);
 }
 
 describe("Responses service-tier recovery", () => {
@@ -105,12 +100,7 @@ describe("Responses service-tier recovery", () => {
           : sse([complete]),
     );
     expect(result.error).toBeUndefined();
-    expect(result.bodies.map((body) => body.service_tier)).toEqual([
-      "ultrafast",
-      "priority",
-      "default",
-    ]);
-    expect(result.rejected).toEqual(["ultrafast", "priority"]);
+    expectTiers(result, ["ultrafast", "priority", "default"], ["ultrafast", "priority"]);
     for (const body of result.bodies) {
       expect(body.input).toEqual([{ role: "user", content: "Hello" }]);
     }
@@ -139,46 +129,33 @@ describe("Responses service-tier recovery", () => {
       ]),
     );
     expect(result.error).toBeUndefined();
-    expect(result.bodies.map((body) => body.service_tier)).toEqual(["ultrafast", "priority"]);
-    expect(result.rejected).toEqual(["ultrafast"]);
+    expectTiers(result, ["ultrafast", "priority"], ["ultrafast"]);
   });
 
   it("recovers a native SDK error event and stops after Standard", async () => {
     const result = await fixture(() => sse([{ type: "error", error: rejection }]));
     expect(result.error).toBeDefined();
-    expect(result.bodies.map((body) => body.service_tier)).toEqual([
-      "ultrafast",
-      "priority",
-      "default",
-    ]);
-    expect(result.rejected).toEqual(["ultrafast", "priority"]);
+    expectTiers(result, ["ultrafast", "priority", "default"], ["ultrafast", "priority"]);
   });
 
   it("does not send a retry after cancellation during rejection observation", async () => {
     const controller = new AbortController();
-    const result = await fixture(
-      () => sse([{ type: "response.failed", response: { error: rejection, output: [] } }]),
-      {
-        signal: controller.signal,
-        onRejected: () => controller.abort(),
-      },
-    );
+    const result = await fixture(failedResponse, {
+      signal: controller.signal,
+      onRejected: () => controller.abort(),
+    });
     expect(result.bodies).toHaveLength(1);
     expect(result.error).toBeDefined();
   });
 
   it("leaves custom endpoint policy unchanged", async () => {
-    const result = await fixture(
-      () => sse([{ type: "response.failed", response: { error: rejection, output: [] } }]),
-      { native: false },
-    );
+    const result = await fixture(failedResponse, { native: false });
     expect(result.bodies).toHaveLength(1);
   });
 
-  it.each([{ status: 503, error: rejection }])(
-    "does not replay unrelated failures: %j",
-    (error) => {
-      expect(nextResponsesServiceTier("ultrafast", error)).toBeUndefined();
-    },
-  );
+  it("does not replay unrelated failures", () => {
+    expect(
+      nextResponsesServiceTier("ultrafast", { status: 503, error: rejection }),
+    ).toBeUndefined();
+  });
 });

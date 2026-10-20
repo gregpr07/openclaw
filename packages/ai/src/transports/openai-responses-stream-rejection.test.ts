@@ -1,26 +1,23 @@
-import type { AssistantMessage, Context, Model } from "@openclaw/llm-core";
+import type { Context } from "@openclaw/llm-core";
 import { Type } from "typebox";
 import { expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { runAgentLoop } from "../../../agent-core/src/agent-loop.js";
 import type { AgentTool } from "../../../agent-core/src/types.js";
-import { createZeroUsage } from "../usage.test-support.js";
+import { makeProviderModel } from "../providers/provider-model.test-support.js";
 import { createAssistantMessageEventStream } from "../utils/event-stream.js";
+import { createAssistantOutput } from "./assistant-output.js";
 import { processResponsesStream } from "./openai-responses-stream-internal.js";
+import { outputItem } from "./openai-stream-cases.test-support.js";
 import { failTransportStream } from "./transport-stream-shared.js";
 
-const model: Model = {
-  id: "test-responses",
+const model = makeProviderModel("openai-responses", "openai", "test-responses", {
   name: "Test Responses",
-  api: "openai-responses",
-  provider: "openai",
   baseUrl: "https://example.test",
   reasoning: false,
-  input: ["text"],
-  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   contextWindow: 1000,
   maxTokens: 1000,
-};
+});
 
 it.each(["incomplete", "in_progress", "malformed"])(
   "settles an admitted async tool without starting later tools after %s rejection",
@@ -36,16 +33,7 @@ it.each(["incomplete", "in_progress", "malformed"])(
       return { content: [], details: {} };
     });
     const response = createAssistantMessageEventStream();
-    const output: AssistantMessage = {
-      role: "assistant",
-      content: [],
-      api: model.api,
-      provider: model.provider,
-      model: model.id,
-      usage: createZeroUsage(),
-      stopReason: "stop",
-      timestamp: 0,
-    };
+    const output = { ...createAssistantOutput(model), timestamp: 0 };
     const tool = (index: number) => ({
       type: "function_call",
       id: `fc_${index}`,
@@ -56,18 +44,18 @@ it.each(["incomplete", "in_progress", "malformed"])(
       async: true,
     });
     const wire = (async function* () {
-      yield { type: "response.output_item.done", output_index: 0, item: tool(0) };
+      yield outputItem("done", tool(0));
       await started.promise;
-      yield {
-        type: "response.output_item.done",
-        output_index: 1,
-        item: {
+      yield outputItem(
+        "done",
+        {
           ...tool(1),
           status: rejection === "malformed" ? "completed" : rejection,
           arguments: '{"cut":',
         },
-      };
-      yield { type: "response.output_item.done", output_index: 2, item: tool(2) };
+        1,
+      );
+      yield outputItem("done", tool(2), 2);
       yield {
         type: "response.incomplete",
         response: {
