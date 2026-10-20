@@ -27,26 +27,25 @@ export const TSX_SHIM_WRAPPERS = [
 
 export function writeEsmPluginFixture(fixtureRoot: string) {
   const pluginRoot = path.join(fixtureRoot, "compiled-plugin");
-  const dependencyRoot = path.join(pluginRoot, "node_modules", "import-only");
-  mkdirSync(dependencyRoot, { recursive: true });
-  writeFileSync(path.join(pluginRoot, "package.json"), JSON.stringify({ type: "module" }));
-  writeFileSync(
-    path.join(dependencyRoot, "package.json"),
-    JSON.stringify({ type: "module", exports: { import: "./index.js" } }),
-  );
-  writeFileSync(path.join(dependencyRoot, "index.js"), 'export const value = "import-only";');
-  const pluginPath = path.join(pluginRoot, "index.js");
-  writeFileSync(
-    pluginPath,
-    `export { value } from "import-only";
+  const files = {
+    "package.json": JSON.stringify({ type: "module" }),
+    "node_modules/import-only/package.json": JSON.stringify({
+      type: "module",
+      exports: { import: "./index.js" },
+    }),
+    "node_modules/import-only/index.js": 'export const value = "import-only";',
+    "loader.cjs": 'module.exports = { load: () => require("./index.js") };',
+    "index.js": `export { value } from "import-only";
 globalThis.pluginEvaluations = (globalThis.pluginEvaluations ?? 0) + 1;
 export const instance = {};
 `,
-  );
-  writeFileSync(
-    path.join(pluginRoot, "loader.cjs"),
-    'module.exports = { load: () => require("./index.js") };',
-  );
+  };
+  for (const [name, content] of Object.entries(files)) {
+    const file = path.join(pluginRoot, name);
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, content);
+  }
+  const pluginPath = path.join(pluginRoot, "index.js");
   return `
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -93,9 +92,7 @@ export async function withShimFixture<T>(
     ) => Promise<NodeResult>;
   }) => T,
 ) {
-  // spawnOwnedVitestProcess gives POSIX Vitest a disposable temp namespace.
-  // Own a sibling so unverified writers survive its cleanup, outside repo module resolution.
-  // Windows has no enclosing namespace and keeps the ordinary temporary root.
+  // Own a sibling of Vitest's POSIX temp namespace so unjoined writers survive its cleanup.
   const fixtureParent = process.platform === "win32" ? tmpdir() : path.dirname(tmpdir());
   const fixtureRoot = realpathSync(mkdtempSync(path.join(fixtureParent, "openclaw-tsx-cli-shim-")));
   const checkoutRoot = path.join(fixtureRoot, "checkout");
@@ -107,10 +104,8 @@ export async function withShimFixture<T>(
   const commands: Array<Promise<NodeResult>> = [];
   let outcome: { value: Awaited<T> } | { error: unknown };
   try {
-    mkdirSync(path.dirname(wrapperPath), { recursive: true });
-    mkdirSync(path.join(checkoutRoot, "scripts", "lib"), { recursive: true });
-    copyFileSync(wrapper, wrapperPath);
     for (const source of [
+      wrapper,
       "scripts/tsx.mjs",
       "scripts/windows-cmd-helpers.mjs",
       "scripts/lib/tsx-cli-shim.mjs",
@@ -122,7 +117,9 @@ export async function withShimFixture<T>(
       "scripts/lib/vitest-worker-descriptor.mts",
       "scripts/lib/windows-taskkill.mjs",
     ]) {
-      copyFileSync(source, path.join(checkoutRoot, source));
+      const target = path.join(checkoutRoot, source);
+      mkdirSync(path.dirname(target), { recursive: true });
+      copyFileSync(source, target);
     }
     writeFileSync(path.join(checkoutRoot, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
     outcome = {

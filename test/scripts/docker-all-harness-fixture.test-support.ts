@@ -10,6 +10,7 @@ const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 export const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 const preparedArchives = new Map<string, Buffer>();
 let fixturePnpm: string | undefined;
+const sha256File = (file: string) => createHash("sha256").update(readFileSync(file)).digest("hex");
 
 function writeJson(file: string, value: unknown) {
   mkdirSync(path.dirname(file), { recursive: true });
@@ -47,9 +48,7 @@ export function setupFixture(
   const selectedHarness =
     mode === "override" ? path.join(root, "operator's $& pnpm harness") : harness;
   copyDockerSchedulerHarness(harness);
-  if (selectedHarness !== harness) {
-    mkdirSync(selectedHarness, { recursive: true });
-  }
+  mkdirSync(selectedHarness, { recursive: true });
   const marker = path.join(root, "calls.jsonl");
   const poison = path.join(root, "target-ran");
   const toolchainMarker = path.join(root, "toolchains.jsonl");
@@ -57,7 +56,7 @@ export function setupFixture(
   const packageDir = path.join(root, "packed", "package");
   const tarball = path.join(root, "frozen candidate.tgz");
   writePackageArchive(packageDir, tarball, { name: "openclaw", version });
-  const sha256 = createHash("sha256").update(readFileSync(tarball)).digest("hex");
+  const sha256 = sha256File(tarball);
   const trustedScript = `
 const fs = require('node:fs');
 fs.appendFileSync(${JSON.stringify(marker)}, JSON.stringify({
@@ -117,17 +116,12 @@ fs.appendFileSync(${JSON.stringify(marker)}, JSON.stringify({
     // Keep pnpm in this miniature workspace, away from the host repo's toolchain pin.
     writeFileSync(path.join(dir, "pnpm-workspace.yaml"), "packages: []\n");
   }
-  execFileSync("git", ["init", "-q"], { cwd: target });
-  execFileSync("git", ["add", "package.json"], { cwd: target });
-  execFileSync(
-    "git",
-    ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "candidate"],
-    { cwd: target },
-  );
-  const selectedSha = execFileSync("git", ["rev-parse", "HEAD"], {
-    cwd: target,
-    encoding: "utf8",
-  }).trim();
+  const git = (...args: string[]) =>
+    execFileSync("git", args, { cwd: target, encoding: "utf8" }).trim();
+  git("init", "-q");
+  git("add", "package.json");
+  git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "candidate");
+  const selectedSha = git("rev-parse", "HEAD");
   const registry = path.join(root, "frozen registry");
   mkdirSync(registry);
   const pluginTarball = path.join(registry, "codex.tgz");
@@ -143,18 +137,16 @@ fs.appendFileSync(${JSON.stringify(marker)}, JSON.stringify({
         name: "@openclaw/codex",
         version,
         tarball: "codex.tgz",
-        sha256: createHash("sha256").update(readFileSync(pluginTarball)).digest("hex"),
+        sha256: sha256File(pluginTarball),
       },
     ],
   });
-  const registrySha256 = createHash("sha256").update(readFileSync(registryManifest)).digest("hex");
+  const registrySha256 = sha256File(registryManifest);
   const pnpm = (fixturePnpm ??= execFileSync("bash", ["-c", "command -v pnpm"], {
     encoding: "utf8",
   }).trim());
   const pinnedPnpm = path.join(root, "pinned '$& pnpm wrapper");
-  // Corepack Engine.executePackageManagerRequest resolves findProjectSpec(cwd)
-  // before runVersion forwards argv. pnpm then checks its effective project's pin.
-  // Model only that offline boundary; package scripts still execute as real children.
+  // Model Corepack selecting the cwd pin before --dir; execute package scripts as real children.
   writeFileSync(
     pinnedPnpm,
     corepack

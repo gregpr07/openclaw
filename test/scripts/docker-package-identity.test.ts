@@ -5,19 +5,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-const ROOT_DIR = process.cwd();
-const RUNNER_PATH = join(ROOT_DIR, "scripts/e2e/docker-package-install.sh");
+const RUNNER_PATH = join(process.cwd(), "scripts/e2e/docker-package-install.sh");
 
+type Manager = "bun" | "npm" | "pnpm";
 type PackageIdentityOptions = {
   artifactVersion: string;
   nativeContract?: "required" | "not-applicable";
-  bunCli?: string;
-  bunManifest?: string;
-  npmCli?: string;
-  npmManifest?: string;
-  pnpmCli?: string;
-  pnpmManifest?: string;
-};
+} & Partial<Record<`${Manager}${"Cli" | "Manifest"}`, string>>;
 
 function runPackageIdentity(options: PackageIdentityOptions) {
   const root = tempDirs.make("openclaw-docker-package-identity-");
@@ -148,31 +142,26 @@ describe.skipIf(process.platform === "win32")("Docker package identity report", 
       const { identity, result } = runPackageIdentity({ artifactVersion: version, nativeContract });
 
       expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-      expect(identity).toMatchObject({
-        package: { version },
-        containers: expect.arrayContaining([
-          expect.objectContaining({
-            role: "musl",
-            details: expect.objectContaining({
-              fsSafeNative: nativeContract === "required" ? "passed" : "not-applicable",
-            }),
-          }),
-          ...[
-            ["npm", "/usr/local/lib/node_modules/openclaw"],
-            ["pnpm", "/fake/pnpm/openclaw"],
-            ["bun", "/fake/bun/openclaw"],
-          ].map(([role, installedPackageRoot]) =>
-            expect.objectContaining({
-              role,
-              details: expect.objectContaining({
-                installedPackageRoot,
-                installedPackageVersion: version,
-                parsedOpenclawVersion: version,
-              }),
-            }),
-          ),
-        ]),
+      expect(identity).toMatchObject({ package: { version } });
+      const container = (role: string, details: Record<string, string>) => {
+        expect(identity.containers).toContainEqual(
+          expect.objectContaining({ role, details: expect.objectContaining(details) }),
+        );
+      };
+      container("musl", {
+        fsSafeNative: nativeContract === "required" ? "passed" : "not-applicable",
       });
+      for (const [role, installedPackageRoot] of [
+        ["npm", "/usr/local/lib/node_modules/openclaw"],
+        ["pnpm", "/fake/pnpm/openclaw"],
+        ["bun", "/fake/bun/openclaw"],
+      ] as const) {
+        container(role, {
+          installedPackageRoot,
+          installedPackageVersion: version,
+          parsedOpenclawVersion: version,
+        });
+      }
     },
   );
 });

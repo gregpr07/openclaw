@@ -2,7 +2,7 @@ import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 
 const { spawnMock, spawnSyncMock } = vi.hoisted(() => ({
   spawnMock: vi.fn(),
@@ -15,16 +15,6 @@ vi.mock("node:child_process", async (importOriginal) => ({
   spawnSync: spawnSyncMock,
 }));
 
-function createChild(pid = 42) {
-  const child = new EventEmitter() as ChildProcess;
-  Object.defineProperty(child, "pid", { value: pid });
-  child.stdout = Object.assign(new EventEmitter(), { destroy: vi.fn() }) as never;
-  child.stderr = Object.assign(new EventEmitter(), { destroy: vi.fn() }) as never;
-  child.kill = vi.fn(() => true) as ChildProcess["kill"];
-  spawnMock.mockReturnValue(child);
-  return child;
-}
-
 function closeChild(child: ChildProcess) {
   Object.defineProperty(child, "exitCode", { value: 0, configurable: true });
   child.emit("exit", 0, null);
@@ -36,14 +26,14 @@ let restore: () => void;
 let scheduler: typeof import("../../scripts/test-docker-all.mts");
 let child: ChildProcess;
 let pending: Promise<unknown> | undefined;
-const diagnostic = vi.fn<typeof console.error>();
+let diagnostic: MockInstance<typeof console.error>;
 
 beforeEach(async () => {
   vi.resetModules();
   pending = undefined;
   handlers.clear();
   const originalOn = process.on.bind(process);
-  const onSpy = vi.spyOn(process, "on").mockImplementation((event, listener) => {
+  vi.spyOn(process, "on").mockImplementation((event, listener) => {
     if (event === "SIGINT" || event === "SIGTERM") {
       handlers.set(event, listener as () => void);
       return process;
@@ -52,20 +42,22 @@ beforeEach(async () => {
   });
   const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
   const previousExitCode = process.exitCode;
-  diagnostic.mockReset();
-  const errorSpy = vi.spyOn(console, "error").mockImplementation(diagnostic);
+  diagnostic = vi.spyOn(console, "error").mockImplementation(() => {});
   restore = () => {
     Object.defineProperty(process, "platform", platform);
     process.exitCode = previousExitCode;
-    onSpy.mockRestore();
-    errorSpy.mockRestore();
+    vi.restoreAllMocks();
   };
   scheduler = await import("../../scripts/test-docker-all.mts");
   Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
   process.exitCode = undefined;
-  spawnMock.mockReset();
   spawnSyncMock.mockReset();
-  child = createChild();
+  child = new EventEmitter() as ChildProcess;
+  Object.defineProperty(child, "pid", { value: 42 });
+  child.stdout = Object.assign(new EventEmitter(), { destroy: vi.fn() }) as never;
+  child.stderr = Object.assign(new EventEmitter(), { destroy: vi.fn() }) as never;
+  child.kill = vi.fn(() => true) as ChildProcess["kill"];
+  spawnMock.mockReset().mockReturnValue(child);
   for (const key of ["exitCode", "signalCode"]) {
     Object.defineProperty(child, key, { value: null, configurable: true });
   }
@@ -146,8 +138,7 @@ describe("Docker scheduler Windows child shutdown", () => {
         const signalCount = childKill.mock.calls.length;
         handlers.get("SIGTERM")!();
         await vi.advanceTimersByTimeAsync(0);
-        expect(childKill).toHaveBeenCalledTimes(signalCount + 1);
-        expect(childKill).toHaveBeenLastCalledWith("SIGKILL");
+        expect(childKill.mock.calls.slice(signalCount)).toEqual([["SIGKILL"]]);
         expect(diagnostic).toHaveBeenCalledTimes(1);
         const [reported] = diagnostic.mock.calls[0]!;
         expect(reported).toBeInstanceOf(AggregateError);
