@@ -1,20 +1,14 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { resolvePinnedDaemonRuntimePath } from "./runtime-paths.js";
 import { buildNodeServiceEnvironment, buildServiceEnvironment } from "./service-env.js";
 
-const roots: string[] = [];
-afterEach(() => {
-  for (const root of roots.splice(0)) {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
+const roots = useAutoCleanupTempDirTracker(afterEach);
 
 function runtimeFixture(script: string, name = "node"): string {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "runtime-pin-")));
-  roots.push(root);
+  const root = fs.realpathSync(roots.make("runtime-pin-"));
   const file = path.join(root, name);
   fs.writeFileSync(file, "#!" + process.execPath + "\n" + script, { mode: 0o700 });
   return file;
@@ -32,6 +26,8 @@ function runtimeMetadata(nodeVersion = "26.8.1", sqliteVersion = "3.53.4") {
 function runtimeOutput(metadata: unknown) {
   return `process.stdout.write(${JSON.stringify(JSON.stringify(metadata))});`;
 }
+const probe = (file: string, env: NodeJS.ProcessEnv = {}) =>
+  resolvePinnedDaemonRuntimePath(file, "node", env);
 
 describe.skipIf(process.platform === "win32")("runtime pin executable boundary", () => {
   it("uses a bounded sanitized probe without inheriting secrets or Node preloads", async () => {
@@ -40,7 +36,7 @@ describe.skipIf(process.platform === "win32")("runtime pin executable boundary",
         runtimeOutput(runtimeMetadata()),
     );
     await expect(
-      resolvePinnedDaemonRuntimePath(file, "node", {
+      probe(file, {
         FIXTURE_SECRET: "synthetic-not-forwarded",
         NODE_OPTIONS: "--require=/nonexistent/fixture.js",
       }),
@@ -54,31 +50,25 @@ describe.skipIf(process.platform === "win32")("runtime pin executable boundary",
     ["oversized output", 'process.stdout.write("x".repeat(2 * 1024 * 1024));', /check failed/],
   ] as const)("refuses %s without selecting a replacement", async (_name, script, error) => {
     const file = runtimeFixture(script);
-    await expect(resolvePinnedDaemonRuntimePath(file, "node", {})).rejects.toThrow(error);
+    await expect(probe(file)).rejects.toThrow(error);
   });
 
   it("terminates a hung runtime probe", async () => {
     const file = runtimeFixture("setInterval(() => {}, 1000);");
-    await expect(resolvePinnedDaemonRuntimePath(file, "node", {})).rejects.toThrow(/check failed/);
+    await expect(probe(file)).rejects.toThrow(/check failed/);
   }, 15_000);
 
   it("rejects a mismatched runtime family before executing it", async () => {
     const file = runtimeFixture('throw new Error("must not execute");', "bun");
-    await expect(resolvePinnedDaemonRuntimePath(file, "node", {})).rejects.toThrow(
-      /must name a node/,
-    );
+    await expect(probe(file)).rejects.toThrow(/must name a node/);
   });
 
   it("rejects a removed pin and a directory", async () => {
     const file = runtimeFixture("");
     fs.unlinkSync(file);
-    await expect(resolvePinnedDaemonRuntimePath(file, "node", {})).rejects.toThrow(
-      /not executable/,
-    );
+    await expect(probe(file)).rejects.toThrow(/not executable/);
     fs.mkdirSync(file);
-    await expect(resolvePinnedDaemonRuntimePath(file, "node", {})).rejects.toThrow(
-      /not executable/,
-    );
+    await expect(probe(file)).rejects.toThrow(/not executable/);
   });
 });
 

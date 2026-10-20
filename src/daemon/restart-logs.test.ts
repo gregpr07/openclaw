@@ -1,8 +1,7 @@
-// Daemon restart log tests cover restart log formatting and filtering.
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
   appendGatewayLifecycleAuditLog,
   renderCmdRestartLogSetup,
@@ -12,21 +11,19 @@ import {
 } from "./restart-logs.js";
 import { buildPlatformRuntimeLogHints } from "./runtime-hints.js";
 
-const tempDirs: string[] = [];
-
-afterEach(() => {
-  for (const dir of tempDirs.splice(0)) {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const auditEntry = {
+  action: "restart",
+  source: "cli",
+  mode: "deferred",
+  interactive: false,
+} as const;
+const readLog = (env: NodeJS.ProcessEnv) =>
+  fs.readFileSync(resolveGatewayRestartLogPath(env), "utf8");
 
 describe("restart log conventions", () => {
   it("resolves profile-aware gateway logs and restart attempts together", () => {
-    const env = {
-      HOME: "/Users/test",
-      OPENCLAW_PROFILE: "work",
-    };
-
+    const env = { HOME: "/Users/test", OPENCLAW_PROFILE: "work" };
     expect(resolveGatewayLogPaths(env)).toEqual({
       logDir: "/Users/test/.openclaw-work/logs",
       stdoutPath: "/Users/test/.openclaw-work/logs/gateway.log",
@@ -38,9 +35,7 @@ describe("restart log conventions", () => {
   });
 
   it("renders best-effort POSIX log setup with escaped paths", () => {
-    const setup = renderPosixRestartLogSetup({
-      HOME: "/Users/test's",
-    });
+    const setup = renderPosixRestartLogSetup({ HOME: "/Users/test's" });
 
     expect(setup).toContain(
       "if mkdir -p '/Users/test'\\''s/.openclaw/logs' 2>/dev/null && : >>'/Users/test'\\''s/.openclaw/logs/gateway-restart.log' 2>/dev/null; then",
@@ -49,9 +44,7 @@ describe("restart log conventions", () => {
   });
 
   it("renders CMD log setup with quoted paths", () => {
-    const setup = renderCmdRestartLogSetup({
-      USERPROFILE: "C:\\Users\\Test User",
-    });
+    const setup = renderCmdRestartLogSetup({ USERPROFILE: "C:\\Users\\Test User" });
 
     expect(setup.quotedLogPath).toBe('"C:\\Users\\Test User/.openclaw/logs/gateway-restart.log"');
     expect(setup.lines).toContain(
@@ -60,21 +53,9 @@ describe("restart log conventions", () => {
   });
 
   it("appends a profile-aware lifecycle audit line with stable key-value fields", () => {
-    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-lifecycle-audit-"));
-    tempDirs.push(stateDir);
-
-    appendGatewayLifecycleAuditLog(
-      { OPENCLAW_STATE_DIR: stateDir },
-      {
-        action: "restart",
-        source: "safe-rpc",
-        mode: "deferred",
-        pid: 4242,
-        interactive: false,
-      },
-    );
-
-    const line = fs.readFileSync(path.join(stateDir, "logs", "gateway-restart.log"), "utf8");
+    const env = { OPENCLAW_STATE_DIR: tempDirs.make("openclaw-lifecycle-audit-") };
+    appendGatewayLifecycleAuditLog(env, { ...auditEntry, source: "safe-rpc", pid: 4242 });
+    const line = readLog(env);
     expect(line).toMatch(/^\[[^\]]+\] openclaw gateway lifecycle /);
     expect(line).toContain("source=safe-rpc");
     expect(line).toContain("action=restart");
@@ -84,15 +65,9 @@ describe("restart log conventions", () => {
   });
 
   it("advertises the actual restart log when a POSIX state path contains a backslash", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-restart-path-"));
-    tempDirs.push(dir);
+    const dir = tempDirs.make("openclaw-restart-path-");
     const env = { HOME: dir, OPENCLAW_STATE_DIR: path.join(dir, String.raw`state\literal`) };
-    appendGatewayLifecycleAuditLog(env, {
-      action: "restart",
-      source: "cli",
-      mode: "deferred",
-      interactive: false,
-    });
+    appendGatewayLifecycleAuditLog(env, auditEntry);
 
     const hints = buildPlatformRuntimeLogHints({
       platform: "darwin",
@@ -102,26 +77,18 @@ describe("restart log conventions", () => {
     });
     const advertised = hints.find((hint) => hint.startsWith("Restart attempts: "));
     expect(advertised).toBe(`Restart attempts: ${resolveGatewayRestartLogPath(env)}`);
-    expect(fs.readFileSync(resolveGatewayRestartLogPath(env), "utf8")).toContain(
-      "openclaw gateway lifecycle source=cli action=restart",
-    );
+    expect(readLog(env)).toContain("openclaw gateway lifecycle source=cli action=restart");
   });
 
   it("does not throw when lifecycle audit logging fails", () => {
-    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-lifecycle-audit-fail-"));
-    tempDirs.push(stateDir);
+    const stateDir = tempDirs.make("openclaw-lifecycle-audit-fail-");
     const blocker = path.join(stateDir, "not-a-directory");
     fs.writeFileSync(blocker, "block");
 
     expect(() =>
       appendGatewayLifecycleAuditLog(
         { OPENCLAW_STATE_DIR: path.join(blocker, "state") },
-        {
-          action: "stop",
-          source: "cli",
-          mode: "bootout",
-          interactive: true,
-        },
+        { ...auditEntry, action: "stop", mode: "bootout", interactive: true },
       ),
     ).not.toThrow();
   });

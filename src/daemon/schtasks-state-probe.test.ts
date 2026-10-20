@@ -15,27 +15,25 @@ vi.mock("node:child_process", () => ({ spawnSync: vi.fn() }));
 beforeEach(() => vi.mocked(spawnSync).mockReset());
 
 it.each([
-  { callerElevated: true, taskUserSid: "S-1-5-18", taskRunLevel: 1, expected: "allowed" },
-  { callerElevated: false, taskUserSid: null, taskRunLevel: 0, expected: "allowed" },
-  {
-    callerElevated: false,
-    taskUserSid: "unresolved account",
-    taskRunLevel: 0,
-    expected: "unknown",
+  [true, "S-1-5-18", 1, "allowed"],
+  [false, null, 0, "allowed"],
+  [false, "unresolved account", 0, "unknown"],
+] as const)(
+  "keeps native task access uncertainty distinct from elevation: %j",
+  (callerElevated, taskUserSid, taskRunLevel, expected) => {
+    vi.mocked(spawnSync).mockReturnValue(
+      nativeResult(
+        JSON.stringify({
+          callerSid: "S-1-5-21-111-222-333-1001",
+          callerElevated,
+          taskUserSid,
+          taskRunLevel,
+        }),
+      ),
+    );
+    expect(probeScheduledTaskUpdateAccess("Synthetic Gateway").status).toBe(expected);
   },
-])("keeps native task access uncertainty distinct from elevation: %j", (scenario) => {
-  vi.mocked(spawnSync).mockReturnValue(
-    nativeResult(
-      JSON.stringify({
-        callerSid: "S-1-5-21-111-222-333-1001",
-        callerElevated: scenario.callerElevated,
-        taskUserSid: scenario.taskUserSid,
-        taskRunLevel: scenario.taskRunLevel,
-      }),
-    ),
-  );
-  expect(probeScheduledTaskUpdateAccess("Synthetic Gateway").status).toBe(scenario.expected);
-});
+);
 
 function nativeResult(stdout = "", status: number | null = 0, error?: Error) {
   return { pid: 0, output: [null, stdout, ""], stdout, stderr: "", status, signal: null, error };
@@ -79,16 +77,16 @@ it("explains an empty exit-2 result", () => {
 });
 
 it.each([
-  { budget: undefined, expected: 60_000, inventory: false },
-  { budget: 899.75, expected: 899, inventory: false },
-  { budget: 0.75, expected: 0, inventory: false },
-  { budget: Number.NaN, expected: 0, inventory: false },
-  { budget: 47_000, expected: 47_000, inventory: true },
-  { budget: 2_400_000, expected: 60_000, inventory: false },
-  { budget: 2_400_000, expected: 60_000, inventory: true },
-])(
-  "bounds native inspection to $expected ms (inventory=$inventory)",
-  ({ budget, expected, inventory }) => {
+  [undefined, 60_000, false],
+  [899.75, 899, false],
+  [0.75, 0, false],
+  [Number.NaN, 0, false],
+  [47_000, 47_000, true],
+  [2_400_000, 60_000, false],
+  [2_400_000, 60_000, true],
+] as const)(
+  "bounds native inspection (budget=%s, timeout=%s, inventory=%s)",
+  (budget, expected, inventory) => {
     vi.mocked(spawnSync).mockImplementation((_command, _args, options) => {
       const timeout = options?.timeout;
       // Node rejects fractional timeouts before native spawn.
@@ -129,22 +127,15 @@ it.each([
 );
 
 it.each([
-  { allowance: 699.5, expected: 699 },
-  { allowance: 0.75, expected: undefined },
-  { allowance: 10_000, expected: 5_000 },
-])(
-  "bounds process snapshot allowance $allowance without extending the native cap",
-  ({ allowance, expected }) =>
+  [699.5, 699],
+  [0.75, undefined],
+  [10_000, 5_000],
+] as const)(
+  "bounds process snapshot allowance %s without extending the native cap",
+  (allowance, expected) =>
     withMockedPlatform("win32", () => {
       const stdout = JSON.stringify([{ ProcessId: 1234, CommandLine: "fixture process" }]);
-      vi.mocked(spawnSync).mockReturnValue({
-        pid: 0,
-        output: [null, stdout, ""],
-        stdout,
-        stderr: "",
-        status: 0,
-        signal: null,
-      });
+      vi.mocked(spawnSync).mockReturnValue(nativeResult(stdout));
       const result = readWindowsProcessSnapshot(allowance);
       if (expected === undefined) {
         expect(result).toBeNull();

@@ -36,28 +36,30 @@ describe("managed Gateway external restart storm diagnostics", () => {
     fs.rmSync(stateDir, { recursive: true, force: true });
   });
 
-  function restart() {
-    appendGatewayLifecycleAuditLog(env, {
-      source: "cli",
-      action: "restart",
-      mode: "kickstart",
-      interactive: false,
-    });
+  function restart(count = 1) {
+    for (let i = 0; i < count; i++) {
+      appendGatewayLifecycleAuditLog(env, {
+        source: "cli",
+        action: "restart",
+        mode: "kickstart",
+        interactive: false,
+      });
+    }
   }
+
+  const append = (text: string) => fs.appendFileSync(resolveGatewayRestartLogPath(env), text);
 
   function record(fields: string, ageMs = 0) {
     const logPath = resolveGatewayRestartLogPath(env);
     fs.mkdirSync(path.dirname(logPath), { recursive: true });
-    fs.appendFileSync(
-      logPath,
+    append(
       `[${new Date(Date.now() - ageMs).toISOString()}] openclaw gateway lifecycle ${fields}\n`,
     );
   }
 
   it("warns at the third external restart, names the likely job, and deduplicates across startup calls", async () => {
     const firstStartup = vi.fn();
-    restart();
-    restart();
+    restart(2);
     await warnAboutGatewayRestartStorm(env, firstStartup);
     expect(firstStartup).not.toHaveBeenCalled();
     expect(findForeignLaunchdJobs).not.toHaveBeenCalled();
@@ -81,33 +83,23 @@ describe("managed Gateway external restart storm diagnostics", () => {
   });
 
   it("expires old restarts and warnings and ignores malformed and future records", async () => {
-    restart();
-    restart();
-    restart();
+    restart(3);
     await warnAboutGatewayRestartStorm(env, vi.fn());
     vi.setSystemTime(new Date("2026-09-01T12:10:00.001Z"));
     record("source=cli action=restart mode=kickstart", -60_000);
-    fs.appendFileSync(
-      resolveGatewayRestartLogPath(env),
-      "[invalid] openclaw gateway lifecycle source=cli action=restart mode=kickstart\n",
-    );
+    append("[invalid] openclaw gateway lifecycle source=cli action=restart mode=kickstart\n");
     expect(readGatewayForcedRestartSummary(env).count).toBe(0);
 
-    restart();
-    restart();
-    restart();
+    restart(3);
     const warn = vi.fn();
     await warnAboutGatewayRestartStorm(env, warn);
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
   it("bounds history reads even when the restart log has a large handoff transcript", async () => {
-    restart();
-    restart();
-    restart();
-    fs.appendFileSync(resolveGatewayRestartLogPath(env), `${"x".repeat(256 * 1024)}\n`);
-    restart();
-    restart();
+    restart(3);
+    append(`${"x".repeat(256 * 1024)}\n`);
+    restart(2);
     const warn = vi.fn();
     await warnAboutGatewayRestartStorm(env, warn);
     expect(readGatewayForcedRestartSummary(env).count).toBe(2);
@@ -119,9 +111,7 @@ describe("managed Gateway external restart storm diagnostics", () => {
     const warn = vi.fn();
     await warnAboutGatewayRestartStorm(env, warn);
     expect(warn).not.toHaveBeenCalled();
-    restart();
-    restart();
-    restart();
+    restart(3);
     findForeignLaunchdJobs.mockRejectedValueOnce(new Error("launchd unavailable"));
     await warnAboutGatewayRestartStorm(env, warn);
     expect(warn).toHaveBeenCalledExactlyOnceWith(
