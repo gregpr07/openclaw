@@ -8,7 +8,10 @@ import {
   resolveTrustedWindowsCmdExe,
 } from "../process/windows-command.js";
 import { withTempDir } from "../test-utils/temp-dir.js";
-import { resolveCurrentOpenClawCliInvocation } from "./openclaw-cli-invocation.js";
+import {
+  resolveCurrentOpenClawCliInvocation,
+  type OpenClawCliInvocation,
+} from "./openclaw-cli-invocation.js";
 import {
   createSourceCliFixture,
   runSourceCliProbe,
@@ -21,6 +24,9 @@ function expectSourceCliSuccess(
   phase: string,
   result: ReturnType<typeof runSourceCliProbe>,
   fixtureRoot: string,
+  cwd: string,
+  args: string[] = ["probe"],
+  extra: { tsconfigPath?: string } = {},
 ) {
   // Child stacks in assertion messages make Vitest parse TSX's source-map template.
   // Keep bounded child evidence separate so the launcher failure stays visible.
@@ -36,6 +42,13 @@ function expectSourceCliSuccess(
     }),
   );
   expect(result.status, phase).toBe(0);
+  expect(JSON.parse(result.stdout)).toMatchObject({ source: "gateway", args, cwd, ...extra });
+}
+
+async function prepareShim(root: string, invocation: OpenClawCliInvocation, env = {}) {
+  const stateDir = path.join(root, "state");
+  await prepareGatewayAgentCliShim({ env, invocation, stateDir });
+  return path.join(stateDir, "tmp", "agent-cli", "openclaw.cmd");
 }
 
 afterEach(() => {
@@ -57,20 +70,10 @@ describe.skipIf(process.platform !== "win32")("native Windows source CLI shim", 
           `direct source control (delayed expansion ${delayedExpansion})`,
           control,
           root,
+          fixture.checkout,
+          ["--profile", "work", "probe"],
         );
-        expect(JSON.parse(control.stdout)).toMatchObject({
-          source: "gateway",
-          args: ["--profile", "work", "probe"],
-          cwd: fixture.checkout,
-        });
-
-        const stateDir = path.join(root, "state");
-        await prepareGatewayAgentCliShim({
-          env: { OPENCLAW_PROFILE: "work" },
-          invocation: fixture.invocation,
-          stateDir,
-        });
-        const shimPath = path.join(stateDir, "tmp", "agent-cli", "openclaw.cmd");
+        const shimPath = await prepareShim(root, fixture.invocation, { OPENCLAW_PROFILE: "work" });
         const command = buildWindowsCmdExeCommandLine(shimPath, ["probe"]);
         const result = runSourceCliProbe(
           resolveTrustedWindowsCmdExe(),
@@ -82,15 +85,12 @@ describe.skipIf(process.platform !== "win32")("native Windows source CLI shim", 
           `generated cmd launcher (delayed expansion ${delayedExpansion})`,
           result,
           root,
-        );
-        expect(JSON.parse(result.stdout)).toMatchObject({
-          source: "gateway",
-          args: ["--profile", "work", "probe"],
-          cwd: fixture.callerCwd,
-          ...(process.versions.bun
+          fixture.callerCwd,
+          ["--profile", "work", "probe"],
+          process.versions.bun
             ? {}
-            : { tsconfigPath: path.join(fixture.checkout, "tsconfig.json") }),
-        });
+            : { tsconfigPath: path.join(fixture.checkout, "tsconfig.json") },
+        );
       });
     },
   );
@@ -98,9 +98,7 @@ describe.skipIf(process.platform !== "win32")("native Windows source CLI shim", 
   it("preserves literal forwarded bangs and percent signs", async () => {
     await withTempDir("openclaw-source-cli-args-win-", async (root) => {
       const fixture = await createSourceCliFixture(root);
-      const stateDir = path.join(root, "state");
-      await prepareGatewayAgentCliShim({ env: {}, invocation: fixture.invocation, stateDir });
-      const shimPath = path.join(stateDir, "tmp", "agent-cli", "openclaw.cmd");
+      const shimPath = await prepareShim(root, fixture.invocation);
       const callerPath = path.join(root, "caller.cmd");
       // The caller supplies literal arguments; the shim must not enable expansion
       // and reinterpret them while forwarding %* to the source CLI.
@@ -119,12 +117,13 @@ describe.skipIf(process.platform !== "win32")("native Windows source CLI shim", 
         fixture.callerCwd,
         { windowsVerbatimArguments: true },
       );
-      expectSourceCliSuccess("literal caller arguments through generated cmd", result, root);
-      expect(JSON.parse(result.stdout)).toMatchObject({
-        source: "gateway",
-        args: ["probe", "literal!%USERPROFILE%!"],
-        cwd: fixture.callerCwd,
-      });
+      expectSourceCliSuccess(
+        "literal caller arguments through generated cmd",
+        result,
+        root,
+        fixture.callerCwd,
+        ["probe", "literal!%USERPROFILE%!"],
+      );
     });
   });
 
@@ -150,12 +149,7 @@ describe.skipIf(process.platform !== "win32")("native Windows source CLI shim", 
           [...sourceExecArgv, fixture.entryPath, "probe"],
           fixture.checkout,
         );
-        expectSourceCliSuccess(`${parent} direct source control`, control, root);
-        expect(JSON.parse(control.stdout)).toMatchObject({
-          source: "gateway",
-          args: ["probe"],
-          cwd: fixture.checkout,
-        });
+        expectSourceCliSuccess(`${parent} direct source control`, control, root, fixture.checkout);
         const invocation = resolveCurrentOpenClawCliInvocation(["probe"], {
           argv1: sourceParent ? fixture.entryPath : hostEntry,
           cwd: fixture.callerCwd,
@@ -165,12 +159,12 @@ describe.skipIf(process.platform !== "win32")("native Windows source CLI shim", 
         const result = runSourceCliProbe(invocation.command, invocation.args, fixture.callerCwd, {
           env: invocation.env,
         });
-        expectSourceCliSuccess(`${parent} external source invocation`, result, root);
-        expect(JSON.parse(result.stdout)).toMatchObject({
-          source: "gateway",
-          args: ["probe"],
-          cwd: fixture.callerCwd,
-        });
+        expectSourceCliSuccess(
+          `${parent} external source invocation`,
+          result,
+          root,
+          fixture.callerCwd,
+        );
       });
     },
   );

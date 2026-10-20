@@ -48,6 +48,19 @@ function spyOnNativeWatch() {
     );
 }
 const subscriptions: Array<{ close(): void }> = [];
+function observe(
+  directory: string,
+  listener = vi.fn(),
+  options?: Parameters<typeof observeOwnedDirectory>[2],
+) {
+  subscriptions.push(observeOwnedDirectory(directory, listener, options));
+  return listener;
+}
+function timedDirectory(name: string, now = 0) {
+  vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+  vi.setSystemTime(now);
+  return tempDirs.make(`owned-directory-${name}-`);
+}
 afterEach(() => {
   for (const subscription of subscriptions.splice(0)) {
     subscription.close();
@@ -59,9 +72,7 @@ afterEach(() => {
 
 describe("process-owned directory observation", () => {
   it("bounds scheduling work as directories subscribe and close", () => {
-    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
-    vi.setSystemTime(0);
-    const root = tempDirs.make("owned-directory-fleet-");
+    const root = timedDirectory("fleet");
     const timeout = vi.spyOn(globalThis, "setTimeout");
     const clock = vi.spyOn(Date, "now");
     const listener = vi.fn();
@@ -69,7 +80,7 @@ describe("process-owned directory observation", () => {
       const directory = path.join(root, `agent-${index}`);
       fs.mkdirSync(directory);
       clock.mockClear();
-      subscriptions.push(observeOwnedDirectory(directory, listener));
+      observe(directory, listener);
       expect(clock.mock.calls.length).toBeLessThanOrEqual(4);
     }
     expect(timeout).toHaveBeenCalledOnce();
@@ -86,11 +97,7 @@ describe("process-owned directory observation", () => {
   });
 
   it("recovers healthy watches every 30 seconds", () => {
-    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
-    vi.setSystemTime(0);
-    const directory = tempDirs.make("owned-directory-cadence-");
-    const listener = vi.fn();
-    subscriptions.push(observeOwnedDirectory(directory, listener));
+    const listener = observe(timedDirectory("cadence"));
     vi.advanceTimersByTime(29_999);
     expect(listener).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1);
@@ -98,30 +105,19 @@ describe("process-owned directory observation", () => {
   });
 
   it("keeps the authority recovery bound across a backward wall-clock correction", () => {
-    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
-    vi.setSystemTime(300_000);
-    const directory = tempDirs.make("owned-directory-clock-");
-    const listener = vi.fn();
-    subscriptions.push(observeOwnedDirectory(directory, listener));
+    const listener = observe(timedDirectory("clock", 300_000));
     vi.setSystemTime(0);
     vi.advanceTimersByTime(30_000);
     expect(listener).toHaveBeenCalledOnce();
   });
 
   it("shares recursive watches while preserving each consumer's recovery interval", () => {
-    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
-    vi.setSystemTime(0);
-    const directory = tempDirs.make("owned-directory-recursive-");
+    const directory = timedDirectory("recursive");
     const watch = spyOnNativeWatch();
     const frequent = vi.fn();
     const quiet = vi.fn();
-    subscriptions.push(observeOwnedDirectory(directory, frequent, { recursive: true }));
-    subscriptions.push(
-      observeOwnedDirectory(directory, quiet, {
-        recursive: true,
-        reconcileIntervalMs: 30 * 60_000,
-      }),
-    );
+    observe(directory, frequent, { recursive: true });
+    observe(directory, quiet, { recursive: true, reconcileIntervalMs: 30 * 60_000 });
     expect(watch).toHaveBeenCalledOnce();
     expect(watch.mock.calls[0]![1]).toMatchObject({ recursive: true });
     vi.advanceTimersByTime(300_000);
@@ -135,9 +131,7 @@ describe("process-owned directory observation", () => {
   });
 
   it("keeps recursive handles outside replaceable subtrees and filters their events", () => {
-    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
-    vi.setSystemTime(0);
-    const workspace = tempDirs.make("owned-directory-boundary-");
+    const workspace = timedDirectory("boundary");
     const skills = path.join(workspace, "skills");
     const grouped = path.join(workspace, ".agents", "skills");
     fs.mkdirSync(skills);
@@ -145,10 +139,8 @@ describe("process-owned directory observation", () => {
     const watch = spyOnNativeWatch();
     const changed = vi.fn();
     const groupedChanged = vi.fn();
-    subscriptions.push(
-      observeOwnedDirectory(skills, changed, { recursive: true, watchRoot: workspace }),
-      observeOwnedDirectory(grouped, groupedChanged, { recursive: true, watchRoot: workspace }),
-    );
+    observe(skills, changed, { recursive: true, watchRoot: workspace });
+    observe(grouped, groupedChanged, { recursive: true, watchRoot: workspace });
     // Windows refuses an ancestor rename while a descendant directory handle is open.
     expect(watch).toHaveBeenCalledOnce();
     expect(watch.mock.calls[0]![0]).toBe(workspace);
@@ -176,12 +168,9 @@ describe("process-owned directory observation", () => {
   });
 
   it("repairs failed watches within 30 seconds and resumes healthy recovery", () => {
-    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
-    vi.setSystemTime(0);
-    const directory = tempDirs.make("owned-directory-repair-");
+    const directory = timedDirectory("repair");
     const watch = vi.spyOn(fs, "watch");
-    const listener = vi.fn();
-    subscriptions.push(observeOwnedDirectory(directory, listener));
+    const listener = observe(directory);
     watch.mock.results[0]!.value.emit("error", new Error("lost watch"));
     listener.mockClear();
     vi.advanceTimersByTime(30_000);
@@ -215,8 +204,8 @@ describe("process-owned directory observation", () => {
     const watch = vi.spyOn(fs, "watch");
     const listener = vi.fn(() => fs.readFileSync(filename, "utf8"));
     const otherListener = vi.fn();
-    subscriptions.push(observeOwnedDirectory(directory, listener));
-    subscriptions.push(observeOwnedDirectory(directory, otherListener));
+    observe(directory, listener);
+    observe(directory, otherListener);
     expect(watch).toHaveBeenCalledTimes(1);
     await promisify(execFile)(process.execPath, [
       "-e",
@@ -232,8 +221,7 @@ describe("process-owned directory observation", () => {
   it("forwards native file invalidation without replacing the shared directory watch", () => {
     const directory = tempDirs.make("owned-directory-events-");
     const watch = vi.spyOn(nativeWatchFs, "watch");
-    const listener = vi.fn();
-    subscriptions.push(observeOwnedDirectory(directory, listener));
+    const listener = observe(directory);
     watch.mock.calls[0]![2]("rename", "profiles");
     expect(listener).toHaveBeenCalledWith("profiles");
     listener.mockClear();
@@ -253,8 +241,7 @@ describe("process-owned directory observation", () => {
     vi.spyOn(fs.realpathSync, "native").mockImplementation(((target: fs.PathLike) =>
       target === shortPath ? longPath : String(target)) as typeof fs.realpathSync.native);
     const watch = vi.spyOn(nativeWatchFs, "watch");
-    const listener = vi.fn();
-    subscriptions.push(observeOwnedDirectory(shortPath, listener));
+    const listener = observe(shortPath);
     expect(watch).toHaveBeenCalledOnce();
     expect(watch.mock.calls[0]![0]).toBe(longPath);
     watch.mock.calls[0]![2]("change", "auth.json");
@@ -278,9 +265,7 @@ describe("process-owned directory observation", () => {
           : [],
       );
     const changed = vi.fn();
-    subscriptions.push(
-      observeOwnedDirectory(path.join(agents, "work"), changed, { recursive: true }),
-    );
+    observe(path.join(agents, "work"), changed, { recursive: true });
     const [ancestor] = opened();
     expect(ancestor?.path).toBe(root);
     const close = vi.spyOn(ancestor!.watcher, "close");
@@ -309,8 +294,7 @@ describe("process-owned directory observation", () => {
     vi.setSystemTime(0);
     const root = tempDirs.make("owned-directory-missing-");
     const directory = path.join(root, "new");
-    const listener = vi.fn();
-    subscriptions.push(observeOwnedDirectory(directory, listener));
+    const listener = observe(directory);
     fs.mkdirSync(directory);
     vi.advanceTimersByTime(30_000);
     expect(listener).toHaveBeenCalledWith(undefined);

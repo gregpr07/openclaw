@@ -76,14 +76,8 @@ function releasedJournal(phase = "publication-complete") {
       .toSorted()
       .map((name) => {
         const file = path.join(anchor, name);
-        const stat = fs.lstatSync(file);
-        return {
-          name,
-          ino: stat.ino,
-          mode: stat.mode,
-          mtime: stat.mtimeMs,
-          bytes: fs.readFileSync(file),
-        };
+        const { ino, mode, mtimeMs: mtime } = fs.lstatSync(file);
+        return { name, ino, mode, mtime, bytes: fs.readFileSync(file) };
       });
   return { installKey, anchor, journal, helper, operationId, descriptor, snapshot };
 }
