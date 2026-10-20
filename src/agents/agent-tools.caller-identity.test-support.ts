@@ -1,7 +1,7 @@
 import { expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createOpenClawCodingTools } from "./agent-tools.js";
-import * as openClawPluginTools from "./openclaw-plugin-tools.js";
+import * as pluginTools from "./openclaw-plugin-tools.js";
 import { createStubTool } from "./test-helpers/agent-tool-stubs.js";
 import { getGatewayToolCallerIdentity } from "./tools/gateway-caller-context.js";
 
@@ -23,17 +23,15 @@ export function registerPluginOnlyCallerIdentityCase({
 }) {
   async function execute(options: NonNullable<Parameters<typeof createOpenClawCodingTools>[0]>) {
     let identity: ReturnType<typeof getGatewayToolCallerIdentity>;
-    const spy = vi
-      .spyOn(openClawPluginTools, "resolveOpenClawPluginToolsForOptions")
-      .mockReturnValue([
-        {
-          ...createStubTool("file_fetch"),
-          execute: async () => {
-            identity = getGatewayToolCallerIdentity();
-            return { content: [], details: {} };
-          },
+    const spy = vi.spyOn(pluginTools, "resolveOpenClawPluginToolsForOptions").mockReturnValue([
+      {
+        ...createStubTool("file_fetch"),
+        execute: async () => {
+          identity = getGatewayToolCallerIdentity();
+          return { content: [], details: {} };
         },
-      ]);
+      },
+    ]);
     try {
       const tools = createOpenClawCodingTools({
         agentId: "main",

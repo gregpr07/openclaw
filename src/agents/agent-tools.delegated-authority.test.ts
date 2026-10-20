@@ -24,30 +24,29 @@ function fixture(deny = ["write"]) {
   };
   const config: OpenClawConfig = { agents: { entries: { intake, coder: {} } } };
   setRuntimeConfigSnapshot(config);
+  const identity = { agentId: "coder", sessionKey: child };
+  const delegatedToolPolicy = {
+    requesterSessionKey: requester,
+    targetAgentId: "coder",
+    deny: [],
+    requesterDeny: deny,
+  };
+  const childEntry = {
+    sessionId: "child",
+    spawnedBy: requester,
+    spawnDepth: 1,
+    inheritedToolPolicyVersion: 1 as const,
+    inheritedToolDeny: deny,
+    delegatedToolPolicy,
+  };
   const capabilityProfile = resolveConversationCapabilityProfile({
     config,
-    agentId: "coder",
-    sessionKey: child,
-    preparedSessionCapabilityStore: {
-      [child]: {
-        sessionId: "child",
-        spawnedBy: requester,
-        spawnDepth: 1,
-        inheritedToolPolicyVersion: 1,
-        inheritedToolDeny: deny,
-        delegatedToolPolicy: {
-          requesterSessionKey: requester,
-          targetAgentId: "coder",
-          deny: [],
-          requesterDeny: deny,
-        },
-      },
-    },
+    ...identity,
+    preparedSessionCapabilityStore: { [child]: childEntry },
   });
   const bind = createCodingToolsGatewayCaller({
     options: { config },
-    agentId: "coder",
-    sessionKey: child,
+    ...identity,
     capabilityProfile,
   });
   return {

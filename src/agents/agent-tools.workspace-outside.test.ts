@@ -20,18 +20,14 @@ vi.mock("../infra/shell-env.js", async () => {
 });
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const workspaceOnly = { tools: { fs: { workspaceOnly: true } } };
 const guardedRead = (workspaceDir: string) =>
-  expectReadWriteEditTools(
-    createOpenClawCodingTools({
-      workspaceDir,
-      config: { tools: { fs: { workspaceOnly: true } } },
-    }),
-  ).readTool;
+  expectReadWriteEditTools(createOpenClawCodingTools({ workspaceDir, config: workspaceOnly }))
+    .readTool;
 
 describe("memory filesystem policy", () => {
   let workspaceDir: string;
 
-  const readTool = () => createOpenClawReadTool(createReadTool(workspaceDir));
   const memoryWriteTool = (relativePath: string) =>
     wrapToolMemoryFlushAppendOnlyWrite(createHostWorkspaceWriteTool(workspaceDir), {
       root: workspaceDir,
@@ -44,12 +40,10 @@ describe("memory filesystem policy", () => {
   });
 
   it("makes only missing canonical daily-memory reads implicitly optional", async () => {
-    const read = readTool();
+    const read = createOpenClawReadTool(createReadTool(workspaceDir));
     const readPath = (file: string) => read.execute("read", { path: file });
     for (const filePath of [
-      "memory/2026-05-15.md",
-      "./memory/2026-05-16.md",
-      "././memory/2026-05-18.md",
+      ...["", "./", "././"].map((prefix) => `${prefix}memory/2026-05-15.md`),
       ...(process.platform === "win32" ? ["memory\\2026-05-19.md"] : []),
     ]) {
       expect(await readPath(filePath)).toStrictEqual({
@@ -73,57 +67,52 @@ describe("memory filesystem policy", () => {
     }
   });
 
-  it("accepts memory-triggered append-only writes with malformed XML arg-value path suffixes", async () => {
-    const file = "memory/2026-03-08.md";
-    const result = await memoryWriteTool(file).execute("write", {
-      path: `${file}</arg_value>>`,
-      content: "new note",
-    });
-
-    expect(result).toStrictEqual({
-      content: [{ type: "text", text: "Appended content to memory/2026-03-08.md." }],
-      details: { changed: true },
-    });
-    await expect(fs.readFile(path.join(workspaceDir, file), "utf-8")).resolves.toBe("new note");
-  });
-
-  it("rejects memory-triggered append-only paths that become empty after suffix stripping", async () => {
-    await expect(
-      memoryWriteTool("memory/2026-03-09.md").execute("write", {
-        path: "</arg_value>>",
+  it.each([true, false])(
+    "validates memory append paths after suffix stripping (valid: %s)",
+    async (valid) => {
+      const file = "memory/2026-03-08.md";
+      const result = memoryWriteTool(file).execute("write", {
+        path: `${valid ? file : ""}</arg_value>>`,
         content: "new note",
-      }),
-    ).rejects.toThrow(/Missing required parameter: path/);
-  });
-});
-
-describe("workspace-only Unicode read fallback", () => {
-  it("does not follow a filename fallback into a sibling workspace", async (context) => {
-    const rootDir = tempDirs.make("openclaw-unicode-parent-");
-    const workspaceDir = path.join(rootDir, "cafe\u0301");
-    const outsideDir = path.join(rootDir, "caf\u00e9");
-    await fs.mkdir(workspaceDir);
-    try {
-      await fs.mkdir(outsideDir);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-        context.skip();
+      });
+      if (!valid) {
+        await expect(result).rejects.toThrow(/Missing required parameter: path/);
         return;
       }
+      expect(await result).toStrictEqual({
+        content: [{ type: "text", text: "Appended content to memory/2026-03-08.md." }],
+        details: { changed: true },
+      });
+      await expect(fs.readFile(path.join(workspaceDir, file), "utf-8")).resolves.toBe("new note");
+    },
+  );
+});
+
+it("does not follow a filename fallback into a sibling workspace", async (context) => {
+  const rootDir = tempDirs.make("openclaw-unicode-parent-");
+  const workspaceDir = path.join(rootDir, "cafe\u0301");
+  const outsideDir = path.join(rootDir, "caf\u00e9");
+  await fs.mkdir(workspaceDir);
+  try {
+    await fs.mkdir(outsideDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
       throw error;
     }
-    await fs.writeFile(path.join(outsideDir, "secret.txt"), "outside secret", "utf8");
+    context.skip();
+    return;
+  }
+  await fs.writeFile(path.join(outsideDir, "secret.txt"), "outside secret", "utf8");
 
-    await expect(guardedRead(workspaceDir).execute("read", { path: "secret.txt" })).rejects.toThrow(
-      /File not found/i,
-    );
-  });
+  await expect(guardedRead(workspaceDir).execute("read", { path: "secret.txt" })).rejects.toThrow(
+    /File not found/i,
+  );
+});
 
-  it("keeps filename fallback working inside the guarded workspace", async () => {
-    const workspaceDir = tempDirs.make("openclaw-unicode-leaf-");
-    await fs.writeFile(path.join(workspaceDir, "d\u2019accord.txt"), "allowed fallback", "utf8");
+it("keeps filename fallback working inside the guarded workspace", async () => {
+  const workspaceDir = tempDirs.make("openclaw-unicode-leaf-");
+  await fs.writeFile(path.join(workspaceDir, "d\u2019accord.txt"), "allowed fallback", "utf8");
 
-    const result = await guardedRead(workspaceDir).execute("read", { path: "d'accord.txt" });
-    expect(getTextContent(result)).toContain("allowed fallback");
-  });
+  const result = await guardedRead(workspaceDir).execute("read", { path: "d'accord.txt" });
+  expect(getTextContent(result)).toContain("allowed fallback");
 });

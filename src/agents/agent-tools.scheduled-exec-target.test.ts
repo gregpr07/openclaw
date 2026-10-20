@@ -39,13 +39,9 @@ vi.mock("./bash-tools.js", () => ({
   }),
 }));
 
-const scheduledToolPolicy = {
-  version: 1,
-  mode: "trusted",
-  execTarget: { host: "gateway", ask: "always" },
-} as const;
+const pinnedTarget = { host: "gateway", ask: "always" } as const;
+const scheduledToolPolicy = { version: 1, mode: "trusted", execTarget: pinnedTarget } as const;
 const command = { command: "echo hi" };
-const pinnedTarget = scheduledToolPolicy.execTarget;
 const pinnedArgs = { ...command, ...pinnedTarget };
 function expectExecution(id: string, args: object) {
   expect(shellSpies.exec).toHaveBeenCalledWith(id, args, undefined, undefined);

@@ -42,22 +42,7 @@ function completionTurn(sourceTool: string): ToolOptions {
     inputProvenance: { kind: "inter_session", sourceChannel: "internal", sourceTool },
   };
 }
-const turns: Record<string, ToolOptions> = {
-  user: { ...session, runId: "run-user", senderId: "owner", senderIsOwner: true },
-  subagentCompletion: {
-    ...completionTurn("subagent_announce"),
-    sourceReplyDeliveryMode: "message_tool_only",
-  },
-  mediaCompletion: completionTurn("image_generate"),
-  heartbeat: {
-    ...session,
-    runId: "run-heartbeat",
-    trigger: "heartbeat",
-    enableHeartbeatTool: true,
-    forceHeartbeatTool: true,
-    sourceReplyDeliveryMode: "message_tool_only",
-  },
-};
+const userTurn = { ...session, runId: "run-user", senderId: "owner", senderIsOwner: true };
 
 function surface(tools: ReturnType<typeof createOpenClawCodingTools>) {
   return tools.map((tool) =>
@@ -71,14 +56,28 @@ beforeEach(() => {
 });
 afterEach(() => clearRuntimeConfigSnapshot());
 
-it.each(Object.keys(turns).filter((kind) => kind !== "user"))(
-  "offers the user turn's exact tool definitions on a %s turn",
-  (kind) => {
-    expect(surface(createOpenClawCodingTools(turns[kind]!))).toEqual(
-      surface(createOpenClawCodingTools(turns.user!)),
-    );
-  },
-);
+it.each<[string, ToolOptions]>([
+  [
+    "subagent completion",
+    { ...completionTurn("subagent_announce"), sourceReplyDeliveryMode: "message_tool_only" },
+  ],
+  ["media completion", completionTurn("image_generate")],
+  [
+    "heartbeat",
+    {
+      ...session,
+      runId: "run-heartbeat",
+      trigger: "heartbeat",
+      enableHeartbeatTool: true,
+      forceHeartbeatTool: true,
+      sourceReplyDeliveryMode: "message_tool_only",
+    },
+  ],
+])("offers the user turn's exact tool definitions on a %s turn", (_kind, options) => {
+  expect(surface(createOpenClawCodingTools(options))).toEqual(
+    surface(createOpenClawCodingTools(userTurn)),
+  );
+});
 it("offers the same message definition on a source-bound completion turn", () => {
   const assemble = (sourceReplyOnly: boolean) =>
     surface(
@@ -149,7 +148,7 @@ it("offers the session's tool definitions and refuses tools outside the replayed
     conversationCapabilityProfile,
   });
   const user = createOpenClawCodingTools({
-    ...turns.user!,
+    ...userTurn,
     config: handoffConfig,
     sessionId: "requester-session",
   });

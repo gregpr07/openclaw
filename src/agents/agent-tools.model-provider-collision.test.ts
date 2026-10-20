@@ -75,19 +75,12 @@ it.each(["resolved custom endpoint", "disabled plugin"])(
   "uses one search route before tool discovery for OpenAI %s",
   (route) => {
     const customEndpoint = route === "resolved custom endpoint";
+    const baseUrl = "https://api.openai.com/v1";
     const filtered = selectedTools(baseTools, {
       config: {
         plugins: customEndpoint ? undefined : { entries: { openai: { enabled: false } } },
         tools: { web: { search: { provider: undefined } } },
-        models: {
-          providers: {
-            openai: {
-              api: "openai-responses",
-              baseUrl: "https://api.openai.com/v1",
-              models: [],
-            },
-          },
-        },
+        models: { providers: { openai: { api: "openai-responses", baseUrl, models: [] } } },
       },
       modelProvider: "openai",
       modelApi: "openai-responses",

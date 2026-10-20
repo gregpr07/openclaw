@@ -20,7 +20,6 @@ import { resetDiagnosticSessionStateForTest } from "../logging/diagnostic-sessio
 import { wrapToolWithBeforeToolCallHook } from "./agent-tools.before-tool-call.wrapper.js";
 import { createModelObserver } from "./embedded-agent-runner/run/attempt.model-diagnostic-observation.js";
 import { createStubTool } from "./test-helpers/agent-tool-stubs.js";
-import type { AnyAgentTool } from "./tools/common.js";
 
 const STUCK_SESSION_ABORT_MS = 360_000;
 
@@ -34,11 +33,8 @@ afterEach(() => {
 it.each(["completed", "error", "blocked", "retired-during-execution", "retired-before-delivery"])(
   "accounts for %s tool execution independently of a length-terminated response",
   async (outcome) => {
-    const ref = {
-      sessionId: "tool-progress",
-      sessionKey: "agent:main:tool-progress",
-      runId: "reused-run",
-    };
+    const sessionId = "tool-progress";
+    const ref = { sessionId, sessionKey: `agent:main:${sessionId}`, runId: "reused-run" };
     const modelCall = { ...ref, callId: "request", provider: "mock", model: "mock" };
     vi.useFakeTimers();
     const startedAt = Date.parse("2026-10-08T20:02:20Z");
@@ -51,16 +47,18 @@ it.each(["completed", "error", "blocked", "retired-during-execution", "retired-b
       markDiagnosticEmbeddedRunStarted({ ...ref, owner: replacement });
     };
     // Tools are built before the diagnostic owner is registered in real attempts.
-    const source: AnyAgentTool = {
-      ...createStubTool("read"),
-      execute: async () => {
-        if (outcome === "retired-during-execution") {
-          replaceOwner();
-        }
-        return { content: [], details: { status: outcome } };
+    const tool = wrapToolWithBeforeToolCallHook(
+      {
+        ...createStubTool("read"),
+        execute: async () => {
+          if (outcome === "retired-during-execution") {
+            replaceOwner();
+          }
+          return { content: [], details: { status: outcome } };
+        },
       },
-    };
-    const tool = wrapToolWithBeforeToolCallHook(source, ref);
+      ref,
+    );
     markDiagnosticEmbeddedRunStarted({ ...ref, owner });
     for (const callId of ["first", "second"]) {
       emitCoreModelRequestStartedDiagnosticEvent({ ...modelCall, callId }, owner.generation);
