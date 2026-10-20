@@ -11,10 +11,8 @@ function summaryFixture() {
   vi.useFakeTimers();
   const cfg = { agents: { entries: { main: {} } } };
   config.setRuntimeConfigSnapshot(cfg);
-  const key = "agent:main:summary",
-    agentId = "main";
-  const target = { key, agentId, storePath: "/summary/first.sqlite" };
-  const other = { ...target, storePath: "/summary/second.sqlite" };
+  const owner = { key: "agent:main:summary", agentId: "main" };
+  const target = (store: string) => ({ ...owner, storePath: `/summary/${store}.sqlite` });
   const initial: SessionEntry = {
     sessionId: "summary-session",
     lifecycleRevision: "original",
@@ -25,12 +23,12 @@ function summaryFixture() {
     cfg,
     store: { first: initial, second: { ...initial, label: "other store" } },
     targetsBySessionKey: new Map(
-      [target, other].map((row, index) => [
-        index === 0 ? "first" : "second",
+      ["first", "second"].map((store) => [
+        store,
         {
-          agentId: row.agentId,
-          storeKey: row.key,
-          storeTarget: { agentId: row.agentId, storePath: row.storePath },
+          agentId: owner.agentId,
+          storeKey: owner.key,
+          storeTarget: target(store),
           entry: initial,
           readSourceEntry: () => undefined,
           resolveSourceKey: (sourceKey: string) => sourceKey,
@@ -51,8 +49,8 @@ function summaryFixture() {
   const broadcast = vi.fn<GatewayBroadcastFn>();
   const publisher = { getSessionRowProjection: () => projection, broadcast };
   const publications: Promise<void>[] = [];
-  const publish = (selected = target) => {
-    const work = broadcastSessionActivitySummary(selected, publisher);
+  const publish = (store = "first") => {
+    const work = broadcastSessionActivitySummary(target(store), publisher);
     publications.push(work);
     return work;
   };
@@ -66,7 +64,7 @@ function summaryFixture() {
     vi.restoreAllMocks();
     vi.useRealTimers();
   });
-  return { target, other, initial, projection, preparation, entered, ready, broadcast, publish };
+  return { initial, projection, preparation, entered, ready, broadcast, publish };
 }
 
 type Fixture = ReturnType<typeof summaryFixture>;
@@ -134,7 +132,7 @@ it.each([
   if (patch) {
     f.projection.setEntry("first", replacement);
   }
-  const second = f.publish(patch ? f.target : f.other);
+  const second = f.publish(patch ? "first" : "second");
   await deliver(f, first, second);
   const sessions = patch
     ? [{ sessionId: replacement.sessionId, label: "replacement" }]

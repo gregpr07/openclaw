@@ -1,6 +1,5 @@
 import path from "node:path";
 import { expect, it, vi } from "vitest";
-import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { getWorkerPlacementStartupMocks } from "./server-worker-placement-startup.test-harness.js";
 
 const { runtimeFactoryMocks, moveDestinationMocks } = getWorkerPlacementStartupMocks();
@@ -16,12 +15,14 @@ import { captureSessionTarget } from "../sessions/session-controller.lifecycle.j
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawAgentDatabasesAsync } from "../state/openclaw-agent-db-lifecycle.js";
 import { createGatewayWorkerPlacementRuntime } from "./server-worker-placement-startup.js";
+import { createRuntimeFactory } from "./server-worker-placement.test-support.js";
 import { REQUEST } from "./worker-environments/placement-dispatch-test-fixtures.js";
 import { createHarness } from "./worker-environments/placement-dispatch-test-harness.js";
 import { createWorkerSessionPlacementStore } from "./worker-environments/placement-store.js";
 import * as support from "./worker-environments/service.test-support.js";
 
 support.setupWorkerEnvironmentServiceSuite();
+const createRuntime = createRuntimeFactory(createGatewayWorkerPlacementRuntime, getRuntimeConfig);
 
 it.each([
   { executionMode: "remote-exec", outcome: "completed", state: "reclaimed" },
@@ -41,11 +42,9 @@ it.each([
     );
     runtimeFactoryMocks.createDiskSpace.mockReturnValue({ read: vi.fn(), version: () => 0 });
 
-    const { root, stateDb } = support.testState;
-    const config = {
-      ...support.testState.config,
-      session: { store: path.join(root, "sessions.sqlite") },
-    };
+    const { root, stateDb, config: baseConfig } = support.testState;
+    const storePath = path.join(root, "sessions.sqlite");
+    const config = { ...baseConfig, session: { store: storePath } };
     const runId = `resumed-${executionMode}-turn`;
     const entry = {
       sessionId: REQUEST.sessionId,
@@ -56,7 +55,7 @@ it.each([
     };
     const target = {
       ...REQUEST,
-      storePath: path.join(root, "sessions.sqlite"),
+      storePath,
       canonicalKey: REQUEST.sessionKey,
       store: { [REQUEST.sessionKey]: entry },
       storeKeys: [REQUEST.sessionKey],
@@ -111,16 +110,11 @@ it.each([
           ? previousEnvironment
           : replacement.environments.get(environmentId),
     };
-    const runtime = createGatewayWorkerPlacementRuntime({
+    const runtime = createRuntime({
       initialPlacements: await placements.listAsync(),
-      scheduler: createTestGatewayScheduler(),
-      getCommittedRuntimeConfig: getRuntimeConfig,
       placements,
       environments,
       gatewayNamespace: "gateway-resume-test",
-      warn: vi.fn(),
-      cancelSessionWork: vi.fn(async () => {}),
-      revokeSessionAuthority: vi.fn(),
     });
     const setupEntered = createDeferredCore<AbortSignal | undefined>();
     const releaseSetup = createDeferredCore();
@@ -157,31 +151,22 @@ it.each([
         },
       };
     });
-    const pending = withSessionTurn(
-      {
-        ...turn,
-        target: controllerTarget,
-      },
-      () =>
-        runtime.admissionProvider.executeTurn(
-          turn,
-          {
-            ...turn,
-            config,
-            sessionTarget: target,
-            sessionFile: REQUEST.sessionKey,
-            workspaceDir: root,
-            prompt: "Continue",
-            timeoutMs: 60_000,
-          },
-          runLocal,
-          undefined,
-          () => {
-            if (!current) {
-              throw termination;
-            }
-          },
-        ),
+    const input = {
+      ...turn,
+      config,
+      sessionTarget: target,
+      sessionFile: REQUEST.sessionKey,
+      workspaceDir: root,
+      prompt: "Continue",
+      timeoutMs: 60_000,
+    };
+    const assertCurrent = () => {
+      if (!current) {
+        throw termination;
+      }
+    };
+    const pending = withSessionTurn({ ...turn, target: controllerTarget }, () =>
+      runtime.admissionProvider.executeTurn(turn, input, runLocal, undefined, assertCurrent),
     ).catch((error: unknown) => error);
     try {
       const signal = await Promise.race([
@@ -200,9 +185,7 @@ it.each([
       }
       releaseSetup.resolve();
       if (outcome === "completed") {
-        expect(await pending).toMatchObject({
-          payloads: [{ text }],
-        });
+        expect(await pending).toMatchObject({ payloads: [{ text }] });
         expect(runLocal).toHaveBeenCalledOnce();
         expect(replacement.environments.createWithRequest).toHaveBeenCalledOnce();
         expect(placements.get(REQUEST.sessionId)).toMatchObject({

@@ -23,8 +23,11 @@ it("recovers the current child-wait clock from persisted lifecycle without trans
     const childRunId = "wait-child-run";
     const childTarget = { sessionKey: childKey, sessionId: "wait-child-session", agentId: "main" };
     const startedAt = Date.now();
+    const at = (seconds: number) => startedAt + seconds * 1_000;
+    const initialRun = "initial-parent-run",
+      nextRun = "announcement-parent-run";
     let childClaim: string | undefined;
-    const lifecycle = (runId: string, phase: "start" | "end", at: number, yielded = false) =>
+    const lifecycle = (runId: string, phase: "start" | "end", timestamp: number, yielded = false) =>
       persistGatewaySessionLifecycleEvent({
         sessionKey: parentKey,
         agentId: "main",
@@ -32,10 +35,10 @@ it("recovers the current child-wait clock from persisted lifecycle without trans
           sessionId: parentSessionId,
           runId,
           lifecycleGeneration: getAgentEventLifecycleGeneration(),
-          ts: at,
+          ts: timestamp,
           data: {
             phase,
-            ...(phase === "start" ? { startedAt: at } : { endedAt: at }),
+            ...(phase === "start" ? { startedAt: timestamp } : { endedAt: timestamp }),
             ...(yielded ? { yielded: true, livenessState: "paused", stopReason: "end_turn" } : {}),
           },
         },
@@ -43,20 +46,15 @@ it("recovers the current child-wait clock from persisted lifecycle without trans
     const readWait = async () => {
       const parent = expectDefined(await reader.row(parentKey), "persisted parent row");
       const child = expectDefined(await reader.row(childKey), "persisted child row");
-      expect(parent?.hasActiveSubagentRun).toBe(true);
-      expect(child?.startedAt).toBe(startedAt);
-      return {
-        parent,
-        ...projectSubagentStatus(
-          {
-            selectedSession: parent,
-            subagentSessions: [child],
-            subagentSessionsHydrated: true,
-            messages: [],
-          },
-          false,
-        ),
+      expect(parent).toMatchObject({ hasActiveSubagentRun: true });
+      expect(child).toMatchObject({ startedAt });
+      const roster = {
+        selectedSession: parent,
+        subagentSessions: [child],
+        subagentSessionsHydrated: true,
+        messages: [],
       };
+      return { parent, ...projectSubagentStatus(roster, false) };
     };
     try {
       await replaceSessionEntry(
@@ -80,28 +78,25 @@ it("recovers the current child-wait clock from persisted lifecycle without trans
         ownsContext: true,
       });
       expect((await readWait()).wait).toBeNull();
-      await lifecycle("initial-parent-run", "start", startedAt);
-      await lifecycle("initial-parent-run", "end", startedAt + 2_000, true);
-      const yielded = await readWait();
-      expect(yielded.parent.endedAt).toBe(startedAt + 2_000);
-      expect(yielded.wait?.startedAt).toBe(startedAt + 2_000);
+      await lifecycle(initialRun, "start", startedAt);
+      await lifecycle(initialRun, "end", at(2), true);
+      expect(await readWait()).toMatchObject({
+        parent: { endedAt: at(2) },
+        wait: { startedAt: at(2) },
+      });
 
-      await lifecycle("announcement-parent-run", "start", startedAt + 3_000);
+      await lifecycle(nextRun, "start", at(3));
       expect((await reader.row(parentKey))?.endedAt).toBeUndefined();
-      await lifecycle("announcement-parent-run", "end", startedAt + 4_000);
+      await lifecycle(nextRun, "end", at(4));
       await reader.dispose();
       await closeOpenClawAgentDatabasesAsync(root);
       const resumed = await readWait();
       expect(resumed.parent).toMatchObject({
-        lastRunId: "announcement-parent-run",
-        startedAt: startedAt + 3_000,
-        endedAt: startedAt + 4_000,
+        lastRunId: nextRun,
+        startedAt: at(3),
+        endedAt: at(4),
       });
-      expect(resumed.wait).toEqual({
-        startedAt: startedAt + 4_000,
-        runningCount: 0,
-        sessionCount: 1,
-      });
+      expect(resumed.wait).toEqual({ startedAt: at(4), runningCount: 0, sessionCount: 1 });
       expect(resumed.placedWait).toBeUndefined();
     } finally {
       releaseAgentRunContext(childRunId, childClaim);
