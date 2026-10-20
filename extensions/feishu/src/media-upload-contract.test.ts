@@ -112,9 +112,7 @@ describe("Feishu upload contracts", () => {
       contentType: "image/png",
     });
 
-    await sendMedia({
-      mediaUrl: "https://example.com/diagram.png",
-    });
+    await sendMedia({ mediaUrl: "https://example.com/diagram.png" });
 
     expect(mocks.imageCreate).not.toHaveBeenCalled();
     expect(mockCallData(mocks.fileCreate).file_type).toBe("stream");
@@ -125,12 +123,8 @@ describe("Feishu upload contracts", () => {
     const oversizedImage = Buffer.alloc(10 * 1024 * 1024 + 1);
     pngImage.copy(oversizedImage);
     await expect(
-      sendMedia({
-        mediaBuffer: oversizedImage,
-        fileName: "oversized.png",
-      }),
+      sendMedia({ mediaBuffer: oversizedImage, fileName: "oversized.png" }),
     ).rejects.toThrow("Feishu image exceeds its 10485760-byte upload limit");
-
     expect(mocks.imageCreate).not.toHaveBeenCalled();
     expect(mocks.messageCreate).not.toHaveBeenCalled();
   });
@@ -145,19 +139,15 @@ describe("Feishu upload contracts", () => {
         audioAsVoice: true,
       }),
     ).rejects.toThrow("Feishu file exceeds its 1-byte upload limit");
-
     expect(mocks.transcodeAudio).not.toHaveBeenCalled();
     expect(mocks.fileCreate).not.toHaveBeenCalled();
   });
 
   it("retains accepted image visibility when its platform identifier is missing", async () => {
     mocks.messageCreate.mockResolvedValueOnce({ code: 0, data: {} });
-    let caught: unknown;
-    try {
-      await sendMedia({ mediaBuffer: tiffImage, fileName: "scan.tif" });
-    } catch (error) {
-      caught = error;
-    }
+    const caught = await sendMedia({ mediaBuffer: tiffImage, fileName: "scan.tif" }).catch(
+      (error: unknown) => error,
+    );
     expect(isChannelPartialDeliveryError(caught)).toBe(true);
     if (!(caught instanceof Error) || !isChannelPartialDeliveryError(caught)) {
       throw new Error("expected an accepted Feishu media delivery without an identity");
@@ -169,14 +159,10 @@ describe("Feishu upload contracts", () => {
 
   it("rejects empty image and file attachments before contacting Feishu", async () => {
     for (const fileName of ["empty.png", "empty.pdf"]) {
-      await expect(
-        sendMedia({
-          mediaBuffer: Buffer.alloc(0),
-          fileName,
-        }),
-      ).rejects.toThrow("Feishu attachments cannot be empty");
+      await expect(sendMedia({ mediaBuffer: Buffer.alloc(0), fileName })).rejects.toThrow(
+        "Feishu attachments cannot be empty",
+      );
     }
-
     expect(mocks.imageCreate).not.toHaveBeenCalled();
     expect(mocks.fileCreate).not.toHaveBeenCalled();
   });

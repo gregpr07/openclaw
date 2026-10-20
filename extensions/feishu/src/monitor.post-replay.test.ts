@@ -47,33 +47,26 @@ it("suppresses rich-post transport twins and retained legacy records without blo
       replyText: "scripted post reply",
     });
     const runtime = installFeishuLifecycleReplyRuntime({
-      resolveAgentRouteMock: mocks.resolveAgentRouteMock,
-      dispatchReplyFromConfigMock: mocks.dispatchReplyFromConfigMock,
-      withReplyDispatcherMock: mocks.withReplyDispatcherMock,
+      ...mocks,
       storePath: `${state.stateDir}/sessions.json`,
     });
     runtime.config.current = () => cfg;
+    const queueOptions = { channelId: "feishu", accountId: "test", stateDir: state.stateDir };
     const ingressReady = createDeferred<(eventId: string) => Promise<boolean>>();
     runtime.state.openChannelIngressQueue = <
       T,
       TMetadata = unknown,
       TCompletedMetadata = unknown,
     >() => {
-      const ingressQueue = createChannelIngressQueueForTests<T, TMetadata, TCompletedMetadata>({
-        channelId: "feishu",
-        accountId: "test",
-        stateDir: state.stateDir,
-      });
+      const ingressQueue = createChannelIngressQueueForTests<T, TMetadata, TCompletedMetadata>(
+        queueOptions,
+      );
       ingressReady.resolve((eventId) =>
         observeChannelIngressQueueWrite(ingressQueue, "complete", eventId),
       );
       return ingressQueue;
     };
-    const queue = createChannelIngressQueueForTests({
-      channelId: "feishu",
-      accountId: "test",
-      stateDir: state.stateDir,
-    });
+    const queue = createChannelIngressQueueForTests(queueOptions);
     const controller = new AbortController();
     const ready = createDeferred<EventDispatcher>();
     mocks.monitorWebSocketMock.mockImplementation(async (...args: unknown[]) => {
@@ -106,6 +99,7 @@ it("suppresses rich-post transport twins and retained legacy records without blo
       let sequence = 0;
       const send = async (
         messageId: string,
+        expectedReplies: number,
         createTime = "1758000000000",
         media: { imageKey?: string; fileKey?: string } = {},
       ) => {
@@ -145,29 +139,22 @@ it("suppresses rich-post transport twins and retained legacy records without blo
         expect(await queue.listClaims()).toEqual([]);
         // Ingress adoption clears the queue before reply delivery settles.
         await Promise.all(mocks.withReplyDispatcherMock.mock.results.map((result) => result.value));
+        expect(mocks.dispatchReplyFromConfigMock).toHaveBeenCalledTimes(expectedReplies);
       };
-      await send("om-first");
-      expect(mocks.dispatchReplyFromConfigMock).toHaveBeenCalledTimes(1);
-      await send("om-reconnected");
-      expect(mocks.dispatchReplyFromConfigMock).toHaveBeenCalledTimes(1);
-      await send("om-legacy", "1758000000001");
-      expect(mocks.dispatchReplyFromConfigMock).toHaveBeenCalledTimes(1);
-      await send("om-legacy", "1758000000001", { fileKey: "file_report" });
-      expect(mocks.dispatchReplyFromConfigMock).toHaveBeenCalledTimes(1);
-      await send("om-different", "1758000000002");
-      expect(mocks.dispatchReplyFromConfigMock).toHaveBeenCalledTimes(2);
+      await send("om-first", 1);
+      await send("om-reconnected", 1);
+      await send("om-legacy", 1, "1758000000001");
+      await send("om-legacy", 1, "1758000000001", { fileKey: "file_report" });
+      await send("om-different", 2, "1758000000002");
       expect(
         mocks.createFeishuReplyDispatcherMock.mock.results.map(
           (result) => result.value.delivery.deliver.mock.calls.length,
         ),
       ).toEqual([1, 1]);
       // A legacy raw-ID hit must not suppress an attachment-bearing revision.
-      await send("om-legacy", "1758000000001", { imageKey: "img_fixture" });
-      expect(mocks.dispatchReplyFromConfigMock).toHaveBeenCalledTimes(3);
-      await send("om-legacy", "1758000000001", { imageKey: "img_fixture" });
-      expect(mocks.dispatchReplyFromConfigMock).toHaveBeenCalledTimes(3);
-      await send("om-media-fresh-id", "1758000000001", { imageKey: "img_fixture" });
-      expect(mocks.dispatchReplyFromConfigMock).toHaveBeenCalledTimes(4);
+      await send("om-legacy", 3, "1758000000001", { imageKey: "img_fixture" });
+      await send("om-legacy", 3, "1758000000001", { imageKey: "img_fixture" });
+      await send("om-media-fresh-id", 4, "1758000000001", { imageKey: "img_fixture" });
     } catch (error) {
       console.error("Feishu post-replay lifecycle diagnostics", {
         logs: vi.mocked(monitorRuntime.log).mock.calls,

@@ -1,4 +1,3 @@
-// Feishu tests cover docx batch insert plugin behavior.
 import type * as Lark from "@larksuiteoapi/node-sdk";
 import { describe, expect, it, vi } from "vitest";
 import { BATCH_SIZE, insertBlocksInBatches } from "./docx-batch-insert.js";
@@ -8,27 +7,14 @@ type InsertBlocksClient = Parameters<typeof insertBlocksInBatches>[0];
 type DocxDescendantCreate = Lark.Client["docx"]["documentBlockDescendant"]["create"];
 type DocxDescendantCreateParams = Parameters<DocxDescendantCreate>[0];
 type DocxDescendantCreateResponse = Awaited<ReturnType<DocxDescendantCreate>>;
-type RequiredDocxDescendantCreateParams = NonNullable<DocxDescendantCreateParams> & {
-  data: NonNullable<NonNullable<DocxDescendantCreateParams>["data"]>;
-};
-
-function createDocxDescendantClient(create: DocxDescendantCreate): InsertBlocksClient {
-  return {
-    docx: {
-      documentBlockDescendant: {
-        create,
-      },
-    },
-  } as InsertBlocksClient;
-}
 
 function createSuccessfulDocxDescendantCreateMock() {
   return vi.fn(
     async (params?: DocxDescendantCreateParams): Promise<DocxDescendantCreateResponse> => ({
       code: 0,
       data: {
-        children: (params?.data?.children_id ?? []).map((id) => ({
-          block_id: id,
+        children: (params?.data?.children_id ?? []).map((block_id) => ({
+          block_id,
           block_type: 2,
         })),
       },
@@ -39,30 +25,25 @@ function createSuccessfulDocxDescendantCreateMock() {
 function createCallParams(
   createMock: ReturnType<typeof createSuccessfulDocxDescendantCreateMock>,
   index = 0,
-): RequiredDocxDescendantCreateParams {
-  const call = createMock.mock.calls.at(index);
-  if (!call) {
-    throw new Error(`Expected DOCX descendant create call ${index}`);
-  }
-  const params = call.at(0);
-  if (!params) {
-    throw new Error(`Expected DOCX descendant create params ${index}`);
-  }
-  if (!params.data) {
+) {
+  const params = createMock.mock.calls.at(index)?.[0];
+  if (!params?.data) {
     throw new Error(`Expected DOCX descendant create data ${index}`);
   }
-  return params as RequiredDocxDescendantCreateParams;
+  return { ...params, data: params.data };
 }
 
 describe("insertBlocksInBatches", () => {
   it("splits flat trees at the API block limit", async () => {
     const blockCount = BATCH_SIZE + 200;
-    const blocks = Array.from({ length: blockCount }, (_, index) => ({
-      block_id: `block_${index}`,
+    const blocks = Array.from({ length: blockCount }, (_, i) => ({
+      block_id: `block_${i}`,
       block_type: 2,
     }));
     const createMock = createSuccessfulDocxDescendantCreateMock();
-    const client = createDocxDescendantClient((params) => createMock(params));
+    const client = {
+      docx: { documentBlockDescendant: { create: createMock } },
+    } as InsertBlocksClient;
 
     const result = await insertBlocksInBatches(
       client,
@@ -79,7 +60,9 @@ describe("insertBlocksInBatches", () => {
 
   it("keeps nested descendants grouped with their roots without repeating shared or cyclic blocks", async () => {
     const createMock = createSuccessfulDocxDescendantCreateMock();
-    const client = createDocxDescendantClient((params) => createMock(params));
+    const client = {
+      docx: { documentBlockDescendant: { create: createMock } },
+    } as InsertBlocksClient;
     const blocks: FeishuDocxBlock[] = [
       { block_id: "root_a", block_type: 1, children: ["child_a"] },
       { block_id: "child_a", block_type: 2, children: "root_a" },
@@ -92,11 +75,7 @@ describe("insertBlocksInBatches", () => {
     expect(createMock).toHaveBeenCalledTimes(1);
     const createParams = createCallParams(createMock);
     expect(createParams.data.children_id).toEqual(["root_a", "root_b"]);
-    expect(createParams.data.descendants.map((block) => block.block_id ?? "")).toEqual([
-      "root_a",
-      "child_a",
-      "root_b",
-      "child_b",
-    ]);
+    const ids = ["root_a", "child_a", "root_b", "child_b"];
+    expect(createParams.data.descendants.map((block) => block.block_id ?? "")).toEqual(ids);
   });
 });
