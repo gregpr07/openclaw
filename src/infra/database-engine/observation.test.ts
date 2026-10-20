@@ -31,13 +31,21 @@ function capture(target: typeof statementChannel) {
   cleanups.push(() => target.unsubscribe(subscriber));
   return events;
 }
+const completion = (engine: string, outcome = "ok") => ({
+  engine,
+  threadId,
+  outcome,
+  durationMs: expect.any(Number),
+});
 
 describe("database engine observation", () => {
   it("executes SQLite without clocks or events when neither channel has a subscriber", async () => {
     const db = database();
     const clock = vi.spyOn(performance, "now");
-    expect(statementChannel.hasSubscribers).toBe(false);
-    expect(requestChannel.hasSubscribers).toBe(false);
+    expect([statementChannel.hasSubscribers, requestChannel.hasSubscribers]).toEqual([
+      false,
+      false,
+    ]);
     expect(db.prepare("SELECT 7 AS value").get()).toEqual({ value: 7 });
     const pending = Promise.resolve(8);
     expect(observeDatabaseRequest("sqlite", () => pending)).toBe(pending);
@@ -45,23 +53,20 @@ describe("database engine observation", () => {
     expect(clock).not.toHaveBeenCalled();
   });
 
-  it("observes statements prepared before subscription, redacting literals and never publishing bindings", () => {
+  it("observes pre-subscription statements, redacts trailing-backslash literals and never publishes bindings", () => {
     const db = database();
-    const statement = db.prepare("SELECT ? AS value, 'literal-secret' AS text, 42 AS number");
+    const statement = db.prepare(
+      "SELECT ? AS value, 'C:\\' AS path, 'literal-secret' AS text, 42 AS number",
+    );
     const events = capture(statementChannel);
     expect(statement.get("binding-secret")).toEqual({
       value: "binding-secret",
+      path: "C:\\",
       text: "literal-secret",
       number: 42,
     });
     expect(events).toEqual([
-      {
-        engine: "sqlite",
-        sql: "SELECT ? AS value, ? AS text, ? AS number",
-        threadId,
-        outcome: "ok",
-        durationMs: expect.any(Number),
-      },
+      { ...completion("sqlite"), sql: "SELECT ? AS value, ? AS path, ? AS text, ? AS number" },
     ]);
     expect(JSON.stringify(events)).not.toContain("secret");
   });
@@ -111,16 +116,6 @@ describe("database engine observation", () => {
     expect(events).toEqual([]);
   });
 
-  it("redacts SQLite literals ending in a backslash without leaking the following literal", () => {
-    const db = database();
-    const events = capture(statementChannel);
-    expect(db.prepare("SELECT 'C:\\' AS path, 'private_value' AS value").get()).toEqual({
-      path: "C:\\",
-      value: "private_value",
-    });
-    expect(events).toEqual([expect.objectContaining({ sql: "SELECT ? AS path, ? AS value" })]);
-  });
-
   it("publishes failure outcomes while preserving SQLite errors", () => {
     const db = database();
     const events = capture(statementChannel);
@@ -155,9 +150,6 @@ describe("database engine observation", () => {
         throw failure;
       }),
     ).rejects.toBe(failure);
-    expect(events).toEqual([
-      { engine: "postgres", threadId, outcome: "ok", durationMs: expect.any(Number) },
-      { engine: "sqlite", threadId, outcome: "error", durationMs: expect.any(Number) },
-    ]);
+    expect(events).toEqual([completion("postgres"), completion("sqlite", "error")]);
   });
 });

@@ -1,21 +1,17 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { getEnvironmentData, Worker } from "node:worker_threads";
+import { getEnvironmentData } from "node:worker_threads";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
-import { openNodeSqliteDatabase } from "../node-sqlite.js";
-import {
-  resolveRuntimeWorkerThreadExecArgv,
-  resolveRuntimeWorkerUrl,
-} from "../runtime-worker-url.js";
-import { captureSqliteDatabaseAdmissions } from "../sqlite-database-admission.js";
+import { spawnConformanceWorker } from "./conformance.test-support.js";
 import {
   multiNamespaceEntrypoint,
   type NamespaceCommand,
   type NamespaceIdentity,
 } from "./multi-namespace.test-support.js";
 import { pgSearchName } from "./postgres-search-schema.js";
+import { withPostgresConnection } from "./postgres-store-metadata.js";
 
 const configured = getEnvironmentData("openclaw.test.workboard.connection");
 const connection = typeof configured === "string" ? configured : undefined;
@@ -23,22 +19,16 @@ const dirs = useAutoCleanupTempDirTracker(afterAll);
 
 function launch(prefix: string, dsn = connection) {
   const databasePath = path.join(dirs.make("pg-multi-namespace-"), "anchor.sqlite");
-  const anchor = openNodeSqliteDatabase(databasePath);
   const gates = new Int32Array(new SharedArrayBuffer(8));
   const events = new Map<string, ReturnType<typeof Promise.withResolvers<unknown>>>();
   for (const name of ["booting", "ready", "holding"]) {
     events.set(name, Promise.withResolvers());
   }
-  const url = resolveRuntimeWorkerUrl(multiNamespaceEntrypoint);
-  const worker = new Worker(url, {
-    execArgv: resolveRuntimeWorkerThreadExecArgv(url),
-    workerData: {
-      connection: dsn,
-      prefix,
-      path: databasePath,
-      gates: gates.buffer,
-      admissions: captureSqliteDatabaseAdmissions(undefined, { location: databasePath }),
-    },
+  const { anchor, worker } = spawnConformanceWorker(multiNamespaceEntrypoint, databasePath, {
+    connection: dsn,
+    prefix,
+    path: databasePath,
+    gates: gates.buffer,
   });
   worker.on("message", (message: { event: string; result?: unknown; error?: string }) => {
     const pending = events.get(message.event)!;
@@ -88,6 +78,7 @@ describe.skipIf(!connection)("independent PostgreSQL installation namespaces", (
   const workers: ReturnType<typeof launch>[] = [];
   const identities: NamespaceIdentity[] = [];
   const separateDatabase = `pgprep_isolation_${randomUUID().replaceAll("-", "")}`;
+  const rows = async (sql: string, values?: unknown[]) => (await admin.query(sql, values)).rows;
   let databaseWorker: ReturnType<typeof launch> | undefined;
   let databaseIdentity: NamespaceIdentity;
   let databaseCreated = false;
@@ -97,15 +88,14 @@ describe.skipIf(!connection)("independent PostgreSQL installation namespaces", (
     databaseCreated = true;
     const separateDsn = new URL(connection!);
     separateDsn.pathname = `/${separateDatabase}`;
-    const setup = new Client({ connectionString: separateDsn.href });
-    await setup.connect();
-    try {
-      await setup.query(
-        "CREATE EXTENSION unaccent WITH SCHEMA public; CREATE EXTENSION pg_trgm WITH SCHEMA public; CREATE EXTENSION vector WITH SCHEMA public",
-      );
-    } finally {
-      await setup.end();
-    }
+    await withPostgresConnection(
+      { connection: separateDsn.href, schemaPrefix: "installation_a" },
+      async (setup) => {
+        await setup.query(
+          "CREATE EXTENSION unaccent WITH SCHEMA public; CREATE EXTENSION pg_trgm WITH SCHEMA public; CREATE EXTENSION vector WITH SCHEMA public",
+        );
+      },
+    );
     workers.push(launch("installation_a"), launch("installation_b"));
     databaseWorker = launch("installation_a", separateDsn.href);
     const booting = [...workers, databaseWorker];
@@ -138,22 +128,22 @@ describe.skipIf(!connection)("independent PostgreSQL installation namespaces", (
     expect(a!.storeId).not.toBe(b!.storeId);
     expect(a!.namespace).toMatch(/^installation_a_isolation_/);
     expect(b!.namespace).toMatch(/^installation_b_isolation_/);
-    const seals = await admin.query(
+    const seals = await rows(
       `SELECT ddl_hash FROM ${pgSearchName(a!.namespace)}.openclaw_schema_meta
        UNION SELECT ddl_hash FROM ${pgSearchName(b!.namespace)}.openclaw_schema_meta`,
     );
-    expect(seals.rows).toHaveLength(1);
+    expect(seals).toHaveLength(1);
     const writes = workers.map((worker, i) =>
       worker.run({ op: "write", id: "same-id", text: i ? "café beta" : "café alpha", hold: true }),
     );
     await Promise.all(workers.map((worker) => worker.event("holding")));
-    const locks = await admin.query(
+    const locks = await rows(
       "SELECT pid, classid::text, objid::text, granted FROM pg_locks WHERE locktype = 'advisory' AND pid = ANY($1::int[]) ORDER BY pid",
       [identities.map(({ pid }) => pid)],
     );
-    expect(locks.rows).toHaveLength(2);
-    expect(locks.rows.every((row) => row.granted)).toBe(true);
-    expect(new Set(locks.rows.map((row) => `${row.classid}:${row.objid}`)).size).toBe(2);
+    expect(locks).toHaveLength(2);
+    expect(locks.every((row) => row.granted)).toBe(true);
+    expect(new Set(locks.map((row) => `${row.classid}:${row.objid}`)).size).toBe(2);
     workers.forEach((worker) => worker.release(1));
     await Promise.all(writes);
     for (const worker of [workers[1]!, workers[0]!]) {
@@ -169,23 +159,21 @@ describe.skipIf(!connection)("independent PostgreSQL installation namespaces", (
       ]);
       const namespace = identities[i]!.namespace;
       expect(
-        (
-          await admin.query(
-            `SELECT id, embedding::text FROM ${pgSearchName(namespace)}.vectors ORDER BY id`,
-          )
-        ).rows,
+        await rows(
+          `SELECT id, embedding::text FROM ${pgSearchName(namespace)}.vectors ORDER BY id`,
+        ),
       ).toEqual([
         { id: "same-id", embedding: "[1,0,0]" },
         { id: "second-id", embedding: "[1,0,0]" },
       ]);
-      const dependency = await admin.query(
+      const dependency = await rows(
         `SELECT n.nspname FROM pg_depend d JOIN pg_attrdef a ON a.oid = d.objid
          JOIN pg_ts_config c ON c.oid = d.refobjid JOIN pg_namespace n ON n.oid = c.cfgnamespace
          WHERE d.classid = 'pg_attrdef'::regclass AND d.refclassid = 'pg_ts_config'::regclass
          AND a.adrelid = $1::regclass`,
         [`${namespace}.notes`],
       );
-      expect(dependency.rows).toEqual([{ nspname: namespace }]);
+      expect(dependency).toEqual([{ nspname: namespace }]);
     }
   });
 

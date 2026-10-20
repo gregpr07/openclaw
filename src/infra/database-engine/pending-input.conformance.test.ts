@@ -30,14 +30,14 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
     });
 
     const fixture = async (sessionId: string) => {
-      const database = withEngineStoreAdmission(() =>
+      const { path: storePath } = withEngineStoreAdmission(() =>
         openOpenClawAgentDatabase({ agentId: "main" }),
       );
       const scope = {
         agentId: "main",
         sessionKey: `agent:main:${sessionId}`,
         sessionId,
-        storePath: database.path,
+        storePath,
       };
       await upsertSessionEntryCore(scope, { sessionId, updatedAt: 1 });
       return {
@@ -47,7 +47,7 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
             runId,
             message: {
               role: "user",
-              content: `Synthetic pending input ${runId}`,
+              content: runId,
               timestamp: 1,
               idempotencyKey: `${runId}:user`,
             },
@@ -75,12 +75,9 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
       const expected = {
         id: retained.inputId,
         state: "interrupted",
-        message: { content: "Synthetic pending input retained" },
+        message: { content: "retained" },
       };
-      expect(await listSessionPendingInputs(scope)).toMatchObject({
-        total: 1,
-        items: [expected],
-      });
+      expect(await listSessionPendingInputs(scope)).toMatchObject({ total: 1, items: [expected] });
       expect(await readSessionPendingInputContext(scope)).toMatchObject({ items: [expected] });
     });
 
@@ -89,7 +86,7 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
       await stage("submitted");
       expect(await readSessionSubmittedInput(scope, "submitted:user")).toMatchObject({
         role: "user",
-        content: "Synthetic pending input submitted",
+        content: "submitted",
         idempotencyKey: "submitted:user",
       });
     });
@@ -119,7 +116,7 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
       });
       expect(await readSessionPendingInput(scope, retained.inputId)).toMatchObject({
         state: "queued",
-        message: { content: "Synthetic pending input sibling" },
+        message: { content: "sibling" },
       });
     });
   },
