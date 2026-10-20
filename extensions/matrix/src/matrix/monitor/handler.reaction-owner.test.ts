@@ -23,9 +23,13 @@ import { installMatrixMonitorTestRuntime } from "../../test-runtime.js";
 import {
   createMatrixHandlerTestHarness,
   createMatrixReactionEvent,
+  createMatrixReactionTestHarness,
   createMatrixTextMessageEvent,
 } from "./handler.test-helpers.js";
 
+const roomId = "!room:example.org";
+const reactionEvent = (eventId: string) =>
+  createMatrixReactionEvent({ eventId, targetEventId: "$msg1", key: "👍" });
 beforeEach(() => {
   installMatrixMonitorTestRuntime();
   resetSystemEventsForTest();
@@ -49,7 +53,7 @@ describe("Matrix reaction ownership", () => {
       bindingId: "reaction-owner",
       targetSessionKey: "global",
       targetKind: "session" as const,
-      conversation: { channel: "matrix", accountId: "ops", conversationId: "!room:example.org" },
+      conversation: { channel: "matrix", accountId: "ops", conversationId: roomId },
       status: "active" as const,
       boundAt: 1,
       metadata: { agentId: "research" },
@@ -59,24 +63,9 @@ describe("Matrix reaction ownership", () => {
       listBySession: () => [binding],
       resolveByConversation: () => binding,
     });
-    const { handler, recordInboundSession, runPrepared } = createMatrixHandlerTestHarness({
-      cfg,
-      client: {
-        getEvent: async (_roomId, eventId) =>
-          createMatrixTextMessageEvent({
-            eventId,
-            sender: "@bot:example.org",
-            body: "Bot response",
-            originServerTs: 0,
-          }),
-      },
-      getMemberDisplayName: async () => "sender",
-    });
+    const { handler, recordInboundSession, runPrepared } = createMatrixReactionTestHarness({ cfg });
 
-    await handler(
-      "!room:example.org",
-      createMatrixReactionEvent({ eventId: "$owner-reaction", targetEventId: "$msg1", key: "👍" }),
-    );
+    await handler(roomId, reactionEvent("$owner-reaction"));
 
     expect(peekSystemEventEntries("agent:research:global")).toEqual([
       expect.objectContaining({ text: "Matrix reaction added: 👍 by sender on msg $msg1" }),
@@ -117,14 +106,7 @@ describe("Matrix reaction ownership", () => {
         },
       },
     });
-    const reaction = handler(
-      "!room:example.org",
-      createMatrixReactionEvent({
-        eventId: "$revoked-reaction",
-        targetEventId: "$msg1",
-        key: "👍",
-      }),
-    );
+    const reaction = handler(roomId, reactionEvent("$revoked-reaction"));
     try {
       await targetLookup.promise;
       builder.rollbackPluginGlobalSideEffects(record.id, record);

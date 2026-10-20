@@ -57,28 +57,26 @@ describe("Matrix bot-owned thread mention policy", () => {
     };
   }
 
-  it.each<{ scope: string; config: MatrixConfig }>([
-    {
-      scope: "account",
-      config: {
+  it.each<[string, MatrixConfig]>([
+    [
+      "account",
+      {
         requireMentionInBotThreads: true,
         accounts: { work: { requireMentionInBotThreads: false } },
       },
-    },
-    {
-      scope: "exact group",
-      config: {
+    ],
+    [
+      "exact group",
+      {
         groups: {
           "*": { requireMentionInBotThreads: true },
           [roomId]: { requireMentionInBotThreads: false },
         },
       },
-    },
-  ])("accepts unmentioned bot-thread replies with $scope configuration", async ({ config }) => {
+    ],
+  ])("accepts unmentioned bot-thread replies with %s configuration", async (_scope, config) => {
     const f = setup(config);
-
     await f.receive();
-
     expect(f.dispatch).toHaveBeenCalledOnce();
     expect(f.recordInboundSession).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -105,12 +103,12 @@ describe("Matrix bot-owned thread mention policy", () => {
     expect(f.dispatch).toHaveBeenCalledOnce();
   });
 
-  it.each<{ kind: string; patch: Partial<MatrixRawEvent> | null }>([
-    { kind: "another author's root", patch: { sender: "@other:example.org" } },
-    { kind: "another event id", patch: { event_id: "$other" } },
-    { kind: "another room", patch: { room_id: "!other:example.org" } },
-    { kind: "an unreadable root", patch: null },
-  ])("retains mention gating for $kind", async ({ patch }) => {
+  it.each<[string, Partial<MatrixRawEvent> | null]>([
+    ["another author's root", { sender: "@other:example.org" }],
+    ["another event id", { event_id: "$other" }],
+    ["another room", { room_id: "!other:example.org" }],
+    ["an unreadable root", null],
+  ])("retains mention gating for %s", async (_kind, patch) => {
     const f = setup({ requireMentionInBotThreads: false });
     if (patch) {
       f.getEvent.mockResolvedValue({ ...f.root, ...patch });
@@ -136,13 +134,10 @@ describe("Matrix bot-owned thread mention policy", () => {
     expect(f.dispatch).toHaveBeenCalledOnce();
   });
 
-  it.each<{ restriction: string; config: MatrixConfig }>([
-    { restriction: "disabled rooms", config: { groupPolicy: "disabled" } },
-    {
-      restriction: "room sender allowlists",
-      config: { rooms: { [roomId]: { users: ["@trusted:example.org"] } } },
-    },
-  ])("preserves $restriction inside bot threads", async ({ config }) => {
+  it.each<[string, MatrixConfig]>([
+    ["disabled rooms", { groupPolicy: "disabled" }],
+    ["room sender allowlists", { rooms: { [roomId]: { users: ["@trusted:example.org"] } } }],
+  ])("preserves %s inside bot threads", async (_restriction, config) => {
     const f = setup({ ...config, requireMentionInBotThreads: false });
 
     await f.receive();

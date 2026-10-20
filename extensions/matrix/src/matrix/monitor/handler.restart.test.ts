@@ -31,23 +31,41 @@ describe("Matrix inbound restart recovery", () => {
       userId: "@bot:example.org",
       syncStore,
     });
-
-  it("keeps first-login history excluded across sync batches and cached replay", async () => {
+  async function openMonitor(
+    startupMs: number,
+    dispatch: Parameters<typeof createMatrixIngressMonitor>[0]["dispatch"],
+  ) {
     const store = await SqliteBackedMatrixSyncStore.create(storage.root);
     const client = createClient(store);
-    const dispatch = vi.fn(
-      async (_room: string, _event: MatrixRawEvent, lifecycle: ChannelIngressMonitorLifecycle) => {
-        await lifecycle.onAdopted();
-      },
-    );
-    const first = createMatrixIngressMonitor({
+    const monitor = createMatrixIngressMonitor({
       accountId: "default",
       client,
-      startupMs: 2_000,
+      startupMs,
       queue: createQueue(),
       dispatch,
     });
-    const unbind = await client.bindSyncIngress(first.admitSync);
+    const unbind = await client.bindSyncIngress(monitor.admitSync);
+    return { store, monitor, unbind };
+  }
+  async function closeDatabase() {
+    await closeOpenClawStateDatabaseAsync();
+    resetPluginStateStoreForTests();
+  }
+  const adoptingDispatch = (adopted?: ReturnType<typeof createDeferred<void>>) =>
+    vi.fn(
+      async (_room: string, _event: MatrixRawEvent, lifecycle: ChannelIngressMonitorLifecycle) => {
+        await lifecycle.onAdopted();
+        adopted?.resolve();
+      },
+    );
+  async function expectDrained() {
+    expect(await createQueue().listPending()).toEqual([]);
+    expect(await createQueue().listClaims()).toEqual([]);
+  }
+
+  it("keeps first-login history excluded across sync batches and cached replay", async () => {
+    const dispatch = adoptingDispatch();
+    const { store, monitor: first, unbind } = await openMonitor(2_000, dispatch);
     await store.setSyncData(response);
     const lateRoomId = "!joined-later:example.org";
     const laterSync = matrixSyncResponse(
@@ -62,19 +80,12 @@ describe("Matrix inbound restart recovery", () => {
     await store.flush();
     unbind();
     await first.stop();
-    await closeOpenClawStateDatabaseAsync();
-    resetPluginStateStoreForTests();
-
-    const restored = await SqliteBackedMatrixSyncStore.create(storage.root);
-    const restartedClient = createClient(restored);
-    const restarted = createMatrixIngressMonitor({
-      accountId: "default",
-      client: restartedClient,
-      startupMs: 3_000,
-      queue: createQueue(),
-      dispatch,
-    });
-    const unbindRestart = await restartedClient.bindSyncIngress(restarted.admitSync);
+    await closeDatabase();
+    const {
+      store: restored,
+      monitor: restarted,
+      unbind: unbindRestart,
+    } = await openMonitor(3_000, dispatch);
     try {
       restarted.start();
       await restarted.waitForIdle();
@@ -86,8 +97,7 @@ describe("Matrix inbound restart recovery", () => {
         expect.objectContaining(freshEvent),
         expect.any(Object),
       );
-      expect(await createQueue().listPending()).toEqual([]);
-      expect(await createQueue().listClaims()).toEqual([]);
+      await expectDrained();
     } finally {
       unbindRestart();
       await restarted.stop();
@@ -97,20 +107,15 @@ describe("Matrix inbound restart recovery", () => {
   it.each(["SIGTERM", "SIGKILL"] as const)(
     "replays an unadopted message exactly once after %s-style restart",
     async (shutdown) => {
-      const store = await SqliteBackedMatrixSyncStore.create(storage.root);
-      const client = createClient(store);
       const deferred = createDeferred<void>();
-      const first = createMatrixIngressMonitor({
-        accountId: "default",
-        client,
-        startupMs: 0,
-        queue: createQueue(),
-        dispatch: async (_room, _event, lifecycle) => {
-          lifecycle.onDeferred();
-          deferred.resolve();
-        },
+      const {
+        store,
+        monitor: first,
+        unbind,
+      } = await openMonitor(0, async (_room, _event, lifecycle) => {
+        lifecycle.onDeferred();
+        deferred.resolve();
       });
-      const unbind = await client.bindSyncIngress(first.admitSync);
       await store.setSyncData(response);
       await store.flush();
       if (shutdown === "SIGTERM") {
@@ -123,42 +128,25 @@ describe("Matrix inbound restart recovery", () => {
         await createQueue().claim(event.event_id, { ownerId: "2147483647:0:dead-worker" });
       }
       unbind();
-      await closeOpenClawStateDatabaseAsync();
-      resetPluginStateStoreForTests();
-
-      const restored = await SqliteBackedMatrixSyncStore.create(storage.root);
-      const restartedClient = createClient(restored);
+      await closeDatabase();
       const adopted = createDeferred<void>();
-      const dispatch = vi.fn(
-        async (
-          _room: string,
-          _event: MatrixRawEvent,
-          lifecycle: ChannelIngressMonitorLifecycle,
-        ) => {
-          await lifecycle.onAdopted();
-          adopted.resolve();
-        },
-      );
-      const restarted = createMatrixIngressMonitor({
-        accountId: "default",
-        client: restartedClient,
-        startupMs: 2_000,
-        queue: createQueue(),
-        dispatch,
-      });
-      const unbindRestart = await restartedClient.bindSyncIngress(restarted.admitSync);
+      const dispatch = adoptingDispatch(adopted);
+      const {
+        store: restored,
+        monitor: restarted,
+        unbind: unbindRestart,
+      } = await openMonitor(2_000, dispatch);
       try {
         restarted.start();
         await adopted.promise;
         // A server replay must not create another delivery after adoption.
         await restored.setSyncData(response);
-        expect(dispatch).toHaveBeenCalledTimes(1);
-        expect(dispatch.mock.calls[0]?.slice(0, 2)).toEqual([
+        expect(dispatch).toHaveBeenCalledExactlyOnceWith(
           roomId,
           expect.objectContaining(event),
-        ]);
-        expect(await createQueue().listPending()).toEqual([]);
-        expect(await createQueue().listClaims()).toEqual([]);
+          expect.any(Object),
+        );
+        await expectDrained();
       } finally {
         unbindRestart();
         await restarted.stop();
