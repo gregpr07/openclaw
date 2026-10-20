@@ -50,8 +50,8 @@ it.each([
           tokenExpiresAt: Date.now() + 300_000,
         });
       seed("first-account");
-      const entered = createDeferredCore<void>();
-      const release = createDeferredCore<void>();
+      const entered = createDeferredCore();
+      const release = createDeferredCore();
       const requests: string[] = [];
       const blockedUrl =
         blockedAt === "idp"

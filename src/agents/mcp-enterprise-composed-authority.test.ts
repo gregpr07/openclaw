@@ -59,8 +59,8 @@ it.each(["unchanged", "logout", "replacement"] as const)(
           tokenExpiresAt: Date.now() + 300_000,
         });
       seed("first-account");
-      const entered = createDeferredCore<void>();
-      const release = createDeferredCore<void>();
+      const entered = createDeferredCore();
+      const release = createDeferredCore();
       const requests: Array<{ url: string; bearer: string | null }> = [];
       let redeemed = false;
       let paused = false;
@@ -73,7 +73,7 @@ it.each(["unchanged", "logout", "replacement"] as const)(
         return [{ address: "93.184.216.34", family: 4 }];
       });
       runtimeFetchMock.mockReset().mockImplementation(async (input: string, init?: RequestInit) => {
-        const url = String(input);
+        const url = input;
         const bearer = new Headers(init?.headers).get("authorization");
         requests.push({ url, bearer });
         if (url === resource) {

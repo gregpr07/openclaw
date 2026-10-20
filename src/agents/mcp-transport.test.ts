@@ -168,8 +168,8 @@ describe("resolveMcpTransport", () => {
   it.each(["resource", "authorization"] as const)(
     "rechecks the enterprise credential at final %s HTTP dispatch after DNS preparation",
     async (destination) => {
-      const entered = createDeferredCore<void>();
-      const release = createDeferredCore<void>();
+      const entered = createDeferredCore();
+      const release = createDeferredCore();
       lookupMock.mockImplementationOnce(async () => {
         entered.resolve();
         await release.promise;
