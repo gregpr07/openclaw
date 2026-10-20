@@ -13,6 +13,7 @@ import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-wo
 import { withEnv } from "../../test-utils/env.js";
 import { observeMainThreadSql } from "../../test-utils/main-thread-sql-spies.test-support.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { createApiKeyCredential } from "./credential-fixtures.test-support.js";
 import { resolveSharedAuthStorePath } from "./path-resolve.js";
 import { withPreparedAuthStorePathForDisplay, resolveAuthStorePathForDisplay } from "./paths.js";
 import * as sqliteRead from "./sqlite-read.js";
@@ -39,8 +40,7 @@ describe("auth profile path helpers (direct-import coverage attribution)", () =>
 
   it("falls back to the shared owner for an agent dir that has no local store", () => {
     withEnv({ OPENCLAW_STATE_DIR: stateDir }, () => {
-      // A tilde-rooted dir resolveUserPath cannot expand still must not be reported as the owner:
-      // without a local store the loader reads the shared database, so display must name that.
+      // An unexpandable tilde path must fall back to the shared owner.
       const resolved = resolveAuthStorePathForDisplay("~fake-openclaw-no-expand");
       expect(resolved).toBe(resolveSharedAuthStorePath());
       expect(resolved.startsWith("~")).toBe(false);
@@ -58,22 +58,13 @@ it.each(["shared", "missing", "missing-row", "empty", "present", "unreadable"] a
       if (mode === "missing-row") {
         openOpenClawAgentDatabase({ agentId, env: state.env });
       } else if (mode !== "shared" && mode !== "missing") {
-        await state.writeAuthProfiles(
-          {
-            version: 1,
-            profiles:
-              mode === "empty"
-                ? {}
-                : {
-                    "fixture:display": {
-                      type: "api_key",
-                      provider: "fixture",
-                      key: "synthetic-display",
-                    },
-                  },
-          },
-          agentId,
-        );
+        const profiles =
+          mode === "empty"
+            ? {}
+            : {
+                "fixture:display": createApiKeyCredential("fixture", "synthetic-display"),
+              };
+        await state.writeAuthProfiles({ version: 1, profiles }, agentId);
       }
       await closeOpenClawAgentDatabasesAsync(state.stateDir);
       closeAuthProfileReadPool();

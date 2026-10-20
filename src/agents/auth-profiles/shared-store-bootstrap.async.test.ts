@@ -29,6 +29,8 @@ import {
 } from "./sqlite.js";
 import { updateAuthProfileStoreWithLock } from "./store-runtime.js";
 
+const committedOwner = { location: "state-db" } as const;
+
 afterEach(() => {
   vi.restoreAllMocks();
   clearRuntimeAuthProfileStoreSnapshots();
@@ -95,9 +97,7 @@ it("holds an empty legacy source against a foreign writer through shared commit 
     try {
       await prepareAuthProfileWriteTransactionAsync(undefined, { env });
       expect(blocked).toBe(2);
-      expect(readConfigMachineState(SHARED_AUTH_STORE_STATE_KEY, { env })).toEqual({
-        location: "state-db",
-      });
+      expect(readConfigMachineState(SHARED_AUTH_STORE_STATE_KEY, { env })).toEqual(committedOwner);
       foreign.exec("BEGIN IMMEDIATE; ROLLBACK");
     } finally {
       foreign.close();
@@ -122,37 +122,26 @@ it("fences replacement of the selected legacy source", async () => {
   });
 });
 
-it("publishes acknowledged relocation without replay when its result is lost", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
-    await prepareActor(env);
-    let attempts = 0;
-    interceptBootstrap(async (execute) => {
-      await execute();
-      attempts++;
-      throw new SqliteWorkerError("Synthetic bootstrap reply loss", "outcome-unknown");
-    });
-    const prepared = await prepareAuthProfileWriteTransactionAsync(undefined, { env });
-    expect(prepared.sharedOwner.location).toBe("state-db");
-    expect(attempts).toBe(1);
-    expect(readConfigMachineState(SHARED_AUTH_STORE_STATE_KEY, { env })).toEqual({
-      location: "state-db",
-    });
-  });
-});
-
-it.each(["caller", "source"] as const)(
-  "publishes committed ownership before refusing a retired %s after the worker reply",
-  async (retired) => {
+it.each(["reply", "caller", "source"] as const)(
+  "publishes committed ownership despite a lost %s after the worker reply",
+  async (lost) => {
     await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
       await prepareActor(env);
       const sourceDir = resolveSharedMainAuthAgentDir(env);
       const sourcePath = resolveAuthProfileDatabasePath(sourceDir);
-      await resolveSharedAuthStoreOwnershipAsync(captureOpenClawStateWorkerContext({ env }));
-      setRuntimeAuthProfileStoreSnapshot({ version: 1, profiles: {} }, sourceDir);
+      if (lost !== "reply") {
+        await resolveSharedAuthStoreOwnershipAsync(captureOpenClawStateWorkerContext({ env }));
+        setRuntimeAuthProfileStoreSnapshot({ version: 1, profiles: {} }, sourceDir);
+      }
       let revoked = false;
+      let attempts = 0;
       interceptBootstrap(async (execute) => {
         const result = await execute();
-        if (retired === "caller") {
+        attempts++;
+        if (lost === "reply") {
+          throw new SqliteWorkerError("Synthetic bootstrap reply loss", "outcome-unknown");
+        }
+        if (lost === "caller") {
           revoked = true;
         } else {
           fs.mkdirSync(sourceDir, { recursive: true });
@@ -160,24 +149,30 @@ it.each(["caller", "source"] as const)(
         }
         return result;
       });
-      await expect(
-        prepareAuthProfileWriteTransactionAsync(undefined, { env }, () => {
-          if (revoked) {
-            throw new Error("Synthetic caller retired after commit");
-          }
-        }),
-      ).rejects.toThrow(retired === "caller" ? /caller retired/ : /identity changed/);
-      expect(readConfigMachineState(SHARED_AUTH_STORE_STATE_KEY, { env })).toEqual({
-        location: "state-db",
+      const prepared = prepareAuthProfileWriteTransactionAsync(undefined, { env }, () => {
+        if (revoked) {
+          throw new Error("Synthetic caller retired after commit");
+        }
       });
-      expect(resolveSharedAuthStoreOwnership(env).location).toBe("state-db");
-      const snapshot = getOwnedRuntimeAuthProfileStoreSnapshotAtDatabasePath(sourcePath);
-      if (retired === "caller") {
-        expect(snapshot?.owner).toMatchObject({ location: "state-db" });
+      if (lost === "reply") {
+        expect((await prepared).sharedOwner.location).toBe("state-db");
+        expect(attempts).toBe(1);
       } else {
-        expect(snapshot).toBeUndefined();
-        expect(fs.readFileSync(sourcePath, "utf8")).toBe("replacement after committed relocation");
+        await expect(prepared).rejects.toThrow(
+          lost === "caller" ? /caller retired/ : /identity changed/,
+        );
+        expect(resolveSharedAuthStoreOwnership(env).location).toBe("state-db");
+        const snapshot = getOwnedRuntimeAuthProfileStoreSnapshotAtDatabasePath(sourcePath);
+        if (lost === "caller") {
+          expect(snapshot?.owner).toMatchObject({ location: "state-db" });
+        } else {
+          expect(snapshot).toBeUndefined();
+          expect(fs.readFileSync(sourcePath, "utf8")).toBe(
+            "replacement after committed relocation",
+          );
+        }
       }
+      expect(readConfigMachineState(SHARED_AUTH_STORE_STATE_KEY, { env })).toEqual(committedOwner);
     });
   },
 );

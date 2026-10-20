@@ -10,10 +10,17 @@ import {
   createEmptyAgentDiscoveryStores,
   resolveModelAsync,
 } from "../embedded-agent-runner/model.js";
+import { makeModel } from "../embedded-agent-runner/model.test-harness.js";
+import { createApiKeyCredential } from "./credential-fixtures.test-support.js";
 import { resolveSessionAuthSelection } from "./session-override.js";
 
 const directEndpoint = "https://api.arcee.ai/api/v1";
 const routerEndpoint = "https://openrouter.ai/api/v1";
+const profiles = {
+  "arcee:work": createApiKeyCredential("arcee", "synthetic-work-key"),
+  "arcee:other": createApiKeyCredential("arcee", "synthetic-other-key"),
+  "openrouter:default": createApiKeyCredential("openrouter", "synthetic-router-key"),
+};
 it.each([
   ["user", "arcee:work", directEndpoint, "arcee:work", "user", "main"],
   ["user-link", "arcee:work", directEndpoint, "arcee:work", "user-link", "writer"],
@@ -29,11 +36,12 @@ it.each([
         const cfg: OpenClawConfig = {
           plugins: { allow: ["arcee"] },
           auth: {
-            profiles: {
-              "arcee:work": { provider: "arcee", mode: "api_key" },
-              "arcee:other": { provider: "arcee", mode: "api_key" },
-              "openrouter:default": { provider: "openrouter", mode: "api_key" },
-            },
+            profiles: Object.fromEntries(
+              Object.entries(profiles).map(([id, { provider }]) => [
+                id,
+                { provider, mode: "api_key" as const },
+              ]),
+            ),
             order: { arcee: ["arcee:other", "arcee:work"], openrouter: ["openrouter:default"] },
           },
           models: {
@@ -43,15 +51,10 @@ it.each([
                 api: "openai-completions",
                 models: [
                   {
-                    id: "trinity-large-thinking",
-                    name: "Direct account model",
+                    ...makeModel("trinity-large-thinking"),
                     api: "openai-completions",
                     baseUrl: modelEndpoint,
                     reasoning: true,
-                    input: ["text"],
-                    contextWindow: 32768,
-                    maxTokens: 2048,
-                    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
                   },
                 ],
               },
@@ -60,21 +63,7 @@ it.each([
         };
         expect(OpenClawSchema.safeParse(cfg).success).toBe(true);
         await state.writeConfig(cfg);
-        await state.writeAuthProfiles(
-          {
-            version: 1,
-            profiles: {
-              "arcee:work": { type: "api_key", provider: "arcee", key: "synthetic-work-key" },
-              "arcee:other": { type: "api_key", provider: "arcee", key: "synthetic-other-key" },
-              "openrouter:default": {
-                type: "api_key",
-                provider: "openrouter",
-                key: "synthetic-router-key",
-              },
-            },
-          },
-          agentId,
-        );
+        await state.writeAuthProfiles({ version: 1, profiles }, agentId);
         const { model } = await resolveModelAsync(
           "arcee",
           "trinity-large-thinking",

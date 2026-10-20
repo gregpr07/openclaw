@@ -1,5 +1,5 @@
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
@@ -47,349 +47,292 @@ const expectTimeout = (outcome: unknown) =>
     }),
   });
 
-describe("awaited OAuth persistence", () => {
-  it.each([
-    { label: "Error", rejection: new Error("synthetic backend failure") },
-    { label: "primitive", rejection: "synthetic backend failure" },
-    { label: "undefined", rejection: undefined },
-  ])("preserves the original pre-deadline $label rejection", async ({ rejection }) => {
-    const settlement = createDeferredCore<never>();
-    const observing = observeOAuthRefreshSettlement(
-      "synthetic rejection",
-      1_000,
-      settlement.promise,
-    );
-    const rejected = expect(observing).rejects.toBe(rejection);
-    settlement.reject(rejection);
-    await rejected;
-  });
+it.each([
+  ["Error", new Error("synthetic backend failure")],
+  ["primitive", "synthetic backend failure"],
+  ["undefined", undefined],
+] as const)("preserves the original pre-deadline %s rejection", async (_label, rejection) => {
+  const settlement = createDeferredCore<never>();
+  const rejected = expect(
+    observeOAuthRefreshSettlement("rejection", 1_000, settlement.promise),
+  ).rejects.toBe(rejection);
+  settlement.reject(rejection);
+  await rejected;
+});
 
+it.each(["success", "failure"] as const)(
+  "waits for durable claim and %s settlement before publishing",
+  async (outcome) => {
+    const root = tempDirs.make("oauth-awaited-sqlite-");
+    const agentDir = path.join(root, "agents", "work", "agent");
+    await withEnvAsync({ OPENCLAW_STATE_DIR: root }, async () => {
+      const profileId = "synthetic:default";
+      const expired: OAuthCredential = {
+        type: "oauth",
+        provider: "synthetic",
+        access: "synthetic-expired-access",
+        refresh: "synthetic-expired-refresh",
+        expires: 1,
+        accountId: "synthetic-account",
+      };
+      const refreshed: OAuthCredential = {
+        ...expired,
+        access: "synthetic-refreshed-access",
+        refresh: "synthetic-refreshed-refresh",
+        expires: Date.now() + 60_000,
+      };
+      const claimEntered = createDeferredCore();
+      const claimRelease = createDeferredCore();
+      const settlementEntered = createDeferredCore();
+      const settlementRelease = createDeferredCore();
+      const providerError = new Error("synthetic provider rejection");
+      let operations = 0;
+      const commit = vi.fn();
+      const refresh = vi.fn(async () => {
+        const current = readPersistedAuthProfileStoreRaw(agentDir) as AuthProfileStore;
+        const credential = current.profiles[profileId];
+        expect(
+          isPendingOAuthRefreshFence(credential?.type === "oauth" ? credential : undefined),
+        ).toBe(true);
+        if (outcome === "failure") {
+          throw providerError;
+        }
+        return { apiKey: refreshed.access, credential: refreshed };
+      });
+      writePersistedAuthProfileStoreRaw(
+        { version: 1, profiles: { [profileId]: expired } },
+        agentDir,
+      );
+      const running = refreshSerializedOAuthCredential({
+        backend: {
+          async withLock<T>(
+            fn: (current: string | undefined) => { result: T; next?: string },
+          ): Promise<T> {
+            operations += 1;
+            if (operations === 2) {
+              claimEntered.resolve();
+              await claimRelease.promise;
+            } else if (operations === 3) {
+              settlementEntered.resolve();
+              await settlementRelease.promise;
+            }
+            return runAuthProfileWriteTransaction(agentDir, (database) => {
+              const current = readPersistedAuthProfileStoreRaw(
+                agentDir,
+                database,
+              ) as AuthProfileStore;
+              const update = fn(JSON.stringify(current.profiles));
+              if (update.next !== undefined) {
+                writePersistedAuthProfileStoreRaw(
+                  { version: 1, profiles: JSON.parse(update.next) },
+                  agentDir,
+                  database,
+                );
+              }
+              return update.result;
+            });
+          },
+        },
+        provider: "synthetic",
+        profileId,
+        label: "synthetic awaited persistence",
+        timeoutMs: 5_000,
+        parse: (current) => JSON.parse(current ?? "{}") as Record<string, OAuthCredential>,
+        serialize: JSON.stringify,
+        readCredential: (data) => data[profileId],
+        writeCredential: (data, credential) => ({ ...data, [profileId]: credential }),
+        canRefresh: async () => true,
+        refresh,
+        resolve: async (credential) => ({ apiKey: credential.access, credential }),
+        commit,
+      });
+      const tracked = trackSettlement(running);
+      const observed = tracked.outcome;
+      try {
+        await Promise.race([claimEntered.promise, observed]);
+        expect(tracked.settled).toBe(false);
+        expect(refresh).not.toHaveBeenCalled();
+        expect(commit).not.toHaveBeenCalled();
+        claimRelease.resolve();
+        await Promise.race([settlementEntered.promise, observed]);
+        expect(tracked.settled).toBe(false);
+        expect(refresh).toHaveBeenCalledOnce();
+        expect(commit).toHaveBeenCalledTimes(1);
+        settlementRelease.resolve();
+        const result = await observed;
+        expect(commit).toHaveBeenCalledTimes(2);
+        if (outcome === "success") {
+          expect(result).toEqual({ value: { apiKey: refreshed.access, credential: refreshed } });
+        } else {
+          expect(result).toEqual({ error: providerError });
+        }
+        closeAuthProfileReadPool();
+        closeOpenClawAgentDatabasesForTest();
+        const persistedStore = readPersistedAuthProfileStoreRaw(agentDir) as AuthProfileStore;
+        const persisted = persistedStore.profiles[profileId];
+        expect(persisted).toMatchObject({
+          type: "oauth",
+          access:
+            outcome === "success" ? refreshed.access : expect.stringContaining(":failed:access:"),
+        });
+        expect(
+          isPendingOAuthRefreshFence(persisted?.type === "oauth" ? persisted : undefined),
+        ).toBe(false);
+      } finally {
+        claimRelease.resolve();
+        settlementRelease.resolve();
+        await observed;
+        closeAuthProfileReadPool();
+        closeOpenClawAgentDatabasesForTest();
+        closeOpenClawStateDatabaseForTest();
+      }
+    });
+  },
+);
+
+describe("refresh observers", () => {
+  let reading = createDeferredCore<string>();
+  let controller = new AbortController();
+  const resolve = vi.fn(async (value: string) => value);
+  const pending: Promise<unknown>[] = [];
+  beforeEach(() => {
+    vi.useFakeTimers();
+    reading = createDeferredCore<string>();
+    controller = new AbortController();
+    resolve.mockClear();
+    pending.length = 0;
+  });
+  afterEach(async () => {
+    controller.abort();
+    reading.resolve("cleanup");
+    await Promise.allSettled(pending);
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+  function retain<T>(promise: Promise<T>) {
+    pending.push(promise);
+    return promise;
+  }
+  function observe(read: () => string | Promise<string> = () => reading.promise, timeoutMs = 100) {
+    return retain(
+      observeOAuthRefreshFenceSettlement({
+        label: "observer",
+        timeoutMs,
+        signal: controller.signal,
+        read,
+        isPending: (value) => value === "pending",
+        resolve,
+      }),
+    );
+  }
+  const owner = () =>
+    retain(observeOAuthRefreshSettlement("owner", 100, reading.promise, controller.signal));
   it.each(["stalled read", "expired snapshot", "expired rejection"])(
     "bounds an observer waiting for a %s",
     async (scenario) => {
-      vi.useFakeTimers();
       const startedAt = performance.now();
       const clock = vi.spyOn(performance, "now");
-      const reading = createDeferredCore<{ pending: boolean }>();
-      const resolve = vi.fn(async () => "synthetic-access");
-      const observing = observeOAuthRefreshFenceSettlement({
-        label: "synthetic observer",
-        timeoutMs: 100,
-        read: () => reading.promise,
-        isPending: (snapshot) => snapshot.pending,
-        resolve,
-      });
-      const rejected = expect(observing).rejects.toThrow("exceeded hard timeout (100ms)");
-      try {
-        if (scenario === "stalled read") {
-          await vi.advanceTimersByTimeAsync(100);
-        } else {
-          await vi.advanceTimersByTimeAsync(0);
-          clock.mockReturnValue(startedAt + 101);
-          if (scenario === "expired rejection") {
-            reading.reject(new Error("synthetic late read failure"));
-          } else {
-            reading.resolve({ pending: false });
-          }
-        }
-        await rejected;
-        reading.resolve({ pending: false });
-        await reading.promise.catch(() => {});
+      const rejected = expect(observe()).rejects.toThrow("exceeded hard timeout (100ms)");
+      if (scenario === "stalled read") {
+        await vi.advanceTimersByTimeAsync(100);
+      } else {
         await vi.advanceTimersByTimeAsync(0);
-        expect(resolve).not.toHaveBeenCalled();
-      } finally {
-        reading.resolve({ pending: false });
-        await observing.catch(() => {});
-        clock.mockRestore();
-        vi.useRealTimers();
+        clock.mockReturnValue(startedAt + 101);
+        if (scenario === "expired rejection") {
+          reading.reject(new Error("synthetic late read failure"));
+        } else {
+          reading.resolve("settled");
+        }
       }
+      await rejected;
+      reading.resolve("settled");
+      await reading.promise.catch(() => {});
+      await vi.advanceTimersByTimeAsync(0);
+      expect(resolve).not.toHaveBeenCalled();
     },
   );
 
   it.each(["reading", "polling"] as const)(
-    "cancels a pending refresh observer while %s without leaving polling work",
+    "cancels a pending observer while %s without leaving polling work",
     async (phase) => {
-      vi.useFakeTimers();
-      const controller = new AbortController();
-      const reading = createDeferredCore<{ pending: boolean }>();
       const entered = createDeferredCore();
       const read = vi.fn(() => {
         entered.resolve();
-        return phase === "reading" ? reading.promise : { pending: true };
+        return phase === "reading" ? reading.promise : "pending";
       });
-      const resolve = vi.fn(async () => "access");
-      const observing = observeOAuthRefreshFenceSettlement({
-        label: "cancelled observer",
-        timeoutMs: 1_000,
-        signal: controller.signal,
-        read,
-        isPending: (snapshot) => snapshot.pending,
-        resolve,
-      });
-      const rejected = expect(observing).rejects.toMatchObject({ name: "AbortError" });
-      try {
-        await entered.promise;
-        await vi.advanceTimersByTimeAsync(0);
-        controller.abort(new DOMException("caller cancelled", "AbortError"));
-        await rejected;
-        reading.resolve({ pending: false });
-        await vi.advanceTimersByTimeAsync(1_000);
-        expect(read).toHaveBeenCalledOnce();
-        expect(resolve).not.toHaveBeenCalled();
-        expect(vi.getTimerCount()).toBe(0);
-      } finally {
-        controller.abort();
-        reading.resolve({ pending: false });
-        await observing.catch(() => {});
-        vi.useRealTimers();
-      }
+      const rejected = expect(observe(read, 1_000)).rejects.toMatchObject({ name: "AbortError" });
+      await entered.promise;
+      await vi.advanceTimersByTimeAsync(0);
+      controller.abort(new DOMException("caller cancelled", "AbortError"));
+      await rejected;
+      reading.resolve("settled");
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(read).toHaveBeenCalledOnce();
+      expect(resolve).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
     },
   );
-
-  it.each(["success", "failure"] as const)(
-    "waits for durable claim and %s settlement before publishing",
-    async (outcome) => {
-      const root = tempDirs.make("oauth-awaited-sqlite-");
-      const agentDir = path.join(root, "agents", "work", "agent");
-      await withEnvAsync({ OPENCLAW_STATE_DIR: root }, async () => {
-        const profileId = "synthetic:default";
-        const expired: OAuthCredential = {
-          type: "oauth",
-          provider: "synthetic",
-          access: "synthetic-expired-access",
-          refresh: "synthetic-expired-refresh",
-          expires: 1,
-          accountId: "synthetic-account",
-        };
-        const refreshed: OAuthCredential = {
-          ...expired,
-          access: "synthetic-refreshed-access",
-          refresh: "synthetic-refreshed-refresh",
-          expires: Date.now() + 60_000,
-        };
-        const claimEntered = createDeferredCore();
-        const claimRelease = createDeferredCore();
-        const settlementEntered = createDeferredCore();
-        const settlementRelease = createDeferredCore();
-        const providerError = new Error("synthetic provider rejection");
-        let operations = 0;
-        const commit = vi.fn();
-        const refresh = vi.fn(async () => {
-          const current = readPersistedAuthProfileStoreRaw(agentDir) as AuthProfileStore;
-          const credential = current.profiles[profileId];
-          expect(
-            isPendingOAuthRefreshFence(credential?.type === "oauth" ? credential : undefined),
-          ).toBe(true);
-          if (outcome === "failure") {
-            throw providerError;
-          }
-          return { apiKey: refreshed.access, credential: refreshed };
-        });
-        writePersistedAuthProfileStoreRaw(
-          { version: 1, profiles: { [profileId]: expired } },
-          agentDir,
-        );
-        const running = refreshSerializedOAuthCredential({
-          backend: {
-            async withLock<T>(
-              fn: (current: string | undefined) => { result: T; next?: string },
-            ): Promise<T> {
-              operations += 1;
-              if (operations === 2) {
-                claimEntered.resolve();
-                await claimRelease.promise;
-              } else if (operations === 3) {
-                settlementEntered.resolve();
-                await settlementRelease.promise;
-              }
-              return runAuthProfileWriteTransaction(agentDir, (database) => {
-                const current = readPersistedAuthProfileStoreRaw(
-                  agentDir,
-                  database,
-                ) as AuthProfileStore;
-                const update = fn(JSON.stringify(current.profiles));
-                if (update.next !== undefined) {
-                  writePersistedAuthProfileStoreRaw(
-                    { version: 1, profiles: JSON.parse(update.next) },
-                    agentDir,
-                    database,
-                  );
-                }
-                return update.result;
-              });
-            },
-          },
-          provider: "synthetic",
-          profileId,
-          label: "synthetic awaited persistence",
-          timeoutMs: 5_000,
-          parse: (current) => JSON.parse(current ?? "{}") as Record<string, OAuthCredential>,
-          serialize: JSON.stringify,
-          readCredential: (data) => data[profileId],
-          writeCredential: (data, credential) => ({ ...data, [profileId]: credential }),
-          canRefresh: async () => true,
-          refresh,
-          resolve: async (credential) => ({ apiKey: credential.access, credential }),
-          commit,
-        });
-        const tracked = trackSettlement(running);
-        const observed = tracked.outcome;
-        try {
-          await Promise.race([claimEntered.promise, observed]);
-          expect(tracked.settled).toBe(false);
-          expect(refresh).not.toHaveBeenCalled();
-          expect(commit).not.toHaveBeenCalled();
-          claimRelease.resolve();
-          await Promise.race([settlementEntered.promise, observed]);
-          expect(tracked.settled).toBe(false);
-          expect(refresh).toHaveBeenCalledOnce();
-          expect(commit).toHaveBeenCalledTimes(1);
-          settlementRelease.resolve();
-          const result = await observed;
-          expect(commit).toHaveBeenCalledTimes(2);
-          if (outcome === "success") {
-            expect(result).toEqual({ value: { apiKey: refreshed.access, credential: refreshed } });
-          } else {
-            expect(result).toEqual({ error: providerError });
-          }
-          closeAuthProfileReadPool();
-          closeOpenClawAgentDatabasesForTest();
-          const persistedStore = readPersistedAuthProfileStoreRaw(agentDir) as AuthProfileStore;
-          const persisted = persistedStore.profiles[profileId];
-          expect(persisted).toMatchObject({
-            type: "oauth",
-            access:
-              outcome === "success" ? refreshed.access : expect.stringContaining(":failed:access:"),
-          });
-          expect(
-            isPendingOAuthRefreshFence(persisted?.type === "oauth" ? persisted : undefined),
-          ).toBe(false);
-        } finally {
-          claimRelease.resolve();
-          settlementRelease.resolve();
-          await observed;
-          closeAuthProfileReadPool();
-          closeOpenClawAgentDatabasesForTest();
-          closeOpenClawStateDatabaseForTest();
-        }
-      });
-    },
-  );
-
   it.each([
-    { kind: "owner", wallStep: -60_000 },
-    { kind: "owner", wallStep: 60_000 },
-    { kind: "blocked read", wallStep: -60_000 },
-    { kind: "blocked read", wallStep: 60_000 },
-    { kind: "polling", wallStep: -60_000 },
-    { kind: "polling", wallStep: 60_000 },
-  ])(
-    "keeps the $kind deadline after a $wallStep ms wall-clock step",
-    async ({ kind, wallStep }) => {
-      vi.useFakeTimers();
-      vi.setSystemTime(100_000);
-      const controller = new AbortController();
-      const reading = createDeferredCore<{ pending: boolean }>();
-      const resolve = vi.fn(async () => "synthetic-access");
-      const observing =
-        kind === "owner"
-          ? observeOAuthRefreshSettlement(
-              "clock-step owner",
-              100,
-              reading.promise,
-              controller.signal,
-            )
-          : observeOAuthRefreshFenceSettlement({
-              label: "clock-step observer",
-              timeoutMs: 100,
-              signal: controller.signal,
-              read: () => (kind === "polling" ? { pending: true } : reading.promise),
-              isPending: (snapshot) => snapshot.pending,
-              resolve,
-            });
-      const tracked = trackSettlement(observing);
-      const outcome = tracked.outcome;
-      try {
-        await vi.advanceTimersByTimeAsync(0);
-        vi.setSystemTime(Date.now() + wallStep);
-        await vi.advanceTimersByTimeAsync(99);
-        expect(tracked.settled).toBe(false);
-        await vi.advanceTimersByTimeAsync(1);
-        expect(tracked.settled).toBe(true);
-        expectTimeout(await outcome);
-        reading.resolve({ pending: false });
-        await vi.advanceTimersByTimeAsync(100);
-        expect(resolve).not.toHaveBeenCalled();
-        expect(vi.getTimerCount()).toBe(0);
-      } finally {
-        controller.abort();
-        reading.resolve({ pending: false });
-        await outcome;
-        vi.useRealTimers();
-      }
-    },
-  );
-
-  it.each(["owner", "fence", "polling"] as const)(
-    "does not round the fractional %s deadline down",
-    async (kind) => {
-      vi.useFakeTimers();
+    ["owner", -60_000],
+    ["owner", 60_000],
+    ["blocked read", -60_000],
+    ["blocked read", 60_000],
+    ["polling", -60_000],
+    ["polling", 60_000],
+    ["owner", null],
+    ["fence", null],
+    ["polling", null],
+  ] as const)(
+    "preserves the %s deadline with wall step %s (null = fractional clock)",
+    async (kind, wallStep) => {
       const fakeNow = performance.now.bind(performance);
-      // The high-resolution clock advances between deadline creation and timer arming.
-      const clock = vi
-        .spyOn(performance, "now")
-        .mockImplementationOnce(() => fakeNow() + 0.25)
-        .mockImplementation(() => fakeNow() + 0.75);
-      const controller = new AbortController();
-      const reading = createDeferredCore<string>();
+      if (wallStep === null) {
+        // Advance the high-resolution clock between deadline creation and timer arming.
+        vi.spyOn(performance, "now")
+          .mockImplementationOnce(() => fakeNow() + 0.25)
+          .mockImplementation(() => fakeNow() + 0.75);
+      } else {
+        vi.setSystemTime(100_000);
+      }
       let lastReadAt: number | undefined;
-      const observing =
+      const tracked = trackSettlement(
         kind === "owner"
-          ? observeOAuthRefreshSettlement(
-              "fractional owner",
-              100,
-              reading.promise,
-              controller.signal,
-            )
-          : observeOAuthRefreshFenceSettlement({
-              label: "fractional fence",
-              timeoutMs: 100,
-              signal: controller.signal,
-              read: () => {
-                if (kind !== "polling") {
-                  return reading.promise;
-                }
+          ? owner()
+          : observe(() => {
+              if (kind !== "polling") {
+                return reading.promise;
+              }
+              if (wallStep === null) {
                 const now = fakeNow();
                 // Fail a zero-delay polling regression instead of spinning forever.
                 if (lastReadAt === now) {
                   throw new Error("polling did not advance the clock");
                 }
                 lastReadAt = now;
-                return "pending";
-              },
-              isPending: (value) => value === "pending",
-              resolve: async (value) => value,
-            });
-      const tracked = trackSettlement(observing);
-      const outcome = tracked.outcome;
-      try {
-        await vi.advanceTimersByTimeAsync(99);
-        expect(tracked.settled).toBe(false);
-        if (kind === "polling") {
-          await vi.advanceTimersByTimeAsync(1);
-          expectTimeout(await outcome);
-        } else {
-          reading.resolve("settled before deadline");
-          expect(await outcome).toEqual({ value: "settled before deadline" });
-        }
-        expect(vi.getTimerCount()).toBe(0);
-      } finally {
-        controller.abort();
-        reading.resolve("cleanup");
-        await outcome;
-        clock.mockRestore();
-        vi.useRealTimers();
+              }
+              return "pending";
+            }),
+      );
+      if (wallStep !== null) {
+        await vi.advanceTimersByTimeAsync(0);
+        vi.setSystemTime(Date.now() + wallStep);
       }
+      await vi.advanceTimersByTimeAsync(99);
+      expect(tracked.settled).toBe(false);
+      if (wallStep === null && kind !== "polling") {
+        reading.resolve("settled before deadline");
+        expect(await tracked.outcome).toEqual({ value: "settled before deadline" });
+      } else {
+        await vi.advanceTimersByTimeAsync(1);
+        expect(tracked.settled).toBe(true);
+        expectTimeout(await tracked.outcome);
+      }
+      if (wallStep !== null) {
+        reading.resolve("settled");
+        await vi.advanceTimersByTimeAsync(100);
+        expect(resolve).not.toHaveBeenCalled();
+      }
+      expect(vi.getTimerCount()).toBe(0);
     },
   );
 });

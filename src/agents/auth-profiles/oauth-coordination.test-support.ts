@@ -66,15 +66,10 @@ export function read(agentDir: string | undefined, id = profileId) {
   return loadPersistedAuthProfileStore(agentDir)?.profiles[id];
 }
 
-/** Shared lifecycle only; each suite retains its own provider and race scenarios. */
 export function useOAuthCoordinationFixture() {
   const mocks = getOAuthProviderRuntimeMocks();
-  const refresh = mocks.refreshProviderOAuthCredentialWithPluginMock;
-  let root: string;
-  let mainDir: string;
   let env: ReturnType<typeof captureEnv>;
   let resolver: typeof import("./oauth.js").resolveApiKeyForProfile;
-  let work: AsyncWorkScope;
   let releaseRefresh: (() => void) | undefined;
   let settleWork: (() => void | Promise<void>) | undefined;
   const reset = () => {
@@ -83,45 +78,39 @@ export function useOAuthCoordinationFixture() {
     clearRuntimeAuthProfileStoreSnapshots();
   };
   beforeEach(async () => {
-    work = new AsyncWorkScope();
+    fixture.work = new AsyncWorkScope();
     releaseRefresh = undefined;
     env = captureEnv(OAUTH_AGENT_ENV_KEYS);
     reset();
-    root = await createOAuthTestTempRoot("openclaw-oauth-shard-");
-    mainDir = await createOAuthMainAgentDir(root);
+    fixture.root = await createOAuthTestTempRoot("openclaw-oauth-shard-");
+    fixture.mainDir = await createOAuthMainAgentDir(fixture.root);
     ({ resolveApiKeyForProfile: resolver } = await import("./oauth.js"));
   });
   afterEach(async () => {
     releaseRefresh?.();
     await settleWork?.();
     settleWork = undefined;
-    await work.drain();
+    await fixture.work.drain();
     env.restore();
     reset();
-    await removeOAuthTestTempRoot(root);
+    await removeOAuthTestTempRoot(fixture.root);
   });
-  return {
-    refresh,
-    get root() {
-      return root;
-    },
-    get mainDir() {
-      return mainDir;
-    },
-    get work() {
-      return work;
-    },
+  const fixture = {
+    refresh: mocks.refreshProviderOAuthCredentialWithPluginMock,
+    root: "",
+    mainDir: "",
+    work: new AsyncWorkScope(),
     settle(cleanup: () => void | Promise<void>) {
       settleWork = cleanup;
     },
     async agentDirectory(name: string) {
-      const directory = path.join(root, "agents", name, "agent");
+      const directory = path.join(fixture.root, "agents", name, "agent");
       await fs.mkdir(directory, { recursive: true });
       return directory;
     },
     resolve(agentDir: string | undefined, id = profileId) {
       assert.ok(agentDir, "expected a seeded agent directory");
-      return work.track(() =>
+      return fixture.work.track(() =>
         resolveApiKeyForProfileInTest(resolver, {
           store: ensureAuthProfileStore(agentDir),
           profileId: id,
@@ -141,7 +130,7 @@ export function useOAuthCoordinationFixture() {
       const started = createDeferredCore();
       const finish = createDeferredCore();
       releaseRefresh = finish.resolve;
-      refresh.mockImplementation(async () => {
+      fixture.refresh.mockImplementation(async () => {
         started.resolve();
         await finish.promise;
         return credential();
@@ -149,4 +138,5 @@ export function useOAuthCoordinationFixture() {
       return { started: started.promise, finishRefresh: finish.resolve };
     },
   };
+  return fixture;
 }
