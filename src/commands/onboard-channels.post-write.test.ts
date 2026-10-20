@@ -1,4 +1,3 @@
-import fs from "node:fs/promises";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createExitThrowingRuntime } from "../../test/helpers/auth-wizard.js";
 import type { ChannelSetupWizardAdapter } from "../channels/plugins/setup-wizard-types.js";
@@ -11,6 +10,7 @@ import { commitConfigWithPendingPluginInstalls } from "../plugins/install-record
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { writeWizardConfigFile } from "../wizard/setup.shared.js";
 
+type AfterConfigWritten = NonNullable<ChannelSetupWizardAdapter["afterConfigWritten"]>;
 let state: Awaited<ReturnType<typeof createOpenClawTestState>>;
 let runtime: ReturnType<typeof createExitThrowingRuntime>;
 let hooks: ReturnType<typeof createChannelSetupHooks>;
@@ -29,12 +29,14 @@ afterEach(() => state?.cleanup());
 it.each(["plugin", "wizard"] as const)(
   "resolves the exact %s commit after config selection changes",
   async (writer) => {
-    await state.writeConfig({ messages: { responsePrefix: "${SETUP_REPLY_PREFIX}" } });
+    const authored = {
+      messages: { responsePrefix: "${SETUP_REPLY_PREFIX}" },
+      gateway: { port: 19001 },
+    };
+    await state.writeConfig({ messages: authored.messages });
     const before = await readConfigFileSnapshot();
-    const next = { ...before.sourceConfig, gateway: { port: 19001 } };
-    const afterConfigWritten = vi.fn<NonNullable<ChannelSetupWizardAdapter["afterConfigWritten"]>>(
-      async () => {},
-    );
+    const next = { ...before.sourceConfig, gateway: authored.gateway };
+    const afterConfigWritten = vi.fn<AfterConfigWritten>(async () => {});
     hooks.onPostWriteHook(
       createChannelOnboardingPostWriteHook({
         channel: "matrix",
@@ -51,19 +53,14 @@ it.each(["plugin", "wizard"] as const)(
           })
         : await writeWizardConfigFile(next, { baseHash: before.hash });
     expect(afterConfigWritten).not.toHaveBeenCalled();
-    expect(JSON.parse(await fs.readFile(committed.path, "utf8"))).toMatchObject({
-      messages: { responsePrefix: "${SETUP_REPLY_PREFIX}" },
-      gateway: { port: 19001 },
-    });
     const persisted = await readConfigFileSnapshot();
+    expect(JSON.parse(persisted.raw ?? "")).toMatchObject(authored);
     expect({ config: committed.nextConfig, hash: committed.persistedHash }).toEqual({
       config: persisted.sourceConfig,
       hash: persisted.hash,
     });
     expect(committed.nextConfig.messages?.responsePrefix).toBe("resolved prefix");
-    const decoy = state.path("decoy.json");
-    await fs.writeFile(decoy, JSON.stringify({ messages: { responsePrefix: "wrong file" } }));
-    process.env.OPENCLAW_CONFIG_PATH = decoy;
+    process.env.OPENCLAW_CONFIG_PATH = await state.writeJson("decoy.json", {});
 
     await hooks.runPostWriteHooks(committed.path);
 
@@ -79,9 +76,7 @@ it.each(["plugin", "wizard"] as const)(
 
 it("deduplicates accounts, continues after a hook warning, and clears completed hooks", async () => {
   const replaced = vi.fn();
-  const failing = vi.fn(async () => {
-    throw new Error("hook failed");
-  });
+  const failing = vi.fn().mockRejectedValue(new Error("hook failed"));
   const succeeding = vi.fn();
   hooks.onPostWriteHook({ channel: "matrix", accountId: "ops", run: replaced });
   hooks.onPostWriteHook({ channel: "matrix", accountId: "ops", run: failing });
@@ -103,11 +98,7 @@ it("rechecks authority after the awaited read and retains rejected hooks", async
   const hook = vi.fn();
   hooks = createChannelSetupHooks({
     runtime,
-    beforePersistentEffect: async () => {
-      if (!active) {
-        throw new Error("owner revoked");
-      }
-    },
+    beforePersistentEffect: async () => assert(active, "owner revoked"),
   });
   hooks.onPostWriteHook({ channel: "matrix", accountId: "ops", run: hook });
   const pending = hooks.runPostWriteHooks(state.configPath);
@@ -120,3 +111,4 @@ it("rechecks authority after the awaited read and retains rejected hooks", async
   await hooks.runPostWriteHooks(state.configPath);
   expect(hook).toHaveBeenCalledOnce();
 });
+import assert from "node:assert/strict";

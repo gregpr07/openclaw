@@ -19,18 +19,7 @@ export async function runGuidedOnboardingWithFixtures(
   runtime: Parameters<typeof runGuidedOnboarding>[1],
   fixtures: GuidedOrchestrationFixture = {},
 ) {
-  const {
-    createPrompter,
-    listManualOptions,
-    applySetup,
-    runMemorySetupFlow,
-    runAppRecommendations,
-    runBrowserHandoff,
-    launchHatchTui,
-    runForegroundGateway,
-    observeHandoff,
-    ...servingDeps
-  } = fixtures;
+  const { observeHandoff } = fixtures;
   const restore: Array<{ mockRestore(): void }> = [];
   async function replace<T extends (...args: never[]) => unknown>(
     value: Parameters<MockInstance<T>["mockImplementation"]>[0] | undefined,
@@ -51,37 +40,35 @@ export async function runGuidedOnboardingWithFixtures(
         }),
       );
     }
-    await replace(createPrompter, async () =>
+    await replace(fixtures.createPrompter, async () =>
       vi.spyOn(await import("../wizard/clack-prompter.js"), "createClackPrompter"),
     );
-    await replace(listManualOptions, async () =>
+    await replace(fixtures.listManualOptions, async () =>
       vi.spyOn(
         await import("../system-agent/setup-inference.js"),
         "listManualSetupInferenceOptions",
       ),
     );
-    await replace(applySetup, async () =>
+    await replace(fixtures.applySetup, async () =>
       vi.spyOn(await import("../system-agent/setup-apply.js"), "applySystemAgentSetup"),
     );
-    await replace(runMemorySetupFlow, async () =>
+    await replace(fixtures.runMemorySetupFlow, async () =>
       vi.spyOn(await import("../flows/memory-setup.js"), "runMemorySetupFlow"),
     );
-    await replace(runAppRecommendations, async () =>
+    await replace(fixtures.runAppRecommendations, async () =>
       vi.spyOn(await import("../wizard/setup.app-recommendations.js"), "setupAppRecommendations"),
     );
-    await replace(runBrowserHandoff, async () =>
+    await replace(fixtures.runBrowserHandoff, async () =>
       vi.spyOn(await import("./onboard-browser-handoff.js"), "runBrowserHatchHandoff"),
     );
-    await replace(launchHatchTui, async () =>
+    await replace(fixtures.launchHatchTui, async () =>
       vi.spyOn(await import("../tui/tui-launch.js"), "launchTuiCli"),
     );
-    await replace(runForegroundGateway, async () =>
+    await replace(fixtures.runForegroundGateway, async () =>
       vi.spyOn(await import("./onboard-quickstart-host.js"), "runQuickstartForegroundGateway"),
     );
-    return await runGuidedOnboarding(opts, runtime, servingDeps);
+    return await runGuidedOnboarding(opts, runtime, fixtures);
   } finally {
-    for (const reset of restore.toReversed()) {
-      reset.mockRestore();
-    }
+    restore.toReversed().forEach((mock) => mock.mockRestore());
   }
 }

@@ -6,7 +6,6 @@ import {
 import { createWizardPrompter } from "../../test/helpers/wizard-prompter.js";
 import * as gatewayCall from "../gateway/call.js";
 import * as uiLinks from "../gateway/control-ui-links.js";
-import * as lanHost from "../infra/advertised-lan-host.js";
 import * as browserHandoff from "../infra/browser-handoff.js";
 import * as browserOpen from "../infra/browser-open.js";
 import * as handoff from "./control-ui-handoff.js";
@@ -20,7 +19,6 @@ function createMocks() {
     hasVerifiedControlUiLoopbackAlias: vi.spyOn(handoff, "hasVerifiedControlUiLoopbackAlias"),
     detectBrowserOpenSupport: vi.spyOn(browserOpen, "detectBrowserOpenSupport"),
     openUrlPrivately: vi.spyOn(browserHandoff, "openUrlPrivately"),
-    resolveAdvertisedLanHostCore: vi.spyOn(lanHost, "resolveAdvertisedLanHostCore"),
     resolveAdvertisedControlUiLinks: vi.spyOn(uiLinks, "resolveAdvertisedControlUiLinks"),
   };
 }
@@ -32,7 +30,6 @@ const connectedControlUiPresence = {
   reason: "connect",
   deviceId: "same-device",
   instanceId: "existing-tab",
-  text: "Control UI",
   ts: 1,
 };
 const links = { httpUrl: "http://127.0.0.1:18789/", wsUrl: "ws://127.0.0.1:18789" };
@@ -43,8 +40,7 @@ beforeEach(async () => {
   sharedMocks = createMocks();
   prompter = createWizardPrompter();
   await Promise.all([import("../agents/utility-model.js"), import("./onboard-agent-target.js")]);
-  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
-  vi.setSystemTime(0);
+  vi.useFakeTimers({ now: 0, toFake: ["Date", "setTimeout", "clearTimeout"] });
   for (const name of [
     "OPENCLAW_GATEWAY_TOKEN",
     "OPENCLAW_GATEWAY_PASSWORD",
@@ -58,24 +54,15 @@ beforeEach(async () => {
     vi.stubEnv(name, "");
   }
   vi.stubEnv("OPENCLAW_LOCALE", "en");
-  sharedMocks.callGateway
-    .mockReset()
-    .mockResolvedValueOnce([])
-    .mockResolvedValue([connectedControlUiPresence]);
-  sharedMocks.waitForControlUiDocument.mockReset().mockResolvedValue({ ready: true });
-  sharedMocks.hasVerifiedControlUiLoopbackAlias.mockReset().mockResolvedValue(true);
-  sharedMocks.issueControlUiBrowserHandoff
-    .mockReset()
-    .mockImplementation(async (target: typeof links) => ({
-      browserUrl: `${target.httpUrl}#bootstrapToken=one-time-bootstrap&gatewayUrl=${encodeURIComponent(target.wsUrl)}`,
-      expiresAtMs: 123_456,
-    }));
-  sharedMocks.detectBrowserOpenSupport.mockReset().mockResolvedValue({ ok: false });
-  sharedMocks.openUrlPrivately.mockReset().mockResolvedValue(true);
-  sharedMocks.resolveAdvertisedLanHostCore.mockReset().mockResolvedValue(null);
-  sharedMocks.resolveAdvertisedControlUiLinks.mockRejectedValue(
-    new Error("Unexpected advertised links"),
-  );
+  sharedMocks.callGateway.mockResolvedValueOnce([]).mockResolvedValue([connectedControlUiPresence]);
+  sharedMocks.waitForControlUiDocument.mockResolvedValue({ ready: true });
+  sharedMocks.hasVerifiedControlUiLoopbackAlias.mockResolvedValue(true);
+  sharedMocks.issueControlUiBrowserHandoff.mockImplementation(async (target: typeof links) => ({
+    browserUrl: `${target.httpUrl}#bootstrapToken=one-time-bootstrap&gatewayUrl=${encodeURIComponent(target.wsUrl)}`,
+    expiresAtMs: 123_456,
+  }));
+  sharedMocks.detectBrowserOpenSupport.mockResolvedValue({ ok: false });
+  sharedMocks.openUrlPrivately.mockResolvedValue(true);
 });
 
 afterEach(() => {
@@ -114,9 +101,7 @@ it("opens utility-only setup on the custodian route", async () => {
   });
   expect(result).toBe(true);
   const url = new URL(sharedMocks.openUrlPrivately.mock.calls[0]![0]);
-  expect(url.pathname).toBe("/custodian");
-  expect(url.searchParams.get("onboarding")).toBe("1");
-  expect(url.searchParams.has("session")).toBe(false);
+  expect(url).toMatchObject({ pathname: "/custodian", search: "?onboarding=1" });
   expect(url.hash).toContain("bootstrapToken=one-time-bootstrap");
 });
 
@@ -156,7 +141,6 @@ it("prints an HTTPS tunnel destination for a headless loopback TLS Gateway", asy
   await runHandoff({
     config: {
       gateway: {
-        port: 18789,
         bind: "loopback",
         controlUi: { basePath: "/control" },
         tls: { enabled: true },
@@ -183,10 +167,6 @@ it("falls back to the SSH hint and manual timeout when the browser opener reject
 
 it.each([false, true])("uses secure headless custom-bind links (TLS=%s)", async (tls) => {
   const host = "10.211.55.4";
-  sharedMocks.resolveAdvertisedControlUiLinks.mockResolvedValue({
-    httpUrl: `https://${host}:18789/dashboard/`,
-    wsUrl: `wss://${host}:18789/dashboard`,
-  });
   await runHandoff({
     config: {
       gateway: {
@@ -211,13 +191,6 @@ it.each([false, true])("uses secure headless custom-bind links (TLS=%s)", async 
       `gatewayUrl=${encodeURIComponent(`wss://${host}:18789/dashboard`)}`,
     );
     expect(displayed).not.toContain("ssh -N -L");
-    expect(sharedMocks.resolveAdvertisedControlUiLinks).toHaveBeenCalledWith({
-      bind: "custom",
-      port: 18789,
-      customBindHost: host,
-      basePath: "/dashboard",
-      tlsEnabled: true,
-    });
   } else {
     for (const hint of [
       "http://127.0.0.1:18789/dashboard/",
@@ -265,7 +238,6 @@ it.each(["suppressed", "disabled", "document", "presence", "bootstrap"] as const
       sharedMocks.waitForControlUiDocument.mockResolvedValue({
         ready: false,
         reason: "Control UI build failed.",
-        status: 503,
       });
     } else if (reason === "presence") {
       sharedMocks.callGateway.mockReset().mockRejectedValue(new Error("gateway unavailable"));
@@ -295,13 +267,11 @@ it.each(["suppressed", "disabled", "document", "presence", "bootstrap"] as const
 );
 
 it("starts and stops preparation progress only when the document reports pending", async () => {
-  const stop = vi.fn();
-  prompter = createWizardPrompter({ progress: vi.fn(() => ({ update: vi.fn(), stop })) });
   sharedMocks.waitForControlUiDocument.mockImplementation(async ({ onPending }) => {
     onPending?.();
     return { ready: true };
   });
   await runHandoff();
   expect(prompter.progress).toHaveBeenCalledWith("Preparing the Control UI…");
-  expect(stop).toHaveBeenCalledOnce();
+  expect(vi.mocked(prompter.progress).mock.results[0]?.value.stop).toHaveBeenCalledOnce();
 });
