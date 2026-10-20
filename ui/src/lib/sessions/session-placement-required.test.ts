@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.ts";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
+import { gatewayRequest } from "./session-fixtures.test-support.ts";
 import {
   readSessionPlacementRecovery,
   writeSessionPlacementRecovery,
@@ -19,7 +20,6 @@ const params = {
   target,
   message: "Inspect workspace",
   messageId: "first-turn",
-  mode: "dispatch" as const,
 };
 function clientWith(
   request: ReturnType<typeof vi.fn>,
@@ -40,33 +40,19 @@ const start = (
   mode: Parameters<typeof startSessionPlacementInitialTurn>[1]["mode"] = "dispatch",
   current = () => true,
 ) => startSessionPlacementInitialTurn(clientWith(request), { ...params, mode }, current);
-function placementRequest(state: () => string) {
-  return vi.fn(async (method: string) =>
-    method === "agents.list"
-      ? catalog
-      : method === "sessions.describe"
-        ? { session: { placement: { state: state() } } }
-        : { runId: "first-turn", status: "started" },
-  );
-}
 function restore(overrides: Partial<SessionPlacementRecovery>) {
+  const { key: sessionKey, ...draft } = params;
   const recovery: SessionPlacementRecovery = {
-    sessionKey: params.key,
-    agentId: params.agentId,
-    target,
-    message: params.message,
-    messageId: params.messageId,
+    sessionKey,
+    ...draft,
     gatewayUrl: "ws://gateway.example",
     recoveryScope: "principal",
     phase: "sending",
     ...overrides,
   };
   expect(writeSessionPlacementRecovery(recovery)).toBe(true);
-  return readSessionPlacementRecovery(
-    recovery.gatewayUrl,
-    recovery.recoveryScope,
-    recovery.sessionKey,
-  )!;
+  const { gatewayUrl, recoveryScope, sessionKey: key } = recovery;
+  return readSessionPlacementRecovery(gatewayUrl, recoveryScope, key)!;
 }
 afterEach(() => {
   vi.useRealTimers();
@@ -81,7 +67,11 @@ it.each([
 ] as const)("starts required %s placement via %s without admin dispatch", async (initial, mode) => {
   vi.useFakeTimers();
   let state: string = initial;
-  const request = placementRequest(() => state);
+  const request = gatewayRequest({
+    "agents.list": () => catalog,
+    "sessions.describe": () => ({ session: { placement: { state } } }),
+    "sessions.send": () => ({ runId: "first-turn", status: "started" }),
+  });
   const pending = start(request, mode);
   if (initial === "provisioning") {
     await vi.advanceTimersByTimeAsync(0);
@@ -99,14 +89,9 @@ it.each([
 
 it.each([undefined, "replacement"])(
   "does not send or dispatch when the required policy changes to %s",
-  async (requiredProfile) => {
-    const request = vi.fn(async () => ({
-      sessionPlacement: {
-        requiredProfile: requiredProfile
-          ? { id: requiredProfile, providerId: "device" }
-          : undefined,
-      },
-    }));
+  async (id) => {
+    const requiredProfile = id ? { id, providerId: "device" } : undefined;
+    const request = vi.fn(async () => ({ sessionPlacement: { requiredProfile } }));
     expect(await start(request)).toMatchObject({ status: "dispatch-rejected" });
     expect(request.mock.calls).toHaveLength(1);
   },
@@ -116,15 +101,13 @@ it("Stop fences a late active placement reply and retains the existing reclaim o
   const active = createDeferred<unknown>();
   const read = createDeferred();
   let current = true;
-  const request = vi.fn(async (method: string) => {
-    if (method === "agents.list") {
-      return catalog;
-    }
-    if (method === "sessions.describe") {
+  const request = gatewayRequest({
+    "agents.list": () => catalog,
+    "sessions.describe": () => {
       read.resolve();
       return active.promise;
-    }
-    return {};
+    },
+    "sessions.reclaim": () => ({}),
   });
   const pending = start(request, "dispatch", () => current);
   await read.promise;

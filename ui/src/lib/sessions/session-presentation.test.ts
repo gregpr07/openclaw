@@ -1,31 +1,25 @@
 import { expect, it, onTestFinished } from "vitest";
-import { createChangeListeners } from "../../../../src/shared/listeners.ts";
 import { createDeferred } from "../../../../test/helpers/promise.ts";
-import type { GatewaySessionRow, SessionsListResult } from "../../api/types.ts";
+import type { SessionsListResult } from "../../api/types.ts";
 import { createTestGatewayClient } from "../../test-helpers/gateway-client.ts";
 import { gatewayHelloForMethods } from "../../test-helpers/gateway-methods.ts";
 import { createSessionCapability } from "./index.ts";
 import { createGatewayHarness, sessionsResult } from "./session-capability.test-support.ts";
+import { gatewayRequest, sessionRow, sessionSelection } from "./session-fixtures.test-support.ts";
 
-const row: GatewaySessionRow = {
-  key: "agent:main:dashboard:museum",
-  kind: "direct",
+const row = sessionRow("agent:main:dashboard:museum", {
   sessionId: "museum-session",
   derivedTitle: "Museum itinerary",
-  updatedAt: 1,
-};
+});
 
 function harness() {
   let result: SessionsListResult | Promise<SessionsListResult> = sessionsResult([row], 1);
-  const client = createTestGatewayClient((method) => {
-    if (method === "sessions.list") {
-      return result;
-    }
-    if (method === "sessions.subscribe") {
-      return { subscribed: true };
-    }
-    throw new Error(`Unexpected request: ${method}`);
-  });
+  const client = createTestGatewayClient(
+    gatewayRequest({
+      "sessions.list": () => result,
+      "sessions.subscribe": () => ({ subscribed: true }),
+    }),
+  );
   const source = createGatewayHarness(client, undefined, {
     selfUser: { id: "one" },
     initial: {
@@ -35,13 +29,12 @@ function harness() {
       },
     },
   });
-  const state = { selectedId: "main" };
-  const changes = createChangeListeners();
+  const selection = sessionSelection();
   const gateway = Object.assign(source.gateway, {
     connection: { gatewayUrl: "ws://museum.test", token: "synthetic-test-token" },
     connectionRevision: 0,
   });
-  const sessions = createSessionCapability(gateway, { state, subscribe: changes.subscribe });
+  const sessions = createSessionCapability(gateway, selection);
   let finishRead: (() => void) | undefined;
   onTestFinished(() => {
     finishRead?.();
@@ -62,10 +55,7 @@ function harness() {
       return deferred;
     },
     publish: source.update,
-    select(agentId: string) {
-      state.selectedId = agentId;
-      changes.publish();
-    },
+    select: selection.select,
   };
 }
 

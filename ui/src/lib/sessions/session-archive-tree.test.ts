@@ -2,14 +2,8 @@ import { expect, it, vi } from "vitest";
 import type { GatewaySessionRow } from "../../api/types.ts";
 import { hasSessionArchiveDescendants } from "../../components/session-menu-descendants.ts";
 import { collectSessionArchiveTree } from "./session-archive-tree.ts";
+import { sessionRow as row } from "./session-fixtures.test-support.ts";
 
-const row = (key: string, extra: Partial<GatewaySessionRow> = {}): GatewaySessionRow => ({
-  key,
-  sessionId: `${key}-id`,
-  kind: "direct",
-  updatedAt: 1,
-  ...extra,
-});
 const collect = (
   root: GatewaySessionRow,
   readChildren: Parameters<typeof collectSessionArchiveTree>[0]["readChildren"],

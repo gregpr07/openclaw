@@ -8,19 +8,13 @@ import {
   sessionsResult,
 } from "./session-capability.test-support.ts";
 import type { SessionListOptions, SessionListSnapshot } from "./session-capability.ts";
+import { sessionRow } from "./session-fixtures.test-support.ts";
 import { canApplySessionListSnapshot } from "./session-list-query.ts";
 
-const row = (key: string, extra: Partial<GatewaySessionRow> = {}): GatewaySessionRow => ({
-  key: `agent:main:${key}`,
-  sessionId: `${key}-session`,
-  kind: "direct",
-  updatedAt: 1,
-  ...extra,
-});
-function fixture(
-  request: Parameters<typeof createTestGatewayClient>[0],
-  query: SessionListOptions,
-) {
+const row = (key: string, extra: Partial<GatewaySessionRow> = {}) =>
+  sessionRow(`agent:main:${key}`, { sessionId: `${key}-session`, ...extra });
+type Request = Parameters<typeof createTestGatewayClient>[0];
+function fixture(request: Request, query: SessionListOptions) {
   const { gateway } = createGatewayHarness(createTestGatewayClient(request));
   const sessions = createTestSessionCapability(gateway);
   const updates = vi.fn<(snapshot: SessionListSnapshot) => void>();
@@ -34,13 +28,10 @@ it.each([
   [2, 2, true],
   [2, 1, false],
 ] as const)(
-  "excludes an old owned ancestor only behind the full owner prefix (limit=%i, owned=%i)",
+  "excludes owned ancestors only behind a full prefix (limit=%i, owned=%i)",
   (limit, owned, expected) => {
-    const actor = (id: string) => ({
-      type: "human" as const,
-      id,
-      identity: { type: "profile" as const, id },
-    });
+    const actor = (id: string) =>
+      ({ type: "human", id, identity: { type: "profile", id } }) as const;
     const rows = Array.from({ length: limit }, (_, index) =>
       row(`child-${index}`, {
         sessionId: `child-${index}`,
@@ -64,7 +55,6 @@ it.each([
         "viewer",
       );
     expect(canApply(parent)).toBe(expected);
-    // A parent that becomes recent may enter the shared page even with a full owner prefix.
     expect(canApply({ ...parent, updatedAt: 2_002 })).toBe(false);
   },
 );
@@ -121,7 +111,8 @@ it.each([
     return sessionsResult(filtered ? [ordinary] : primaryRows, ++issued);
   });
   const query: SessionListOptions = { agentId: "main" };
-  if (flag !== "unfiltered") {
+  const primary = flag === "unfiltered";
+  if (!primary) {
     query[flag] = true;
   }
   const { sessions, updates, refresh } = fixture(request, query);
@@ -135,7 +126,7 @@ it.each([
   updates.mockClear();
 
   const result = await sessions.list(query);
-  const expectedRows = flag === "unfiltered" ? primaryRows : [ordinary];
+  const expectedRows = primary ? primaryRows : [ordinary];
   expect(request.mock.calls.at(-1)?.[1]).toMatchObject(query);
   expect(result?.sessions).toEqual(expectedRows);
   expect(sessions.state.result).toBe(primaryBefore);
@@ -147,13 +138,10 @@ it.each([
   expect(queryWindow?.sessions).toEqual(expectedRows);
   expect(descriptor.isCurrent()).toBe(true);
   expect(descriptor.row).toBe(heldDescriptor);
-  if (flag === "unfiltered") {
-    expect(queryWindow).toBe(sessions.state.result);
-    expect(sessions.canonicalListRevision).toBe(canonicalRevision + 1);
-  } else {
-    expect(sessions.state.result).toBe(primaryBefore);
+  expect(sessions.state.result).toBe(primary ? queryWindow : primaryBefore);
+  expect(sessions.canonicalListRevision).toBe(canonicalRevision + Number(primary));
+  if (!primary) {
     expect(sessions.state.result?.sessions).toEqual(primaryRows);
-    expect(sessions.canonicalListRevision).toBe(canonicalRevision);
     expect(queryWindow).not.toBe(primaryBefore);
   }
 
@@ -161,12 +149,11 @@ it.each([
   primaryRows = [...primaryRows, row("later", { agentId: "main" })];
   await refresh();
   expect(sessions.state.result?.sessions).toEqual(primaryRows);
-  if (flag === "unfiltered") {
+  expect(sessions.listSnapshot(query).result).toBe(primary ? sessions.state.result : queryWindow);
+  if (primary) {
     expect(updates.mock.calls.at(-1)?.[0].result).toBe(sessions.state.result);
-    expect(sessions.listSnapshot(query).result).toBe(sessions.state.result);
   } else {
     expect(updates).not.toHaveBeenCalled();
-    expect(sessions.listSnapshot(query).result).toBe(queryWindow);
     expect(sessions.listSnapshot(query).result?.sessions).toEqual([ordinary]);
   }
 });

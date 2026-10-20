@@ -1,13 +1,13 @@
 // @vitest-environment node
 import { expect, it, onTestFinished, vi } from "vitest";
 import type { GatewayEventFrame } from "../../api/gateway.ts";
-import type { GatewaySessionRow } from "../../api/types.ts";
 import { createSessionActivity } from "../../pages/activity/session-activity-owner.ts";
 import { createApplicationGateway } from "../../test-helpers/application-context.ts";
 import { createTestGatewayClient } from "../../test-helpers/gateway-client.ts";
 import { createAgentCapability } from "../agents/index.ts";
 import { rosterActivityStore } from "../agents/roster-activity-store.ts";
 import { createTestSessionCapability, sessionsResult } from "./session-capability.test-support.ts";
+import { gatewayRequest, sessionRow } from "./session-fixtures.test-support.ts";
 
 it("bounds list reads across two viewers and three streaming sessions for three minutes", async () => {
   vi.useFakeTimers();
@@ -15,42 +15,40 @@ it("bounds list reads across two viewers and three streaming sessions for three 
   const cleanup: Array<() => void> = [() => vi.useRealTimers()];
   onTestFinished(() => cleanup.toReversed().forEach((stop) => stop()));
   let trigger = "route";
-  const rows: GatewaySessionRow[] = Array.from({ length: 3 }, (_, index) => ({
-    key: `agent:main:stream-${index}`,
-    kind: "direct",
-    sessionId: `stream-${index}`,
-    updatedAt: 1,
-    hasActiveRun: true,
-    status: "running",
-  }));
+  const rows = Array.from({ length: 3 }, (_, index) =>
+    sessionRow(`agent:main:stream-${index}`, {
+      sessionId: `stream-${index}`,
+      hasActiveRun: true,
+      status: "running",
+    }),
+  );
   const viewers = Array.from({ length: 2 }, () => {
     const reads: Record<string, number> = {};
-    const client = createTestGatewayClient(async (method, params) => {
-      if (method === "sessions.subscribe") {
-        return { subscribed: true };
-      }
-      if (method === "agents.list") {
-        return {
+    const client = createTestGatewayClient(
+      gatewayRequest({
+        "sessions.subscribe": () => ({ subscribed: true }),
+        "agents.list": () => ({
           agents: [{ id: "main" }],
           defaultId: "main",
           mainKey: "main",
           scope: "per-sender",
-        };
-      }
-      expect(method).toBe("sessions.list");
-      const query = params as { includeActivitySummary?: boolean; archived?: string };
-      const owner = query.includeActivitySummary
-        ? "activity"
-        : query.archived
-          ? "roster"
-          : "sidebar";
-      const key = `${owner}:${trigger}`;
-      reads[key] = (reads[key] ?? 0) + 1;
-      return sessionsResult(
-        rows.map((row) => ({ ...row })),
-        Date.now(),
-      );
-    });
+        }),
+        "sessions.list": (params) => {
+          const query = params as { includeActivitySummary?: boolean; archived?: string };
+          const owner = query.includeActivitySummary
+            ? "activity"
+            : query.archived
+              ? "roster"
+              : "sidebar";
+          const key = `${owner}:${trigger}`;
+          reads[key] = (reads[key] ?? 0) + 1;
+          return sessionsResult(
+            rows.map((row) => ({ ...row })),
+            Date.now(),
+          );
+        },
+      }),
+    );
     const source = createApplicationGateway();
     source.publish({
       ...source.gateway.snapshot,
