@@ -2,7 +2,6 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type * as GatewayEntrypoint from "../../daemon/gateway-entrypoint.js";
 import { GATEWAY_UPDATE_EXECUTOR_CONTRACT } from "../../daemon/service-update-authority.js";
 import type * as UpdateRunLedger from "../../infra/update-run-ledger.js";
-import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
 import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import type { UpdateStepResult } from "../../infra/update-step-result.js";
 import type * as CommandExec from "../../process/exec.js";
@@ -46,22 +45,40 @@ beforeEach(() => {
   mocks.recordStep.mockReset();
 });
 
-afterEach(() => {
-  vi.useRealTimers();
+afterEach(() => vi.useRealTimers());
+
+type InstallParams = Parameters<typeof runUpdatedInstallGatewayCommand>[0];
+const runInstall = (overrides: Partial<InstallParams> = {}) =>
+  runUpdatedInstallGatewayCommand(
+    { result: { root: "/fixture/root", mode: "npm" }, opts: {}, invocationEnv: {}, ...overrides },
+    "install",
+  );
+const executorOptions = () => ({
+  run: { runId: "run-1", env: {}, executorFence: { assertCurrent() {} } },
+});
+const probeResult = (definitionBackup?: boolean) =>
+  createCommandResult({
+    code: 0,
+    cleanup: "normal",
+    stdout: JSON.stringify({
+      updateExecutor: GATEWAY_UPDATE_EXECUTOR_CONTRACT,
+      targetRootBinding: true,
+      ...(definitionBackup === undefined ? {} : { definitionBackup }),
+    }),
+  });
+const timedStep = (name: string, command: string, durationMs: number): UpdateStepResult => ({
+  name,
+  command,
+  cwd: "/fixture/root",
+  durationMs,
+  exitCode: 0,
 });
 
 it("times the executor probe separately from the reconciliation install child", async () => {
   mocks.command.mockImplementation(async (argv: string[]) => {
     if (argv.includes("check")) {
       vi.advanceTimersByTime(9_000);
-      return createCommandResult({
-        code: 0,
-        cleanup: "normal",
-        stdout: JSON.stringify({
-          updateExecutor: GATEWAY_UPDATE_EXECUTOR_CONTRACT,
-          targetRootBinding: true,
-        }),
-      });
+      return probeResult();
     }
     vi.advanceTimersByTime(24_000);
     return createCommandResult({
@@ -71,39 +88,29 @@ it("times the executor probe separately from the reconciliation install child", 
   });
   const steps: UpdateStepResult[] = [];
   const onGatewayStartAttempted = vi.fn();
-  const executorFence: UpdateRecoveryFence = { assertCurrent: () => {} };
-
   await expect(
-    runUpdatedInstallGatewayCommand(
-      {
-        result: { root: "/fixture/root", mode: "git" },
-        opts: { run: { runId: "run-1", env: {}, executorFence } },
-        invocationEnv: {},
-        nodeRunner: "node",
-        gatewayPort: 18809,
-        onGatewayStartAttempted,
-        onTimedStep: (step) => steps.push(step),
-      },
-      "install",
-    ),
+    runInstall({
+      result: { root: "/fixture/root", mode: "git" },
+      opts: executorOptions(),
+      nodeRunner: "node",
+      gatewayPort: 18809,
+      onGatewayStartAttempted,
+      onTimedStep: (step) => steps.push(step),
+    }),
   ).resolves.toBe("unverified");
 
   expect(onGatewayStartAttempted).toHaveBeenCalledExactlyOnceWith("install");
   expect(steps).toEqual([
-    {
-      name: "managed-service-executor-check",
-      command: "openclaw gateway install --update-executor check --json",
-      cwd: "/fixture/root",
-      durationMs: 9_000,
-      exitCode: 0,
-    },
-    {
-      name: "managed-service-install",
-      command: "openclaw gateway install --force --port 18809 --json",
-      cwd: "/fixture/root",
-      durationMs: 24_000,
-      exitCode: 0,
-    },
+    timedStep(
+      "managed-service-executor-check",
+      "openclaw gateway install --update-executor check --json",
+      9_000,
+    ),
+    timedStep(
+      "managed-service-install",
+      "openclaw gateway install --force --port 18809 --json",
+      24_000,
+    ),
   ]);
 });
 
@@ -114,12 +121,7 @@ it("keeps failed reconciliation children on the existing failure path", async ()
   });
   const onTimedStep = vi.fn();
 
-  await expect(
-    runUpdatedInstallGatewayCommand(
-      { result: { root: "/fixture/root", mode: "npm" }, opts: {}, invocationEnv: {}, onTimedStep },
-      "install",
-    ),
-  ).rejects.toThrow("install refused");
+  await expect(runInstall({ onTimedStep })).rejects.toThrow("install refused");
   expect(onTimedStep).not.toHaveBeenCalled();
 });
 
@@ -129,30 +131,18 @@ it.each(["", "UPDATE_NATIVE_AUTHORITY: exit 1"])(
     const error =
       "SERVICE_DEFINITION_UNKNOWN: Service definition inspection or backup failed; the definition was preserved: inspection failed";
     mocks.command.mockImplementation(async (argv: string[]) =>
-      createCommandResult(
-        argv.includes("check")
-          ? {
-              code: 0,
-              cleanup: "normal",
-              stdout: JSON.stringify({
-                updateExecutor: GATEWAY_UPDATE_EXECUTOR_CONTRACT,
-                targetRootBinding: true,
-                definitionBackup: true,
-              }),
-            }
-          : { code: 1, stdout: JSON.stringify({ action: "install", ok: false, error }), stderr },
-      ),
+      argv.includes("check")
+        ? probeResult(true)
+        : createCommandResult({
+            code: 1,
+            stdout: JSON.stringify({ action: "install", ok: false, error }),
+            stderr,
+          }),
     );
     const definitionRecovery: UpdateServiceDefinitionRecovery = {};
-    const failure = await runUpdatedInstallGatewayCommand(
-      {
-        result: { root: "/fixture/root", mode: "npm" },
-        opts: { run: { runId: "run-1", env: {}, executorFence: { assertCurrent() {} } } },
-        invocationEnv: {},
-        definitionRecovery,
-      },
-      "install",
-    ).catch((cause: unknown) => cause);
+    const failure = await runInstall({ opts: executorOptions(), definitionRecovery }).catch(
+      (cause: unknown) => cause,
+    );
     expect(failure).toBeInstanceOf(Error);
     expect(failure instanceof UpdateCommandRecoveryPendingError).toBe(stderr !== "");
     expect(failure).toHaveProperty(
@@ -165,13 +155,11 @@ it.each(["", "UPDATE_NATIVE_AUTHORITY: exit 1"])(
 
 it("records a timed service step in the result and as a measured run row", () => {
   const result: UpdateRunResult = { status: "ok", mode: "git", steps: [], durationMs: 0 };
-  const step = {
-    name: "managed-service-install",
-    command: "openclaw gateway install --force --json",
-    cwd: "/fixture/root",
-    durationMs: 24_000,
-    exitCode: 0,
-  };
+  const step = timedStep(
+    "managed-service-install",
+    "openclaw gateway install --force --json",
+    24_000,
+  );
 
   recordServiceTimedStep(result, step, { runId: "run-1", env: {} });
 
@@ -193,13 +181,11 @@ it("keeps the timed step when run history cannot be written", () => {
     throw new Error("database is locked");
   });
   const result: UpdateRunResult = { status: "ok", mode: "git", steps: [], durationMs: 0 };
-  const step = {
-    name: "managed-service-restart",
-    command: "openclaw gateway restart --preserve-definition --json",
-    cwd: "/fixture/root",
-    durationMs: 3_000,
-    exitCode: 0,
-  };
+  const step = timedStep(
+    "managed-service-restart",
+    "openclaw gateway restart --preserve-definition --json",
+    3_000,
+  );
 
   expect(() => recordServiceTimedStep(result, step, { runId: "run-1", env: {} })).not.toThrow();
   expect(result.steps).toEqual([step]);

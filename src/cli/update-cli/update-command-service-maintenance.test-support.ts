@@ -45,54 +45,34 @@ type NativeOfflineCase = {
 };
 
 export const nativeOfflineCases: NativeOfflineCase[] = [
-  {
-    platform: "linux",
-    label: "terminal inactive",
-    runtime: "stopped",
-    loaded: true,
-    offline: true,
-  },
-  {
-    platform: "linux",
-    label: "restart transition",
-    runtime: "unknown",
-    loaded: true,
-    offline: false,
-  },
-  { platform: "linux", label: "running", runtime: "running", loaded: true, offline: false },
-  { platform: "darwin", label: "unloaded", runtime: "stopped", loaded: false, offline: true },
-  {
-    platform: "darwin",
-    label: "loaded enabled",
-    runtime: "stopped",
-    loaded: true,
-    enabled: true,
-    offline: false,
-  },
-  {
-    platform: "darwin",
-    label: "loaded disabled",
-    runtime: "stopped",
-    loaded: true,
-    enabled: false,
-    offline: false,
-  },
-  {
-    platform: "darwin",
-    label: "loaded disabled preparation",
-    runtime: "stopped",
-    loaded: true,
-    enabled: false,
-    offline: false,
-    phase: "prepare",
-  },
-  {
-    platform: "darwin",
-    label: "enabled unknown",
-    runtime: "stopped",
-    loaded: true,
-    offline: false,
-  },
+  ...(
+    [
+      { label: "terminal inactive", runtime: "stopped", offline: true },
+      { label: "restart transition", runtime: "unknown", offline: false },
+      { label: "running", runtime: "running", offline: false },
+    ] as const
+  ).map<NativeOfflineCase>((row) =>
+    Object.assign({ platform: "linux" as const, loaded: true }, row),
+  ),
+  ...(
+    [
+      { label: "unloaded", loaded: false, offline: true },
+      { label: "loaded enabled", enabled: true },
+      { label: "loaded disabled", enabled: false },
+      { label: "loaded disabled preparation", enabled: false, phase: "prepare" },
+      { label: "enabled unknown" },
+    ] as const
+  ).map<NativeOfflineCase>((row) =>
+    Object.assign(
+      {
+        platform: "darwin" as const,
+        runtime: "stopped" as const,
+        loaded: true,
+        offline: false,
+      },
+      row,
+    ),
+  ),
   ...[
     { label: "disabled", state: 1, offline: true },
     { label: "ready", state: 3, offline: true },
@@ -158,28 +138,21 @@ export function mockRegisteredWindowsLauncher(
   home: string,
   running = false,
 ): GatewayServiceCommandConfig {
+  const entrypoint = path.join(process.cwd(), "openclaw.mjs");
   const command = {
-    programArguments: [
-      process.execPath,
-      path.join(process.cwd(), "openclaw.mjs"),
-      "gateway",
-      "--port",
-      "18789",
-    ],
+    programArguments: [process.execPath, entrypoint, "gateway", "--port", "18789"],
     environment: { HOME: home },
     sourcePath: mocks.taskScriptPath,
   };
   mocks.processes = [
     { ProcessId: 111, CommandLine: "powershell.exe Get-CimInstance Win32_Process" },
-    ...(running
-      ? [
-          {
-            ProcessId: fixtureGatewayPid,
-            CommandLine: command.programArguments.map((arg) => `"${arg}"`).join(" "),
-          },
-        ]
-      : []),
   ];
+  if (running) {
+    mocks.processes.push({
+      ProcessId: fixtureGatewayPid,
+      CommandLine: command.programArguments.map((arg) => `"${arg}"`).join(" "),
+    });
+  }
   const script = Buffer.from(buildTaskScript(command));
   const readFile = fs.readFile;
   vi.spyOn(fs, "readFile").mockImplementation(async (pathname, options) =>
