@@ -40,6 +40,7 @@ const contexts: PreparedCliRunContext[] = [];
 const admissions: PreparedAgentRunAdmission[] = [];
 const receipts: sessionEvents.SessionEventReceipt[] = [];
 const sessionKeys: string[] = [];
+const workspacePath = (name: string) => path.join(state.workspaceDir, name);
 
 beforeAll(async () => {
   state = await testState.createOpenClawTestState({
@@ -202,13 +203,10 @@ it.for<[string, string, string, string, string[] | undefined]>([
     contexts.push(original);
     const normalSurface = await readToolSurface(original, signal);
     // Ordinary managed Claude turns already use the mediated surface completions require.
-    expect(normalSurface).toMatchObject({
+    expect(normalSurface).toEqual({
       native: [],
-      mcp: expect.arrayContaining(["exec", "session_status"]),
+      mcp: toolsAllow ?? expect.arrayContaining(["exec", "session_status"]),
     });
-    if (toolsAllow) {
-      expect(normalSurface.mcp).toEqual(["exec", "process", "session_status"]);
-    }
 
     const completionSurfaces: ToolSurface[] = [];
     // Replace only native model I/O; event dispatch, admission, CLI preparation and MCP stay real.
@@ -228,9 +226,7 @@ it.for<[string, string, string, string, string[] | undefined]>([
             command: `node -e "require('node:fs').writeFileSync('${allowedName}', 'allowed')"`,
           });
           expect(allowed).toMatchObject({ status: 200, body: { result: { isError: false } } });
-          expect(await fs.readFile(path.join(state.workspaceDir, allowedName), "utf8")).toBe(
-            "allowed",
-          );
+          expect(await fs.readFile(workspacePath(allowedName), "utf8")).toBe("allowed");
           expect(launches).toHaveBeenCalledOnce();
           launches.mockClear();
           if (toolsAllow) {
@@ -244,7 +240,7 @@ it.for<[string, string, string, string, string[] | undefined]>([
               isError: true,
               content: [{ type: "text", text: "Tool not available: apply_patch" }],
             });
-            await expect(fs.stat(path.join(state.workspaceDir, deniedName))).rejects.toMatchObject({
+            await expect(fs.stat(workspacePath(deniedName))).rejects.toMatchObject({
               code: "ENOENT",
             });
             await updateSessionEntry({ agentId: "main", sessionKey }, () => ({
@@ -255,7 +251,7 @@ it.for<[string, string, string, string, string[] | undefined]>([
             });
             expect(revoked).toEqual({ status: 401, body: { error: "unauthorized" } });
             expect(launches).not.toHaveBeenCalled();
-            await expect(fs.stat(path.join(state.workspaceDir, deniedName))).rejects.toMatchObject({
+            await expect(fs.stat(workspacePath(deniedName))).rejects.toMatchObject({
               code: "ENOENT",
             });
           }

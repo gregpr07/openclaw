@@ -4,7 +4,6 @@ import { Readable } from "node:stream";
 import { expectDefined } from "@openclaw/normalization-core/expect";
 import { afterEach, vi } from "vitest";
 import * as httpFixture from "../../test/helpers/gateway-integration-fixtures.js";
-import { createDeferred } from "../../test/helpers/promise.js";
 import {
   createStandaloneHostBrowserHarness,
   type StandaloneHostBrowserOptions,
@@ -148,36 +147,11 @@ export async function request(params: {
 export async function startStandaloneHttp(
   options: Parameters<typeof handleMcpAppStandaloneHttpRequest>[2] = ports,
 ) {
-  const entered = createDeferred();
-  const handled = createDeferred();
-  const state: { error: unknown; leakedCloseListeners: number } = {
-    error: undefined,
-    leakedCloseListeners: 0,
-  };
   const server = createServer((req, res) => {
-    const originalListeners = new Set(req.socket.listeners("close"));
-    entered.resolve();
-    void handleMcpAppStandaloneHttpRequest(req, res, options)
-      .catch((error: unknown) => {
-        state.error = error;
-        res.destroy();
-      })
-      .finally(() => {
-        state.leakedCloseListeners = req.socket
-          .listeners("close")
-          .filter((listener) => !originalListeners.has(listener)).length;
-        handled.resolve();
-      });
+    void handleMcpAppStandaloneHttpRequest(req, res, options).catch(() => res.destroy());
   });
   const origin = await httpFixture.listenLoopback(server);
-  return {
-    origin,
-    url: `${origin}${viewPath}`,
-    entered: entered.promise,
-    handled: handled.promise,
-    state,
-    close: () => httpFixture.closeHttpServer(server),
-  };
+  return { origin, close: () => httpFixture.closeHttpServer(server) };
 }
 
 export async function createSerializedHost(options: StandaloneHostBrowserOptions = {}) {

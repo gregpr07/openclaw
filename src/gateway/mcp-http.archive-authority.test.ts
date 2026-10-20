@@ -40,20 +40,20 @@ async function sendRequest(token: string, method: "tools/list" | "tools/call") {
 
 beforeEach(() => {
   execute.mockClear();
-  resolveTools.mockReset().mockResolvedValue({
-    agentId: "main",
-    workspaceDir: "/workspace/archive-authority",
-    captureFinalCronCreatorTools: undefined,
-    tools: [
-      {
-        name: "authority_probe",
-        label: "Authority probe",
-        description: "Inspect the host-owned source at the MCP tool boundary",
-        parameters: Type.Object({}),
-        execute,
-      },
-    ],
-  });
+  resolveTools.mockReset().mockResolvedValue(
+    mcp.scopedToolFixture(
+      [
+        {
+          name: "authority_probe",
+          label: "Authority probe",
+          description: "Inspect the host-owned source at the MCP tool boundary",
+          parameters: Type.Object({}),
+          execute,
+        },
+      ],
+      "/workspace/archive-authority",
+    ),
+  );
 });
 
 it.each(["owner", "attach"] as const)(

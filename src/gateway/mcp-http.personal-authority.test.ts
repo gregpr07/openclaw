@@ -96,11 +96,8 @@ it.each([false, true])(
         .mockClear();
       resolveTools.mockImplementation(async (input) => {
         const capability = input.skillWorkshop?.libraryAuthoring;
-        return {
-          agentId: "main",
-          workspaceDir: "/tmp/library-workspace",
-          captureFinalCronCreatorTools: undefined,
-          tools: capability
+        return mcp.scopedToolFixture(
+          capability
             ? [
                 createLibrarySkillWorkshopTool(capability),
                 createSessionsTool({
@@ -110,14 +107,11 @@ it.each([false, true])(
                 }),
               ]
             : [],
-        };
+          "/tmp/library-workspace",
+        );
       });
       const captureKey = "capture-library-grant";
-      grants.activateMcpLoopbackClientGrantCapture({
-        token: grant.token,
-        runtimeOwnerToken: runtime().ownerToken,
-        captureKey,
-      });
+      mcp.captureGrant(grant.token, captureKey, runtime().ownerToken);
       const request = (name: string, args: Record<string, unknown>) =>
         mcp.sendLoopbackToolCall({
           token: grant.token,

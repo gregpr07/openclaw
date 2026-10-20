@@ -59,12 +59,7 @@ it("keeps private search denial, callable sibling tools, and live grant revocati
             runtimeOwnerToken: runtime.ownerToken,
             admittedRunContext,
           });
-          const capture = {
-            token: grant.token,
-            runtimeOwnerToken: runtime.ownerToken,
-            captureKey: `search-${disabled}`,
-          };
-          expect(grants.activateMcpLoopbackClientGrantCapture(capture)).toBeTruthy();
+          const capture = mcp.captureGrant(grant.token, `search-${disabled}`, runtime.ownerToken);
           return { grant, capture };
         };
         const request = (active: ReturnType<typeof makeGrant>, name?: string) => {

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, expect, vi } from "vitest";
 import type { AnyAgentTool } from "../agents/tools/common.js";
+import { activateMcpLoopbackClientGrantCapture } from "./mcp-grant-store.js";
 import { closeMcpLoopbackServer, ensureMcpLoopbackServer } from "./mcp-http.js";
 import { getActiveMcpLoopbackRuntime } from "./mcp-http.loopback-runtime.js";
 import { McpLoopbackToolCache } from "./mcp-http.runtime.js";
@@ -25,6 +26,16 @@ export type McpToolResultPayload = {
     isError?: boolean;
   };
 };
+
+export function scopedToolFixture<T>(tools: T[], workspaceDir: string) {
+  return { agentId: "main", workspaceDir, captureFinalCronCreatorTools: undefined, tools };
+}
+
+export function captureGrant(token: string, captureKey: string, runtimeOwnerToken: string) {
+  const capture = { token, captureKey, runtimeOwnerToken };
+  expect(activateMcpLoopbackClientGrantCapture(capture)).toBeTruthy();
+  return capture;
+}
 
 export async function startLoopbackServerForTest() {
   await ensureMcpLoopbackServer(0);

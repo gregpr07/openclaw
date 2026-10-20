@@ -30,12 +30,7 @@ async function listTools(token: string, headers: Record<string, string> = {}) {
 }
 
 it("carries a memory audience only from a run-bound CLI grant", async () => {
-  resolveTools.mockResolvedValue({
-    agentId: "main",
-    workspaceDir: "/tmp/openclaw-workspace",
-    captureFinalCronCreatorTools: undefined,
-    tools: [],
-  });
+  resolveTools.mockResolvedValue(mcp.scopedToolFixture([], "/tmp/openclaw-workspace"));
   const sessionKey = "agent:main:telegram:direct:owner";
   const sessionId = "session-memory";
   const memoryAudience: MemoryAudience = Object.freeze({ kind: "owner-private", agentId: "main" });
@@ -55,11 +50,7 @@ it("carries a memory audience only from a run-bound CLI grant", async () => {
       memoryAudience,
     });
     const captureKey = "capture-memory-audience";
-    grants.activateMcpLoopbackClientGrantCapture({
-      token: grant.token,
-      runtimeOwnerToken: runtime().ownerToken,
-      captureKey,
-    });
+    mcp.captureGrant(grant.token, captureKey, runtime().ownerToken);
     const attach = grants.mintAttachGrant({ sessionKey });
 
     expect(grant.context).not.toHaveProperty("memoryAudience");
