@@ -40,78 +40,93 @@ async function nextMessageTurn() {
   });
 }
 
-it("joins an accepted host completion after the report worker has exited", async () => {
+function settlementFixture(worker: string) {
   const entered = createDeferred<void>();
   const cancelled = createDeferred<void>();
   const released = createDeferred<void>();
   const exited = createDeferred<void>();
   workerExit.notify = () => exited.resolve();
-  const runner = new TeamReportsRunner(new URL("./run-worker.test-support.ts", import.meta.url));
+  const runner = new TeamReportsRunner(new URL(worker, import.meta.url));
   const controller = new AbortController();
-  const config = parseTeamReportsConfig({ github: { token: "fixture", orgs: ["sample"] } });
+  const start = (
+    params: Omit<Parameters<TeamReportsRunner["run"]>[0], "resolved" | "runtime" | "onRoster">,
+  ) =>
+    runner.run({
+      ...params,
+      resolved: {
+        github: { ...params.config.github, token: "fixture", ignoreCommentPatterns: [] },
+        people: params.config.people ?? [],
+      },
+      runtime: { signal: controller.signal, logger: { info() {}, warn() {}, error() {} } },
+      onRoster() {},
+    });
+  const observeAbort = (signal?: AbortSignal) =>
+    signal?.addEventListener("abort", () => cancelled.resolve(), { once: true });
+  return {
+    entered,
+    released,
+    start,
+    observeAbort,
+    async cancelAndJoin(pending: Promise<unknown>, beforeRelease = () => {}) {
+      let runSettled = false;
+      let closeSettled = false;
+      const rejected = expect(
+        pending.finally(() => {
+          runSettled = true;
+        }),
+      ).rejects.toThrow("Report cancelled");
+      await entered.promise;
+      controller.abort(new Error("Report cancelled"));
+      const closing = runner.close().then(() => {
+        closeSettled = true;
+      });
+      await Promise.all([cancelled.promise, exited.promise]);
+      // Drain native-exit cleanup without a timer or polling.
+      await nextMessageTurn();
+      expect([runSettled, closeSettled]).toEqual([false, false]);
+      beforeRelease();
+      released.resolve();
+      await Promise.all([rejected, closing]);
+      expect([runSettled, closeSettled]).toEqual([true, true]);
+    },
+    async close() {
+      released.resolve();
+      await runner.close();
+    },
+  };
+}
+
+it("joins an accepted host completion after the report worker has exited", async () => {
+  const fixture = settlementFixture("./run-worker.test-support.ts");
   const store = new TeamReportsStore({
     async execute() {
       throw new Error("This completion-only fixture must not access storage");
     },
     async close() {},
   });
-  let runSettled = false;
-  let closeSettled = false;
-  const pending = runner
-    .run({
-      config,
-      resolved: {
-        github: { ...config.github, token: "fixture", ignoreCommentPatterns: [] },
-        people: [],
+  const pending = fixture.start({
+    config: parseTeamReportsConfig({ github: { token: "fixture", orgs: ["sample"] } }),
+    store,
+    periods: [],
+    llm: {
+      complete: async ({ signal }) => {
+        fixture.observeAbort(signal);
+        fixture.entered.resolve();
+        await fixture.released.promise;
+        return completion("Late result");
       },
-      store,
-      periods: [],
-      runtime: { signal: controller.signal, logger: { info() {}, warn() {}, error() {} } },
-      onRoster() {},
-      llm: {
-        complete: async ({ signal }) => {
-          signal?.addEventListener("abort", () => cancelled.resolve(), { once: true });
-          entered.resolve();
-          await released.promise;
-          return completion("Late result");
-        },
-      },
-    })
-    .finally(() => {
-      runSettled = true;
-    });
-  const rejected = expect(pending).rejects.toThrow("Report cancelled");
+    },
+  });
   try {
-    await entered.promise;
-    controller.abort(new Error("Report cancelled"));
-    const closing = runner.close().then(() => {
-      closeSettled = true;
-    });
-    await Promise.all([cancelled.promise, exited.promise]);
-    // Let native-exit cleanup drain through one message turn, without a timer or polling.
-    await nextMessageTurn();
-    expect(runSettled).toBe(false);
-    expect(closeSettled).toBe(false);
-    released.resolve();
-    await Promise.all([rejected, closing]);
-    expect(runSettled).toBe(true);
-    expect(closeSettled).toBe(true);
+    await fixture.cancelAndJoin(pending);
   } finally {
-    released.resolve();
-    await runner.close();
+    await fixture.close();
   }
 });
 
 it("joins accepted SQLite result settlement after cancelling the real collection worker", async () => {
   await withTempDir("team-reports-worker-settlement-", async (directory) => {
-    const entered = createDeferred<void>();
-    const cancelled = createDeferred<void>();
-    const released = createDeferred<void>();
-    const exited = createDeferred<void>();
-    workerExit.notify = () => exited.resolve();
-    const runner = new TeamReportsRunner(
-      new URL("./run-worker.collection.test-support.ts", import.meta.url),
-    );
+    const fixture = settlementFixture("./run-worker.collection.test-support.ts");
     const store = await createTeamReportsStore({
       stateDir: directory,
       workerModuleUrl: resolveRuntimeWorkerUrl(teamReportsSqliteBackendEntrypoint),
@@ -121,59 +136,31 @@ it("joins accepted SQLite result settlement after cancelling the real collection
       if (args[0] !== "upsertPeriod") {
         return execute(...args);
       }
-      args[2]?.signal?.addEventListener("abort", () => cancelled.resolve(), { once: true });
+      fixture.observeAbort(args[2]?.signal);
       const result = await execute(...args);
       // SQLite has committed; the host still owns delivery/settlement of this accepted result.
-      entered.resolve();
-      await released.promise;
+      fixture.entered.resolve();
+      await fixture.released.promise;
       return result;
     });
-    const controller = new AbortController();
     const config = parseTeamReportsConfig({
       github: { token: "fixture", orgs: ["sample"] },
       people: [{ github: ["alex"] }],
       summaries: { enabled: true },
     });
     const complete = vi.fn(async () => completion("Unexpected late summary"));
-    let runSettled = false;
-    let closeSettled = false;
-    const pending = runner
-      .run({
-        config,
-        resolved: {
-          github: { ...config.github, token: "fixture", ignoreCommentPatterns: [] },
-          people: config.people ?? [],
-        },
-        store,
-        periods: [describePeriod("day", "2026-08-19")],
-        runtime: { signal: controller.signal, logger: { info() {}, warn() {}, error() {} } },
-        onRoster() {},
-        llm: { complete },
-      })
-      .finally(() => {
-        runSettled = true;
-      });
-    const rejected = expect(pending).rejects.toThrow("Report cancelled");
+    const pending = fixture.start({
+      config,
+      store,
+      periods: [describePeriod("day", "2026-08-19")],
+      llm: { complete },
+    });
     try {
-      await entered.promise;
-      controller.abort(new Error("Report cancelled"));
-      const closing = runner.close().then(() => {
-        closeSettled = true;
-      });
-      await Promise.all([cancelled.promise, exited.promise]);
-      await nextMessageTurn();
-      expect(runSettled).toBe(false);
-      expect(closeSettled).toBe(false);
-      expect(complete).not.toHaveBeenCalled();
-      released.resolve();
-      await Promise.all([rejected, closing]);
-      expect(runSettled).toBe(true);
-      expect(closeSettled).toBe(true);
+      await fixture.cancelAndJoin(pending, () => expect(complete).not.toHaveBeenCalled());
       expect((await store.getPeriod("day", "2026-08-19"))?.report.totals.github.commits).toBe(1);
       expect(complete).not.toHaveBeenCalled();
     } finally {
-      released.resolve();
-      await runner.close();
+      await fixture.close();
       await store.close();
     }
   });

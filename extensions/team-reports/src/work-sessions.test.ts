@@ -7,9 +7,10 @@ import {
 } from "./work-sessions.js";
 
 vi.mock("openclaw/plugin-sdk/gateway-method-runtime", () => ({ dispatchGatewayMethod: vi.fn() }));
+const dispatch = vi.mocked(dispatchGatewayMethod);
+beforeEach(() => dispatch.mockReset());
 
 describe("report work sessions", () => {
-  beforeEach(() => vi.mocked(dispatchGatewayMethod).mockReset());
   it("requests owned sessions and projects only link metadata, excluding incognito", async () => {
     vi.mocked(dispatchGatewayMethod).mockResolvedValueOnce({
       ok: true,
@@ -56,13 +57,10 @@ describe("report work sessions", () => {
     expect(JSON.stringify(result)).not.toContain("agent:writer:private");
   });
 
-  it.each([{ ok: false }])(
-    "distinguishes failed discovery from an empty list (%j)",
-    async (response) => {
-      vi.mocked(dispatchGatewayMethod).mockResolvedValueOnce(response);
-      expect(await listWorkSessions()).toEqual({ available: false });
-    },
-  );
+  it("distinguishes failed discovery from an empty list", async () => {
+    dispatch.mockResolvedValueOnce({ ok: false });
+    expect(await listWorkSessions()).toEqual({ available: false });
+  });
 
   it("does not expose internal dispatch errors", async () => {
     vi.mocked(dispatchGatewayMethod).mockRejectedValueOnce(new Error("private transport detail"));
@@ -71,7 +69,6 @@ describe("report work sessions", () => {
 });
 
 describe("per-member current work", () => {
-  beforeEach(() => vi.mocked(dispatchGatewayMethod).mockReset());
   const profile = (
     id: string,
     login: string | null,
@@ -83,8 +80,13 @@ describe("per-member current work", () => {
     githubIdentity: login ? { ...(host ? { host } : {}), login } : null,
   });
   const identities = (profiles: ReturnType<typeof profile>[]) => {
-    vi.mocked(dispatchGatewayMethod).mockResolvedValueOnce({ ok: true, payload: { profiles } });
+    dispatch.mockResolvedValueOnce({ ok: true, payload: { profiles } });
   };
+  const denied = (profiles: ReturnType<typeof profile>[], reason: string, alias = "alice") => ({
+    profiles,
+    aliases: [alias],
+    reason,
+  });
 
   it("resolves aliases case-insensitively through merges and deduplicates owner pages per request", async () => {
     identities([profile("old", "Old-Alice", "alice"), profile("alice", "Alice")]);
@@ -101,18 +103,10 @@ describe("per-member current work", () => {
   });
 
   it.each([
-    { profiles: [profile("name-only", null)], aliases: ["name-only"], reason: "unlinked" },
-    {
-      profiles: [profile("enterprise", "Alice", null, "ghe.example.test")],
-      aliases: ["alice"],
-      reason: "unlinked",
-    },
-    { profiles: [profile("a", "Alice", "missing")], aliases: ["alice"], reason: "ambiguous" },
-    {
-      profiles: [profile("a", "Alice", "b"), profile("b", null, "a")],
-      aliases: ["alice"],
-      reason: "ambiguous",
-    },
+    denied([profile("name-only", null)], "unlinked", "name-only"),
+    denied([profile("enterprise", "Alice", null, "ghe.example.test")], "unlinked"),
+    denied([profile("a", "Alice", "missing")], "ambiguous"),
+    denied([profile("a", "Alice", "b"), profile("b", null, "a")], "ambiguous"),
   ])(
     "never queries unfiltered sessions for $reason identity",
     async ({ profiles, aliases, reason }) => {
