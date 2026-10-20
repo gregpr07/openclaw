@@ -4,7 +4,9 @@ import { createTestGatewayHttpServer } from "./http-server.test-support.js";
 const TEST_GATEWAY_TOKEN = "test-gateway-token-1234567890";
 let cfg: Record<string, unknown> = {};
 
+// mock-isolation: Keep HTTP denylist configuration independent of the host config store.
 vi.mock("../config/config.js", () => ({ getRuntimeConfig: () => cfg }));
+// mock-isolation: Supply the same fixture config without loading host config files.
 vi.mock("../config/io.js", () => ({ getRuntimeConfig: () => cfg }));
 
 vi.mock("../config/sessions.js", async (importOriginal) => {
@@ -15,16 +17,20 @@ vi.mock("../config/sessions.js", async (importOriginal) => {
   };
 });
 
+// mock-isolation: Admit transport authentication so the test exercises the tool denylist.
 vi.mock("./auth.js", () => ({
   authorizeHttpGatewayConnect: async () => ({ ok: true as const }),
 }));
 
+// mock-isolation: Keep synthetic denylist warnings out of the process-wide logger.
 vi.mock("../logger.js", () => ({ logWarn: () => {} }));
 
+// mock-isolation: Supply loop policy without initializing the real agent tool runtime.
 vi.mock("../agents/agent-tools.js", () => ({
   resolveToolLoopDetectionConfig: () => ({ warnAt: 3 }),
 }));
 
+// mock-isolation: Bypass unrelated agent hooks while retaining the HTTP denylist boundary.
 vi.mock("../agents/agent-tools.before-tool-call.js", () => ({
   runBeforeToolCallHook: async ({ params }: { params: unknown }) => ({
     blocked: false as const,

@@ -23,13 +23,13 @@ const mocks = vi.hoisted(() => ({
   roleScopes: undefined as string[] | undefined,
 }));
 
-// mock-isolation: Supply selected rows and profile/sharing facts without opening stores;
-// retain live grant checks and reject legacy sync reads or source preparation.
+// mock-isolation: Reject legacy synchronous reads to enforce the async storage boundary.
 vi.mock("../session-utils.js", () => ({
   loadIncognitoGatewaySessionEntryReadOnly: () => {
     throw new Error("Synchronous publication read");
   },
 }));
+// mock-isolation: Supply selected rows and source identity without opening session stores.
 vi.mock("../session-utils-store-worker.js", () => ({
   loadGatewaySessionEntryReadOnlyInWorker: async ({ key, agentId, onSelected }: WorkerRead) => {
     const loaded = await mocks.loadSession(key, { agentId });
@@ -46,6 +46,7 @@ vi.mock("../session-utils-store-worker.js", () => ({
     return loaded;
   },
 }));
+// mock-isolation: Admit the requester without opening profile or session stores.
 vi.mock("../github-publication-requester.js", () => ({
   prepareGitHubPublicationRequesterV2: async () => ({
     requester: {
@@ -60,17 +61,20 @@ vi.mock("../github-publication-requester.js", () => ({
 vi.mock("../../agents/tools/gateway-caller-context.js", () => ({
   getGatewayToolCallerIdentity: () => undefined,
 }));
+// mock-isolation: Supply profile authority without opening the host profile store.
 vi.mock("../../state/user-channel-identity-operations.js", () => ({
   prepareUserProfileRolePolicyAuthority: async (profileId: string) => ({
     profileId,
     isCurrent: () => true,
   }),
 }));
+// mock-isolation: Supply resident profile facts without hydrating the profile database.
 vi.mock("../../state/user-profile-list.js", () => ({
   captureResidentUserProfileAccess: (profileId: string) => ({
     assertCurrent: () => ({ id: profileId, role: null }),
   }),
 }));
+// mock-isolation: Control role ceilings independently of persistent operator policy.
 vi.mock("../operator-role-policy.js", () => {
   const resolve = () => (mocks.roleScopes ? { scopes: mocks.roleScopes } : null);
   return {
@@ -79,10 +83,12 @@ vi.mock("../operator-role-policy.js", () => {
     resolveOperatorRolePolicyForAssignment: resolve,
   };
 });
+// mock-isolation: Supply selected-session access without initializing sharing storage.
 vi.mock("../session-sharing.js", () => ({
   createSessionListEntryFilter: () => undefined,
 }));
 
+// mock-isolation: Admit sharing independently of the live personal grant under test.
 vi.mock("../session-sharing-authorization-async.js", () => ({
   resolveSessionMutationAuthorizationAsync: async () => ({}),
 }));
