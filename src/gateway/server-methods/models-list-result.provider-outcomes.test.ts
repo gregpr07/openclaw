@@ -88,7 +88,6 @@ it.each([false, true])("preserves rejection on refresh failure=%s", async (unava
   const reporter = createCatalogAttemptReporter(
     {},
     { key: "synthetic", pluginFingerprint: "synthetic", credentials: {} },
-    () => true,
     () => {},
   );
   const providerOutcomes = [
