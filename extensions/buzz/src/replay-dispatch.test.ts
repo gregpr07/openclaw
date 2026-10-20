@@ -1,11 +1,11 @@
 import { createDeferred } from "openclaw/plugin-sdk/concurrency-runtime";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   BUZZ_REPLAY_DISPATCH_MAX_PENDING,
   createBuzzReplayDispatchQueue,
 } from "./replay-dispatch.js";
 
-const REPLAY_DISPATCH_CONCURRENCY = 8;
+const CAPACITY = BUZZ_REPLAY_DISPATCH_MAX_PENDING + 8;
 
 function createBlockedQueue(full = false) {
   const releases: Array<() => void> = [];
@@ -13,16 +13,10 @@ function createBlockedQueue(full = false) {
   const blockTask = () => {
     const gate = createDeferred();
     releases.push(() => gate.resolve());
-    return async () => {
-      await gate.promise;
-    };
+    return () => gate.promise.then(() => {});
   };
   if (full) {
-    for (
-      let index = 0;
-      index < BUZZ_REPLAY_DISPATCH_MAX_PENDING + REPLAY_DISPATCH_CONCURRENCY;
-      index += 1
-    ) {
+    for (let index = 0; index < CAPACITY; index += 1) {
       expect(queue.enqueue(blockTask())).toBe("accepted");
     }
   }
@@ -39,13 +33,11 @@ describe("Buzz replay dispatch capacity reservations", () => {
   it("withholds a reservation while queued work occupies the pending limit", async () => {
     const { queue, blockTask } = createBlockedQueue(true);
 
-    let granted: unknown = "pending";
-    void queue.reserveCapacity(10).then((reservation) => {
-      granted = reservation;
-    });
+    const granted = vi.fn();
+    void queue.reserveCapacity(10).then(granted);
     await flush();
 
-    expect(granted).toBe("pending");
+    expect(granted).not.toHaveBeenCalled();
     expect(queue.enqueue(blockTask())).toBe("overflow");
   });
 
@@ -54,9 +46,7 @@ describe("Buzz replay dispatch capacity reservations", () => {
     const pageSize = 100;
 
     const reservationPromise = queue.reserveCapacity(pageSize);
-    for (let index = 0; index < pageSize; index += 1) {
-      releases[index]?.();
-    }
+    releases.slice(0, pageSize).forEach((release) => release());
     const reservation = await reservationPromise;
     expect(reservation).toBeDefined();
 
@@ -76,23 +66,18 @@ describe("Buzz replay dispatch capacity reservations", () => {
     const { queue, releases } = createBlockedQueue(true);
 
     const firstPromise = queue.reserveCapacity(50);
-    for (let index = 0; index < 50; index += 1) {
-      releases[index]?.();
-    }
+    releases.slice(0, 50).forEach((release) => release());
     const first = await firstPromise;
     expect(first).toBeDefined();
 
-    let second: unknown = "pending";
-    void queue.reserveCapacity(50).then((reservation) => {
-      second = reservation;
-    });
+    const second = vi.fn();
+    void queue.reserveCapacity(50).then(second);
     await flush();
-    expect(second).toBe("pending");
+    expect(second).not.toHaveBeenCalled();
 
     first?.release();
     await flush();
-    expect(second).toBeDefined();
-    expect(second).not.toBe("pending");
+    expect(second).toHaveBeenCalledExactlyOnceWith(expect.anything());
   });
 
   it("abandons waiting reservations once the queue closes", async () => {

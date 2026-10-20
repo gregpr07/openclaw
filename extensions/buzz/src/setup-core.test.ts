@@ -25,9 +25,7 @@ function apply(cfg: OpenClawConfig, input: SetupInput, accountId = "default") {
 }
 
 describe("buzzSetupContract", () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
+  afterEach(vi.unstubAllEnvs);
 
   it("adds a named account without changing the existing private-key SecretRef", () => {
     const buzz = {
@@ -37,15 +35,12 @@ describe("buzzSetupContract", () => {
       authTag: AUTH_TAG,
     };
     const cfg = config(buzz);
-    const input = {
-      relayUrl: "wss://new.example.com",
-      privateKey: "22".repeat(32),
-    };
-    const resolvedAccountId = resolveAccount(cfg, input);
+    const input = { relayUrl: "wss://new.example.com", privateKey: "22".repeat(32) };
+    const accountId = resolveAccount(cfg, input);
 
-    expect(resolvedAccountId).toBe("ada");
-    expect(setup.validateInput?.({ cfg, accountId: resolvedAccountId, input })).toBeNull();
-    const result = apply(cfg, input, resolvedAccountId);
+    expect(accountId).toBe("ada");
+    expect(setup.validateInput?.({ cfg, accountId, input })).toBeNull();
+    const result = apply(cfg, input, accountId);
     expect(result.channels?.buzz).toEqual({
       ...buzz,
       accounts: { ada: { enabled: true, ...input } },
@@ -63,10 +58,10 @@ describe("buzzSetupContract", () => {
     };
     const cfg = config(buzz);
     const input = { relayUrl: "wss://new.example.com", useEnv: true };
-    const resolvedAccountId = resolveAccount(cfg, input);
+    const accountId = resolveAccount(cfg, input);
 
-    expect(resolvedAccountId).toBe("ada");
-    expect(setup.validateInput?.({ cfg, accountId: resolvedAccountId, input })).toBe(
+    expect(accountId).toBe("ada");
+    expect(setup.validateInput?.({ cfg, accountId, input })).toBe(
       "Buzz --use-env is only supported for the root default identity; use an explicit private key or SecretRef for this account.",
     );
     expect(cfg.channels?.buzz).toEqual(buzz);
@@ -80,36 +75,29 @@ describe("buzzSetupContract", () => {
     const before = structuredClone(cfg);
     const accountId = "default";
     const renamed = setup.applyAccountName!({ cfg, accountId, name: " Renamed " });
-    const result = apply(renamed, {
-      relayUrl: "wss://new.example.com",
-      privateKey: "44".repeat(32),
-    });
-    const patch = {
-      name: "Renamed",
-      relayUrl: "wss://new.example.com",
-      privateKey: "44".repeat(32),
-      enabled: true,
-    };
+    const replacement = { relayUrl: "wss://new.example.com", privateKey: "44".repeat(32) };
+    const result = apply(renamed, replacement);
     expect(result.channels?.buzz).toEqual({
       ...root,
-      accounts: { ...accounts, [accountId]: patch },
+      accounts: { ...accounts, [accountId]: { ...replacement, name: "Renamed", enabled: true } },
     });
     expect(cfg).toEqual(before);
   });
 
-  it("validates and applies BUZZ_PRIVATE_KEY setup without storing the key", () => {
-    expect(
-      setup.validateInput?.({
-        cfg: {},
-        accountId: "default",
-        input: envInput,
-      }),
-    ).toBeNull();
+  it.each([
+    { name: "stored key", privateKey: "11".repeat(32) },
+    {
+      name: "unresolved SecretRef",
+      privateKey: { source: "env" as const, provider: "default", id: "OTHER_BUZZ_KEY" },
+    },
+  ])("replaces $name with the environment without storing credentials", ({ privateKey }) => {
+    expect(setup.validateInput?.({ cfg: {}, accountId: "default", input: envInput })).toBeNull();
     vi.stubEnv("BUZZ_PRIVATE_KEY", "22".repeat(32));
     const cfg = config({
       enabled: true,
       relayUrl: "wss://old.example.com",
-      privateKey: "11".repeat(32),
+      privateKey,
+      authTag: AUTH_TAG,
     });
 
     const result = apply(cfg, { ...envInput, name: " Environment bot " });
@@ -119,19 +107,5 @@ describe("buzzSetupContract", () => {
       enabled: true,
       relayUrl: RELAY_URL,
     });
-  });
-
-  it("clears an auth tag when replacing an unresolved SecretRef with the environment", () => {
-    vi.stubEnv("BUZZ_PRIVATE_KEY", "22".repeat(32));
-    const cfg = config({
-      relayUrl: RELAY_URL,
-      privateKey: { source: "env", provider: "default", id: "OTHER_BUZZ_KEY" },
-      authTag: AUTH_TAG,
-    });
-
-    const result = apply(cfg, envInput);
-
-    expect(result.channels?.buzz?.privateKey).toBeUndefined();
-    expect(result.channels?.buzz?.authTag).toBeUndefined();
   });
 });

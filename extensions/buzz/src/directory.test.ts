@@ -2,6 +2,7 @@ import { getPublicKey, type Event, type Filter } from "nostr-tools";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BuzzConfigInput } from "./config-schema.js";
+import type { BuzzDirectoryState } from "./directory-state.js";
 import {
   getBuzzDirectorySelf,
   listBuzzDirectoryGroupMembers,
@@ -18,19 +19,10 @@ const relayMocks = vi.hoisted(() => ({
   send: vi.fn(async () => {}),
   subscribe: vi.fn(),
 }));
-const gatewayMocks = vi.hoisted(() => ({
-  activeBus: undefined as
-    | {
-        directory: {
-          listGroups: (params: { query?: string | null; limit?: number | null }) => unknown[];
-          listGroupMembers: (params: { groupId: string; limit?: number | null }) => unknown[];
-          listPeers: (params: { query?: string | null; limit?: number | null }) => unknown[];
-          self: () => unknown;
-        };
-        refreshDirectory: () => Promise<void>;
-      }
-    | undefined,
-}));
+type Directory = Pick<BuzzDirectoryState, "listGroups" | "listGroupMembers" | "listPeers" | "self">;
+type ActiveBus = { directory: Directory; refreshDirectory: () => Promise<void> };
+type Handlers = { onevent: (event: Event) => void; oneose: () => void };
+const gatewayMocks = vi.hoisted(() => ({ activeBus: undefined as ActiveBus | undefined }));
 
 vi.mock("nostr-tools", async (importOriginal) => {
   const actual = await importOriginal<typeof import("nostr-tools")>();
@@ -47,19 +39,12 @@ vi.mock("nostr-tools", async (importOriginal) => {
       scheduleIdleClose = vi.fn();
       send = relayMocks.send;
 
-      prepareSubscription(
-        filters: Filter[],
-        handlers: {
-          onevent: (event: Event) => void;
-          oneose: () => void;
-        },
-      ) {
+      prepareSubscription(filters: Filter[], handlers: Handlers) {
         const filter = filters[0] ?? {};
         relayMocks.filters.push(filter);
-        const subscription = relayMocks.subscribe(filter, handlers);
         return {
           id: `sub:${relayMocks.filters.length}`,
-          ...subscription,
+          ...relayMocks.subscribe(filter, handlers),
         };
       }
     },
@@ -87,9 +72,7 @@ function directoryParams(overrides: BuzzConfigInput = {}) {
   return { cfg: { channels: { buzz } }, accountId: "default" };
 }
 
-function activeBus(
-  overrides: Partial<NonNullable<typeof gatewayMocks.activeBus>["directory"]> = {},
-) {
+function activeBus(overrides: Partial<Directory> = {}) {
   return {
     directory: {
       self: () => null,
@@ -104,13 +87,13 @@ function activeBus(
 
 function event(params: Partial<Event> & Pick<Event, "kind">): Event {
   return {
-    id: params.id ?? "f".repeat(64),
-    kind: params.kind,
-    pubkey: params.pubkey ?? RELAY_PUBLIC_KEY,
-    created_at: params.created_at ?? 1_700_000_000,
-    content: params.content ?? "",
-    sig: params.sig ?? "e".repeat(128),
-    tags: params.tags ?? [],
+    id: "f".repeat(64),
+    created_at: 1_700_000_000,
+    sig: "e".repeat(128),
+    content: "",
+    tags: [],
+    pubkey: RELAY_PUBLIC_KEY,
+    ...params,
   };
 }
 
@@ -129,48 +112,40 @@ describe("Buzz live directory", () => {
         }),
       ),
     );
-    relayMocks.subscribe.mockImplementation(
-      (
-        filter: Filter,
-        handlers: {
-          onevent: (event: Event) => void;
-          oneose: () => void;
-        },
-      ) => {
-        const emit = (params: Parameters<typeof event>[0]) => handlers.onevent(event(params));
-        if (filter.kinds?.includes(39_002)) {
-          emit({
-            kind: 39_002,
-            tags: [
-              ["d", ROOM_ID],
-              ["p", BOT_PUBLIC_KEY, "", "bot"],
-              ["p", MEMBER_PUBLIC_KEY, "", "member"],
-            ],
-          });
-        } else if (filter.kinds?.includes(39_000)) {
-          emit({
-            kind: 39_000,
-            tags: [
-              ["d", ROOM_ID],
-              ["name", "Engineering"],
-              ...(relayMocks.roomArchived ? [["archived", "true"]] : []),
-            ],
-          });
-        } else if (filter.kinds?.includes(0)) {
-          emit({
-            kind: 0,
-            pubkey: MEMBER_PUBLIC_KEY,
-            content: JSON.stringify({
-              display_name: "Alice",
-              picture: "https://example.com/alice.png",
-              nip05: "alice@example.com",
-            }),
-          });
-        }
-        queueMicrotask(() => handlers.oneose());
-        return { close: vi.fn() };
-      },
-    );
+    relayMocks.subscribe.mockImplementation((filter: Filter, handlers: Handlers) => {
+      const emit = (params: Parameters<typeof event>[0]) => handlers.onevent(event(params));
+      if (filter.kinds?.includes(39_002)) {
+        emit({
+          kind: 39_002,
+          tags: [
+            ["d", ROOM_ID],
+            ["p", BOT_PUBLIC_KEY, "", "bot"],
+            ["p", MEMBER_PUBLIC_KEY, "", "member"],
+          ],
+        });
+      } else if (filter.kinds?.includes(39_000)) {
+        emit({
+          kind: 39_000,
+          tags: [
+            ["d", ROOM_ID],
+            ["name", "Engineering"],
+            ...(relayMocks.roomArchived ? [["archived", "true"]] : []),
+          ],
+        });
+      } else if (filter.kinds?.includes(0)) {
+        emit({
+          kind: 0,
+          pubkey: MEMBER_PUBLIC_KEY,
+          content: JSON.stringify({
+            display_name: "Alice",
+            picture: "https://example.com/alice.png",
+            nip05: "alice@example.com",
+          }),
+        });
+      }
+      queueMicrotask(() => handlers.oneose());
+      return { close: vi.fn() };
+    });
   });
 
   afterEach(() => {
@@ -222,30 +197,29 @@ describe("Buzz live directory", () => {
       if (active) {
         gatewayMocks.activeBus = { ...activeBus(), refreshDirectory };
       }
+      const account = directoryParams({
+        enabled: accountEnabled,
+        privateKey: unavailable
+          ? { source: "env", provider: "default", id: "UNAVAILABLE_KEY" }
+          : PRIVATE_KEY,
+      }).cfg.channels.buzz;
       const cfg = {
         channels: {
           buzz: {
             enabled: rootEnabled,
-            accounts: {
-              ada: {
-                ...directoryParams().cfg.channels.buzz,
-                enabled: accountEnabled,
-                privateKey: unavailable
-                  ? { source: "env", provider: "default", id: "UNAVAILABLE_KEY" }
-                  : PRIVATE_KEY,
-              },
-            },
+            accounts: { ada: account },
           },
         },
       } as OpenClawConfig;
+      const params = { cfg, accountId: "ada" };
       await expect(
-        listBuzzDirectoryGroupsLive({ cfg, accountId: "ada", query: ROOM_ID, limit: 1 }),
+        listBuzzDirectoryGroupsLive({ ...params, query: ROOM_ID, limit: 1 }),
       ).resolves.toEqual([expect.objectContaining({ id: `buzz:${ROOM_ID}` })]);
-      await expect(listBuzzDirectoryPeersLive({ cfg, accountId: "ada" })).resolves.toEqual([]);
-      await expect(
-        listBuzzDirectoryGroupMembers({ cfg, accountId: "ada", groupId: ROOM_ID }),
-      ).resolves.toEqual([]);
-      const self = await getBuzzDirectorySelf({ cfg, accountId: "ada" });
+      await expect(listBuzzDirectoryPeersLive(params)).resolves.toEqual([]);
+      await expect(listBuzzDirectoryGroupMembers({ ...params, groupId: ROOM_ID })).resolves.toEqual(
+        [],
+      );
+      const self = await getBuzzDirectorySelf(params);
       expect(self?.id ?? null).toBe(unavailable ? null : BOT_PUBLIC_KEY);
       expect(fetch).not.toHaveBeenCalled();
       expect(relayMocks.connect).not.toHaveBeenCalled();
@@ -281,15 +255,9 @@ describe("Buzz live directory", () => {
   });
 
   it("refreshes only room listings when an active bus already owns directory state", async () => {
-    const refreshDirectory = vi.fn(async () => {});
-    const self = vi.fn(() => ({ kind: "user", id: BOT_PUBLIC_KEY, name: "OpenClaw" }));
-    const listPeers = vi.fn(() => [{ kind: "user", id: MEMBER_PUBLIC_KEY, name: "Alice" }]);
-    const listGroups = vi.fn(() => [{ kind: "group", id: `buzz:${ROOM_ID}`, name: "Engineering" }]);
-    const listGroupMembers = vi.fn(() => [{ kind: "user", id: MEMBER_PUBLIC_KEY, name: "Alice" }]);
-    gatewayMocks.activeBus = {
-      directory: { self, listPeers, listGroups, listGroupMembers },
-      refreshDirectory,
-    };
+    const bus = activeBus();
+    gatewayMocks.activeBus = bus;
+    const { refreshDirectory } = bus;
     const params = directoryParams();
 
     await getBuzzDirectorySelf(params);

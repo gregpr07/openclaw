@@ -4,14 +4,6 @@ import { createRuntimeSpies } from "../../test-support/runtime-spies.js";
 const mocks = vi.hoisted(() => ({ callGatewayFromCli: vi.fn() }));
 const ROOM_ID = "7c4a6d2a-2ed9-4b4e-a5e2-4d705ee9b34c";
 
-function gatewayClosed(message: string) {
-  return Object.assign(new Error(message), {
-    name: "GatewayTransportError",
-    kind: "closed",
-    code: 1006,
-  });
-}
-
 function savedConfigThen(status: unknown) {
   mocks.callGatewayFromCli
     .mockResolvedValueOnce({ appliedConfigHash: "saved", configRevisionHash: "saved" })
@@ -25,11 +17,7 @@ vi.mock("openclaw/plugin-sdk/gateway-runtime", () => ({
 async function verify() {
   const runtime = createRuntimeSpies();
   const { verifyBuzzAfterSetup } = await import("./setup-verify.js");
-  await verifyBuzzAfterSetup({
-    accountId: "default",
-    target: ROOM_ID,
-    runtime,
-  });
+  await verifyBuzzAfterSetup({ accountId: "default", target: ROOM_ID, runtime });
   return runtime;
 }
 
@@ -67,23 +55,24 @@ describe("verifyBuzzAfterSetup", () => {
     );
   });
 
-  it("prints the exact start command when the Gateway is stopped", async () => {
-    mocks.callGatewayFromCli.mockRejectedValue(gatewayClosed("gateway closed (1006): no listener"));
-    const runtime = await verify();
-
-    expect(runtime.log).toHaveBeenCalledWith(
-      "Buzz config was saved. Start OpenClaw to connect: openclaw gateway",
-    );
-  });
-
-  it("keeps the verification error for an unrelated abnormal Gateway closure", async () => {
+  it.each([
+    {
+      message: "gateway closed (1006): no listener",
+      expected: "Buzz config was saved. Start OpenClaw to connect: openclaw gateway",
+    },
+    {
+      message: "gateway connection dropped during verification",
+      expected: expect.stringContaining("post-setup verification did not complete"),
+    },
+  ])("reports the appropriate recovery for $message", async ({ message, expected }) => {
     mocks.callGatewayFromCli.mockRejectedValue(
-      gatewayClosed("gateway connection dropped during verification"),
+      Object.assign(new Error(message), {
+        name: "GatewayTransportError",
+        kind: "closed",
+        code: 1006,
+      }),
     );
     const runtime = await verify();
-
-    expect(runtime.log).toHaveBeenCalledWith(
-      expect.stringContaining("post-setup verification did not complete"),
-    );
+    expect(runtime.log).toHaveBeenCalledWith(expected);
   });
 });
