@@ -90,18 +90,12 @@ describe("process-owned directory observation", () => {
     }
     expect(clock).not.toHaveBeenCalled();
     expect(timeout).toHaveBeenCalledOnce();
-    vi.advanceTimersByTime(30_000);
-    expect(listener).toHaveBeenCalledOnce();
-    subscriptions.pop()!.close();
-    expect(vi.getTimerCount()).toBe(0);
-  });
-
-  it("recovers healthy watches every 30 seconds", () => {
-    const listener = observe(timedDirectory("cadence"));
     vi.advanceTimersByTime(29_999);
     expect(listener).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1);
     expect(listener).toHaveBeenCalledOnce();
+    subscriptions.pop()!.close();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("keeps the authority recovery bound across a backward wall-clock correction", () => {
@@ -253,38 +247,28 @@ describe("process-owned directory observation", () => {
     const agents = path.join(root, "agents");
     const watch = spyOnNativeWatch();
     const opened = () =>
-      watch.mock.results.flatMap((result, index) =>
-        result.type === "return"
-          ? [
-              {
-                path: watch.mock.calls[index]?.[0],
-                watcher: result.value,
-                onChange: watch.mock.calls[index]![2],
-              },
-            ]
-          : [],
-      );
+      watch.mock.calls.filter((_, index) => watch.mock.results[index]?.type === "return");
     const changed = vi.fn();
     observe(path.join(agents, "work"), changed, { recursive: true });
     const [ancestor] = opened();
-    expect(ancestor?.path).toBe(root);
-    const close = vi.spyOn(ancestor!.watcher, "close");
+    expect(ancestor?.[0]).toBe(root);
+    const close = vi.spyOn(watch.mock.results[watch.mock.calls.indexOf(ancestor!)]!.value, "close");
     // SQLite sidecars beside a state database appear and vanish on every write.
-    ancestor!.onChange("rename", "state.sqlite-journal");
+    ancestor![2]("rename", "state.sqlite-journal");
     // macOS also reports the parent's own metadata change for sibling writes.
-    ancestor!.onChange("change", path.basename(root));
+    ancestor![2]("change", path.basename(root));
     expect(changed).not.toHaveBeenCalled();
     expect(close).not.toHaveBeenCalled();
     expect(opened()).toHaveLength(1);
     fs.mkdirSync(agents);
-    ancestor!.onChange("rename", "agents");
+    ancestor![2]("rename", "agents");
     expect(changed).toHaveBeenCalledOnce();
     expect(close).toHaveBeenCalledOnce();
-    expect(opened().map((entry) => entry.path)).toEqual([root, agents]);
+    expect(opened().map(([directory]) => directory)).toEqual([root, agents]);
     changed.mockClear();
-    opened()[1]!.onChange("rename", "agents");
+    opened()[1]![2]("rename", "agents");
     expect(changed).toHaveBeenCalledOnce();
-    expect(opened().map((entry) => entry.path)).toEqual([root, agents, agents]);
+    expect(opened().map(([directory]) => directory)).toEqual([root, agents, agents]);
   });
 
   it("re-admits an absent directory and invalidates after missed notifications", () => {

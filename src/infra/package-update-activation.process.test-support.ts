@@ -3,7 +3,10 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { captureUpdateCommandExecutorAuthority } from "../cli/update-cli/update-command-executor.js";
+import type {
+  captureUpdateCommandExecutorAuthority,
+  UpdateCommandExecutor,
+} from "../cli/update-cli/update-command-executor.js";
 import { encodePackageActivationLauncher } from "./package-update-activation-journal.js";
 import type { PackageActivationRecord } from "./package-update-activation-journal.js";
 import { packageActivationRuntimeForTest } from "./package-update-activation-runtime.test-support.js";
@@ -104,21 +107,20 @@ fs.renameSync = (from, to) => {
 };
 
 const { withUpdateCommandExecutor } = await import("../cli/update-cli/update-command-executor.js");
+function withOriginalExecutor(operation: (executor: UpdateCommandExecutor) => Promise<void>) {
+  return withUpdateCommandExecutor(randomUUID(), operation, { existingAuthority: authority });
+}
 if (later) {
   assert(expectedRecord);
   const { openPackageActivationJournal, resolvePackageActivationAnchor } =
     await import("./package-update-activation-journal.js");
-  await withUpdateCommandExecutor(
-    randomUUID(),
-    async (executor) => {
-      const fence = await executor.enter(authority.installKey);
-      const journal = openPackageActivationJournal(
-        resolvePackageActivationAnchor(authority.installKey),
-      );
-      journal.transition(expectedRecord, "publishing", { kind: "displace" }, fence.assertCurrent);
-    },
-    { existingAuthority: authority },
-  );
+  await withOriginalExecutor(async (executor) => {
+    const fence = await executor.enter(authority.installKey);
+    const journal = openPackageActivationJournal(
+      resolvePackageActivationAnchor(authority.installKey),
+    );
+    journal.transition(expectedRecord, "publishing", { kind: "displace" }, fence.assertCurrent);
+  });
   throw new Error(`Package activation crash cut was not reached: ${cut}`);
 }
 const { preparePackageActivationJournal } = await import("./package-update-activation-prepare.js");
@@ -126,27 +128,23 @@ const { createPackageSwapFixture } = await import("./package-update-swap.test-su
 const { createPackageIntegrityReader } = await import("./package-update-integrity.js");
 const fixture = await createPackageSwapFixture(root);
 const { packageRoot: liveRoot, launcher } = fixture;
-await withUpdateCommandExecutor(
-  randomUUID(),
-  async (executor) => {
-    const fence = await executor.enter(liveRoot);
-    await preparePackageActivationJournal({
-      options: { fence, runtime: packageActivationRuntimeForTest(), onPrepared: () => {} },
-      liveRoot,
-      stageRoot: fixture.params.stage.packageRoot,
-      launcherRoot: fixture.params.stage.layout.binDir,
-      binDir: path.dirname(launcher),
-      previous: await createPackageIntegrityReader().tree(liveRoot),
-      launchers: [
-        {
-          name: "openclaw",
-          previous: encodePackageActivationLauncher(
-            await createPackageIntegrityReader().launcher(launcher),
-          ),
-        },
-      ],
-    });
-  },
-  { existingAuthority: authority },
-);
+await withOriginalExecutor(async (executor) => {
+  const fence = await executor.enter(liveRoot);
+  await preparePackageActivationJournal({
+    options: { fence, runtime: packageActivationRuntimeForTest(), onPrepared: () => {} },
+    liveRoot,
+    stageRoot: fixture.params.stage.packageRoot,
+    launcherRoot: fixture.params.stage.layout.binDir,
+    binDir: path.dirname(launcher),
+    previous: await createPackageIntegrityReader().tree(liveRoot),
+    launchers: [
+      {
+        name: "openclaw",
+        previous: encodePackageActivationLauncher(
+          await createPackageIntegrityReader().launcher(launcher),
+        ),
+      },
+    ],
+  });
+});
 throw new Error(`Package activation crash cut was not reached: ${cut}`);
