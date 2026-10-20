@@ -19,6 +19,23 @@ const visibleRerouteReceipt: AgentRunTerminalReceipt = {
   rerouted: true,
   terminalDisposition: "visible",
 };
+const modelDefaults = {
+  reasoning: false,
+  input: ["text"],
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  contextWindow: 128_000,
+  maxTokens: 8_192,
+  responseModelEquivalent: true,
+} satisfies Partial<ModelDefinitionConfig>;
+function declaredConfig(
+  provider = "broker",
+  modelId = "team/chat",
+  overrides: Partial<ModelDefinitionConfig> = {},
+): OpenClawConfig {
+  const row = { ...modelDefaults, id: modelId, name: modelId, ...overrides };
+  const providerConfig = { baseUrl: "https://endpoint.example/v1", models: [row] };
+  return { models: { providers: { [provider]: providerConfig } } };
+}
 
 describe("isProviderModelRerouted", () => {
   it("keeps an equivalent vendor wire id from producing a model-switch fact", () => {
@@ -39,57 +56,31 @@ describe("isProviderModelRerouted", () => {
   });
 
   describe("with a configured model row declaring response model equivalence", () => {
-    const declaredConfig = (
-      provider: string,
-      modelId: string,
-      overrides: Partial<ModelDefinitionConfig> = {},
-    ): OpenClawConfig => ({
-      models: {
-        providers: {
-          [provider]: {
-            baseUrl: "https://endpoint.example/v1",
-            models: [
-              {
-                id: modelId,
-                name: modelId,
-                reasoning: false,
-                input: ["text"],
-                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                contextWindow: 128_000,
-                maxTokens: 8_192,
-                responseModelEquivalent: true,
-                ...overrides,
-              },
-            ],
-          },
-        },
-      },
-    });
     const requested = { provider: "broker", model: "team/chat" };
-    const config = declaredConfig("broker", "team/chat");
-
-    it("keeps the endpoint's concrete response model from producing a model-switch fact", () => {
-      const effective = { ...requested, responseModel: "upstream-model-2026-10-01" };
-      expect(isProviderModelRerouted(requested, effective, config)).toBe(false);
-      expect(isProviderModelRerouted(requested, effective)).toBe(true);
-    });
-
+    const config = declaredConfig();
     it.each([
-      { provider: "broker", model: "team/utility", responseModel: "upstream-model" },
-      { provider: "other-broker", model: "team/chat", responseModel: "upstream-model" },
-    ])("retains a fallback to $provider/$model", (effective) => {
-      expect(isProviderModelRerouted(requested, effective, config)).toBe(true);
-    });
-
-    it("ignores a catalog-authored row", () => {
-      expect(
-        isProviderModelRerouted(
-          requested,
-          { ...requested, responseModel: "upstream-model" },
-          declaredConfig("broker", "team/chat", { metadataSource: "models-add" }),
-        ),
-      ).toBe(true);
-    });
+      ["declared endpoint", {}, config, false],
+      ["undeclared endpoint", {}, undefined, true],
+      ["model fallback", { model: "team/utility" }, config, true],
+      ["provider fallback", { provider: "other-broker" }, config, true],
+      [
+        "catalog-authored row",
+        {},
+        declaredConfig("broker", "team/chat", { metadataSource: "models-add" }),
+        true,
+      ],
+    ] satisfies Array<[string, Partial<typeof requested>, OpenClawConfig | undefined, boolean]>)(
+      "classifies %s",
+      (_name, changes, cfg, expected) => {
+        expect(
+          isProviderModelRerouted(
+            requested,
+            { ...requested, responseModel: "upstream-model-2026-10-01", ...changes },
+            cfg,
+          ),
+        ).toBe(expected);
+      },
+    );
 
     it("keeps bundled provider policy authoritative", () => {
       const openaiRequested = { provider: "openai", model: "gpt-5.6" };

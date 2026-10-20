@@ -2,7 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   closeOpenClawAgentDatabasesAsync,
@@ -12,6 +13,7 @@ import { withStateDirEnv } from "../test-helpers/state-dir-env.js";
 import { assertAgentSessionStoreDeletionSafe } from "./agent-delete-databases.js";
 import { findOverlappingWorkspaceAgentIds, isSharedAuthStoreOwner } from "./agent-delete-safety.js";
 
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 function sessionConfig(store: string): OpenClawConfig {
   return {
     agents: { ownership: "explicit", entries: { alpha: {}, ops: {} } },
@@ -53,13 +55,9 @@ describe("shared session store deletion safety", () => {
           assertAgentSessionStoreDeletionSafe(cfg, "alpha", options),
         ).resolves.toBeUndefined();
 
-        const foreign = new DatabaseSync(sharedPath);
-        try {
-          foreign
-            .prepare("UPDATE schema_meta SET agent_id = ? WHERE meta_key = 'primary'")
-            .run("alpha");
-        } finally {
-          foreign.close();
+        {
+          using foreign = new DatabaseSync(sharedPath);
+          foreign.exec("UPDATE schema_meta SET agent_id = 'alpha' WHERE meta_key = 'primary'");
         }
 
         await expect(assertAgentSessionStoreDeletionSafe(cfg, "alpha", options)).rejects.toThrow(
@@ -87,46 +85,35 @@ describe("shared session store deletion safety", () => {
   });
 });
 
-describe("shared auth store deletion safety", () => {
-  const sharedAuthDbPath = path.join(os.tmpdir(), "shared-auth", "openclaw-agent.sqlite");
-  const otherAgentAuthDbPath = path.join(os.tmpdir(), "other-auth", "openclaw-agent.sqlite");
+const sharedAuthDbPath = path.join(os.tmpdir(), "shared-auth", "openclaw-agent.sqlite");
+const otherAgentAuthDbPath = path.join(os.tmpdir(), "other-auth", "openclaw-agent.sqlite");
 
-  it.each([
-    ["legacy-main", sharedAuthDbPath, true],
-    ["legacy-main", otherAgentAuthDbPath, false],
-    ["state-db", sharedAuthDbPath, false],
-  ] as const)("ownership %s at %s blocks deletion: %s", (location, agentAuthDbPath, expected) => {
-    expect(
-      isSharedAuthStoreOwner({ ownership: { location }, agentAuthDbPath, sharedAuthDbPath }),
-    ).toBe(expected);
-  });
+it.each([
+  ["legacy-main", sharedAuthDbPath, true],
+  ["legacy-main", otherAgentAuthDbPath, false],
+  ["state-db", sharedAuthDbPath, false],
+] as const)("ownership %s at %s blocks deletion: %s", (location, agentAuthDbPath, expected) => {
+  expect(
+    isSharedAuthStoreOwner({ ownership: { location }, agentAuthDbPath, sharedAuthDbPath }),
+  ).toBe(expected);
 });
+it("detects another agent behind a dangling workspace symlink", () => {
+  const rootDir = tempDirs.make("openclaw-agent-delete-alias-");
+  const workspaceDir = path.join(rootDir, "vanished-workspace");
+  const workspaceAliasDir = path.join(rootDir, "workspace-alias");
+  fs.symlinkSync(
+    workspaceDir,
+    workspaceAliasDir,
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  const config: OpenClawConfig = {
+    agents: {
+      entries: {
+        alpha: { workspace: workspaceAliasDir },
+        beta: { workspace: workspaceDir },
+      },
+    },
+  };
 
-describe("shared workspace deletion safety", () => {
-  it("detects another agent behind a dangling workspace symlink", () => {
-    const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-agent-delete-alias-"));
-    const workspaceDir = path.join(rootDir, "vanished-workspace");
-    const workspaceAliasDir = path.join(rootDir, "workspace-alias");
-    try {
-      fs.symlinkSync(
-        workspaceDir,
-        workspaceAliasDir,
-        process.platform === "win32" ? "junction" : "dir",
-      );
-      const config: OpenClawConfig = {
-        agents: {
-          entries: {
-            alpha: { workspace: workspaceAliasDir },
-            beta: { workspace: workspaceDir },
-          },
-        },
-      };
-
-      expect(findOverlappingWorkspaceAgentIds(config, "alpha", workspaceAliasDir)).toEqual([
-        "beta",
-      ]);
-    } finally {
-      fs.rmSync(rootDir, { recursive: true, force: true });
-    }
-  });
+  expect(findOverlappingWorkspaceAgentIds(config, "alpha", workspaceAliasDir)).toEqual(["beta"]);
 });

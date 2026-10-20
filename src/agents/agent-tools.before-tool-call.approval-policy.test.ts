@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { ChannelPlugin } from "../channels/plugins/types.js";
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../config/io.js";
@@ -103,12 +103,7 @@ describe("plugin approval policy subject and setup guidance", () => {
       setPluginToolMeta(selectedTool, { pluginId: "diffs", optional: false });
       const context = { agentId: "main", sessionKey: "main", loopDetection: { enabled: false } };
       if (path === "wrapped") {
-        await wrapToolWithBeforeToolCallHook(selectedTool, context).execute(
-          "call-diffs",
-          {},
-          undefined,
-          undefined,
-        );
+        await wrapToolWithBeforeToolCallHook(selectedTool, context).execute("call-diffs", {});
       } else {
         const [definition] = toToolDefinitions([selectedTool], context);
         await definition?.execute("call-diffs", {}, undefined, undefined, {} as ExtensionContext);
@@ -120,74 +115,60 @@ describe("plugin approval policy subject and setup guidance", () => {
     },
   );
 
-  it("includes channel plugin setup guidance when a Slack request has no approval route", async () => {
-    const describePluginApprovalSetup = vi.fn(
-      () => "Check `approvals.plugin.slack` and the connected bot workspace.",
-    );
-    approvalChannel("slack", "Slack", {
-      getActionAvailabilityState: () => ({ kind: "enabled" }),
-      getExecInitiatingSurfaceState: () => ({ kind: "enabled" }),
-      describePluginApprovalSetup,
-    });
-    requireApproval();
-    mockCallGateway.mockResolvedValueOnce({ id: "plugin:no-route", decision: null });
-
-    const result = await runBeforeToolCallHook({
-      toolName: "diffs",
-      params: {},
-      ctx: {
-        agentId: "main",
-        sessionKey: "main",
-        turnSourceChannel: "slack",
-        turnSourceAccountId: "default",
-      },
-    });
-
-    expect(result).toHaveProperty(
-      "reason",
-      "Plugin approval unavailable (no approval route)\n\nCheck `approvals.plugin.slack` and the connected bot workspace.",
-    );
-    expect(describePluginApprovalSetup).toHaveBeenCalledWith({
-      channel: "slack",
-      channelLabel: "Slack",
-      accountId: "default",
-    });
-    expect(mockCallGateway).toHaveBeenCalledTimes(1);
-  });
-
-  it("blocks turn-source plugin approval timeouts with setup guidance", async () => {
-    approvalChannel("telegram", "Telegram", {
-      native: {},
-      getActionAvailabilityState: () => ({ kind: "enabled" }),
-      getExecInitiatingSurfaceState: () => ({ kind: "disabled" }),
-      describePluginApprovalSetup: () => "Configure Telegram native approval setup.",
-    });
-    requireApproval();
-    mockCallGateway.mockResolvedValueOnce({
-      id: "server-id",
-      status: "accepted",
-      deliveryRoute: "turn-source",
-    });
-    mockCallGateway.mockResolvedValueOnce({ id: "server-id", decision: null });
-
-    const result = await runBeforeToolCallHook({
-      toolName: "bash",
-      params: {},
-      ctx: {
-        agentId: "main",
-        sessionKey: "main",
-        turnSourceChannel: "telegram",
-        turnSourceTo: "-100123456789",
-        turnSourceAccountId: "default",
-      },
-    });
-
-    expect(result).toMatchObject({
-      blocked: true,
-      disposition: "timed_out",
-      reason: "Approval timed out\n\nConfigure Telegram native approval setup.",
-    });
-  });
+  it.each(["slack", "telegram"] as const)(
+    "includes %s setup guidance on approval failure",
+    async (channel) => {
+      const native = channel === "telegram";
+      const channelLabel = native ? "Telegram" : "Slack";
+      const guidance = native
+        ? "Configure Telegram native approval setup."
+        : "Check `approvals.plugin.slack` and the connected bot workspace.";
+      const describePluginApprovalSetup = vi.fn(() => guidance);
+      approvalChannel(channel, channelLabel, {
+        ...(native ? { native: {} } : {}),
+        getActionAvailabilityState: () => ({ kind: "enabled" }),
+        getExecInitiatingSurfaceState: () => ({ kind: native ? "disabled" : "enabled" }),
+        describePluginApprovalSetup,
+      });
+      requireApproval();
+      if (native) {
+        mockCallGateway.mockResolvedValueOnce({
+          id: "server-id",
+          status: "accepted",
+          deliveryRoute: "turn-source",
+        });
+      }
+      mockCallGateway.mockResolvedValueOnce({ id: "server-id", decision: null });
+      const result = await runBeforeToolCallHook({
+        toolName: native ? "bash" : "diffs",
+        params: {},
+        ctx: {
+          agentId: "main",
+          sessionKey: "main",
+          turnSourceChannel: channel,
+          ...(native ? { turnSourceTo: "-100123456789" } : {}),
+          turnSourceAccountId: "default",
+        },
+      });
+      expect(result).toMatchObject(
+        native
+          ? {
+              blocked: true,
+              disposition: "timed_out",
+              reason: `Approval timed out\n\n${guidance}`,
+            }
+          : { reason: `Plugin approval unavailable (no approval route)\n\n${guidance}` },
+      );
+      if (!native) {
+        expect(describePluginApprovalSetup).toHaveBeenCalledWith({
+          channel,
+          channelLabel,
+          accountId: "default",
+        });
+        expect(mockCallGateway).toHaveBeenCalledTimes(1);
+      }
+    },
+  );
 
   it("uses the transport channel when tool policy provider differs", async () => {
     requireApproval("my-plugin");
@@ -211,10 +192,8 @@ describe("plugin approval policy subject and setup guidance", () => {
       approvalReviewerDeviceId: "device-tui-reviewer",
     });
     const readTool = tools.find((tool) => tool.name === "read");
-    if (!readTool) {
-      throw new Error("missing read tool");
-    }
-    await readTool.execute("tool-hook-route", { path: "note.txt" }, undefined, undefined);
+    assert.ok(readTool, "missing read tool");
+    await readTool.execute("tool-hook-route", { path: "note.txt" });
 
     const requestCall = mockCallGateway.mock.calls[0];
     expect(requestCall?.[0]).toBe("plugin.approval.request");
