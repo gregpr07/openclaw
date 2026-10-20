@@ -1,6 +1,9 @@
 import { expect, it, onTestFinished, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
-import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
+import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../../config/runtime-snapshot.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { withSessionTurn } from "../../sessions/session-controller.admission.js";
 import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
@@ -41,6 +44,8 @@ it("preserves a queued successor when interrupt input is canceled during runtime
   onTestFinished(async () => {
     preparation.hold = undefined;
     await state.cleanup();
+    clearRuntimeConfigSnapshot();
+    vi.clearAllMocks();
   });
   const cfg = withFullRuntimeReplyConfig({
     agents: {

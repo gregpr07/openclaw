@@ -117,6 +117,7 @@ it("keeps prompt helpers off the heavy group runtime", async () => {
   expect(channelToolOnlyContext).toContain("not automatically sent to this channel");
   expect(channelToolOnlyContext).not.toContain("visible group response");
   expect(channelToolOnlyContext).not.toContain("posted to the group");
+  expect(buildGroupIntro({ defaultActivation: "mention" })).toContain("Activation: trigger-only");
   expect(buildGroupIntro({ defaultActivation: "always" })).toContain(
     "You see every message; most need no response. When you do reply",
   );

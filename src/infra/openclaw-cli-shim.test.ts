@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolvePreparedExecEnvironment } from "../agents/bash-tools.exec-request-preparation.js";
 import { createExecTool } from "../agents/bash-tools.js";
@@ -35,43 +36,50 @@ function execConfig(pathPrepend?: string[]) {
 }
 
 describe.skipIf(process.platform === "win32")("Gateway agent CLI shim", () => {
-  it("runs the source CLI version command outside the checkout", () =>
-    withTempDir("openclaw-agent-cli-version-", async (root) => {
-      const checkout = fileURLToPath(new URL("../../", import.meta.url));
-      const execArgv = ["--import=tsx"];
-      const entryPath = path.join(checkout, "src", "entry.ts");
-      const callerCwd = path.join(root, "workspace");
-      const stateDir = path.join(root, "state");
-      await fs.mkdir(callerCwd);
-      const env = {
-        HOME: root,
-        USERPROFILE: root,
-        OPENCLAW_PROFILE: "",
-        OPENCLAW_STATE_DIR: stateDir,
-        OPENCLAW_CONFIG_PATH: path.join(stateDir, "openclaw.json"),
-      };
-      const invocation = resolveCurrentOpenClawCliInvocation([], {
-        argv1: entryPath,
-        cwd: checkout,
-        execArgv,
-        execPath: process.execPath,
-      });
-      const control = runSourceCliProbe(
-        invocation.command,
-        [...execArgv, entryPath, "--version"],
-        checkout,
-        { env },
-      );
-      expect(control.status, "checkout source CLI --version").toBe(0);
-      expect(control.stdout).toMatch(/^OpenClaw \d+\./);
+  it.each(["file URL", "bare TSX", "inline bare TSX"])(
+    "runs the source CLI version command outside the checkout (%s)",
+    (parentLoader) =>
+      withTempDir("openclaw-agent-cli-version-", async (root) => {
+        const checkout = fileURLToPath(new URL("../../", import.meta.url));
+        const loader = pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href;
+        const execArgv =
+          parentLoader === "inline bare TSX"
+            ? ["--import=tsx"]
+            : ["--import", parentLoader === "bare TSX" ? "tsx" : loader];
+        const entryPath = path.join(checkout, "src", "entry.ts");
+        const callerCwd = path.join(root, "workspace");
+        const stateDir = path.join(root, "state");
+        await fs.mkdir(callerCwd);
+        const env = {
+          HOME: root,
+          USERPROFILE: root,
+          OPENCLAW_PROFILE: "",
+          OPENCLAW_STATE_DIR: stateDir,
+          OPENCLAW_CONFIG_PATH: path.join(stateDir, "openclaw.json"),
+        };
+        const invocation = resolveCurrentOpenClawCliInvocation([], {
+          argv1: entryPath,
+          cwd: checkout,
+          execArgv,
+          execPath: process.execPath,
+        });
+        const control = runSourceCliProbe(
+          invocation.command,
+          [...execArgv, entryPath, "--version"],
+          checkout,
+          { env },
+        );
+        expect(control.status, "checkout source CLI --version").toBe(0);
+        expect(control.stdout).toMatch(/^OpenClaw \d+\./);
 
-      await prepareGatewayAgentCliShim({ stateDir, invocation, env });
-      const bin = path.join(stateDir, "tmp", "agent-cli");
-      const result = runSourceCliProbe(path.join(bin, "openclaw"), ["--version"], callerCwd, {
-        env,
-      });
-      expect(result).toMatchObject({ status: 0, stdout: control.stdout });
-    }));
+        await prepareGatewayAgentCliShim({ stateDir, invocation, env });
+        const bin = path.join(stateDir, "tmp", "agent-cli");
+        const result = runSourceCliProbe(path.join(bin, "openclaw"), ["--version"], callerCwd, {
+          env,
+        });
+        expect(result).toMatchObject({ status: 0, stdout: control.stdout });
+      }),
+  );
 
   it.each([
     { profile: "work", expectedArgs: ["--profile", "work", "probe"] },

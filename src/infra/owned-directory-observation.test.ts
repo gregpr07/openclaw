@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile } from "node:child_process";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
