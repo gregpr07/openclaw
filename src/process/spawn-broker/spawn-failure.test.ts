@@ -40,9 +40,7 @@ describe.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
       await host.ready();
       await runValidCommand(host);
     });
-    afterEach(async () => {
-      await host.close();
-    });
+    afterEach(() => host.close());
 
     it.skipIf(!supportsSpawnBrokerCommandTransport())(
       "releases native descriptors after missing executable and cwd failures",
@@ -86,16 +84,17 @@ describe.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
         const { stdout: pressured } = await execFileAsync("prlimit", limitArgs);
         expect(pressured.trim().split(/\s+/)).toEqual(["3", hard]);
         // Unbuffered execa must reach Node's streamless EMFILE child itself.
+        const args = ["-e", "process.exit(0)"];
         const run =
           transport === "execa"
-            ? host.spawnExeca([process.execPath, "-e", "process.exit(0)"], {
+            ? host.spawnExeca([process.execPath, ...args], {
                 buffer: false,
                 reject: false,
               })
             : undefined;
         const child =
           run?.child ??
-          host.spawn(process.execPath, ["-e", "process.exit(0)"], {
+          host.spawn(process.execPath, args, {
             stdio: ["ignore", "pipe", "pipe"],
           });
         const closed = child.waitForClose();

@@ -1,7 +1,7 @@
-import { ChildProcess, type MessageOptions, type SendHandle } from "node:child_process";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createDeferredCore } from "../../shared/deferred.js";
+import { createStubChild } from "../supervisor/adapters/child.test-support.js";
 import { createSpawnBrokerHost, type SpawnBrokerHost } from "./host.js";
 import type { BrokerNativeResourceLease } from "./resource-host.js";
 import { SPAWN_BROKER_STARTUP_TIMEOUT_MS } from "./resource-protocol.js";
@@ -57,7 +57,8 @@ afterEach(async () => {
 
 type SendFailure = { type: string; mode: "callback" | "throw" };
 function brokerFixture(bootstrapFailure?: SendFailure) {
-  const worker = new ChildProcess();
+  const stub = createStubChild(41001);
+  const worker = stub.child;
   const output = new PassThrough();
   const deliveries = new Map<string, ReturnType<typeof createDeferredCore<unknown>>>();
   const sent = (type: string) => {
@@ -66,47 +67,30 @@ function brokerFixture(bootstrapFailure?: SendFailure) {
     return delivery;
   };
   let sendFailure = bootstrapFailure;
-  let connected = true;
   let exited = false;
-  let exitCode: number | null = null;
-  let signalCode: NodeJS.Signals | null = null;
-  const disconnect = vi.fn(() => {
-    connected = false;
-    worker.emit("disconnect");
-  });
-  // Like the real worker, SIGTERM does not retire a connected broker.
-  const kill = vi.fn(() => true);
   Object.defineProperties(worker, {
-    pid: { value: 41001 },
     stdio: { value: [null, null, output] },
     stderr: { value: output },
-    connected: { get: () => connected },
-    exitCode: { get: () => exitCode },
-    signalCode: { get: () => signalCode },
-    disconnect: { value: disconnect },
-    kill: { value: kill },
-    send: {
-      value: (
-        message: unknown,
-        ...args: Array<SendHandle | MessageOptions | ((error: Error | null) => void) | undefined>
-      ) => {
-        if (!message || typeof message !== "object" || !("type" in message)) {
-          throw new Error("Expected an unframed fixture request");
-        }
-        sent(String(message.type)).resolve(message);
-        const callback = args.find((arg) => typeof arg === "function");
-        if (sendFailure && sendFailure.type === message.type) {
-          const error = new Error("synthetic IPC write failed");
-          if (sendFailure.mode === "throw") {
-            throw error;
-          }
-          callback?.(error);
-          return false;
-        }
-        callback?.(null);
-        return true;
-      },
-    },
+  });
+  Object.assign(worker, { ref() {}, unref() {} });
+  stub.sendMock.mockImplementation((message: unknown, ...args: unknown[]) => {
+    if (!message || typeof message !== "object" || !("type" in message)) {
+      throw new Error("Expected an unframed fixture request");
+    }
+    sent(String(message.type)).resolve(message);
+    const callback = args.find(
+      (arg): arg is (error: Error | null) => void => typeof arg === "function",
+    );
+    if (sendFailure?.type === message.type) {
+      const error = new Error("synthetic IPC write failed");
+      if (sendFailure.mode === "throw") {
+        throw error;
+      }
+      callback?.(error);
+      return false;
+    }
+    callback?.(null);
+    return true;
   });
   native.spawn.mockReturnValueOnce(worker);
   const host = createSpawnBrokerHost({ nativeResources: true });
@@ -114,8 +98,8 @@ function brokerFixture(bootstrapFailure?: SendFailure) {
   const fixture = {
     host,
     worker,
-    disconnect,
-    kill,
+    disconnect: stub.disconnectMock,
+    kill: stub.killMock,
     leases,
     sent: (type: string) => sent(type).promise,
     failSend: (failure: SendFailure) => {
@@ -125,9 +109,7 @@ function brokerFixture(bootstrapFailure?: SendFailure) {
     exit: (code: number | null = 0, signal: NodeJS.Signals | null = null) => {
       if (!exited) {
         exited = true;
-        exitCode = code;
-        signalCode = signal;
-        worker.emit("exit", code, signal);
+        stub.emitExit(code, signal);
       }
     },
     close: () => output.destroy(),

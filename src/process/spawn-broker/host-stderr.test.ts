@@ -116,14 +116,13 @@ it.skipIf(process.platform === "win32").each(["loader", "permission"])(
       "dyld[123]: Library not loaded: /fixture/libsimdutf.dylib",
       kind === "permission" ? 0o600 : 0o700,
     );
+    const message = `The Node.js runtime this Gateway started with (${runtime}) can no longer start worker processes, likely because it was upgraded or removed. Restart the Gateway.`;
     let host: ReturnType<typeof createSpawnBrokerHost> | undefined;
     try {
       process.execPath = runtime;
       host = createSpawnBrokerHost();
-      await expect(host.ready()).rejects.toThrow(
-        `The Node.js runtime this Gateway started with (${runtime}) can no longer start worker processes`,
-      );
-      await expect(host.ready()).rejects.toThrow("Restart the Gateway.");
+      await expect(host.ready()).rejects.toThrow(message);
+      await expect(host.ready()).rejects.toThrow(message);
     } finally {
       process.execPath = executable;
       await host?.close().catch((error: unknown) => {
@@ -138,7 +137,7 @@ it.skipIf(process.platform === "win32").each(["loader", "permission"])(
               message: "Spawn broker shutdown failed",
               cause: {
                 code: "NODE_RUNTIME_UNAVAILABLE",
-                message: `The Node.js runtime this Gateway started with (${runtime}) can no longer start worker processes, likely because it was upgraded or removed. Restart the Gateway.`,
+                message,
               },
             },
           ],

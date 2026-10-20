@@ -14,6 +14,7 @@ vi.mock("./cleanup.js", async (importOriginal) => ({
 
 let child: ReturnType<typeof createStubChild>;
 let host: SpawnBrokerHost;
+const workerUrl = new URL("synthetic-spawn-broker.mjs", import.meta.url);
 beforeEach(async () => {
   vi.useFakeTimers();
   native.spawn.mockReset().mockImplementation(() => {
@@ -21,19 +22,10 @@ beforeEach(async () => {
     const current = child;
     // The broker inherits stdin and ignores output; it owns no piped stdio descriptors.
     Object.defineProperty(current.child, "stdio", { value: [null, null, null, null] });
-    current.disconnectMock.mockImplementation(() => {
-      retire(current, 0);
-    });
-    current.killMock.mockImplementation(() => {
-      current.emitExit(1);
-      current.emitClose(1);
-      return true;
-    });
+    current.disconnectMock.mockImplementation(() => retire(current, 0));
     return current.child;
   });
-  host = createSpawnBrokerHost({
-    workerUrl: new URL("./synthetic-spawn-broker.mjs", import.meta.url),
-  });
+  host = createSpawnBrokerHost({ workerUrl });
   markReady();
   await host.ready();
 });
