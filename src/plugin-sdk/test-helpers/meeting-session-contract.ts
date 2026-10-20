@@ -38,6 +38,11 @@ export function defineMeetingSessionFlowTests(options: {
 }) {
   const joinMeeting = (runtime: Runtime, request: Partial<MeetingJoinRequest> = {}) =>
     runtime.join({ url: options.url, mode: "transcribe", ...request });
+  const joinedFixture = async (config?: Parameters<typeof options.createFixture>[0]) => {
+    const fixture = options.createFixture(config);
+    const { session } = await joinMeeting(fixture.runtime);
+    return { ...fixture, session, id: session.id };
+  };
   const expectTranscriptScripts = (harness: MeetingBrowserFixture, start = 0) => {
     const scripts = browserActScripts(harness, start);
     expect(scripts).toHaveLength(2);
@@ -55,51 +60,35 @@ export function defineMeetingSessionFlowTests(options: {
     realtimeReady: active,
   });
   it("joins, reuses, reports, snapshots, speaks safely, and leaves through core", async () => {
-    const { harness, runtime } = options.createFixture({
+    const { harness, runtime, session, id } = await joinedFixture({
       fullConfig: { agents: { entries: { operator: {} } } },
     });
-
-    const first = await joinMeeting(runtime);
-    expect(first.session.agentId).toBe("operator");
-    expect(first.session.chrome?.health).toMatchObject({ inCall: true, cameraOff: true });
-
+    expect(session).toMatchObject({
+      agentId: "operator",
+      chrome: { health: { inCall: true, cameraOff: true } },
+    });
     const reused = await joinMeeting(runtime, {
       url: `${options.url.split("?")[0]}?context=%7b%22Tid%22%3a%22two%22%7d`,
     });
-    expect(reused.session.id).toBe(first.session.id);
+    expect(reused.session.id).toBe(id);
     expect(runtime.list()).toHaveLength(1);
-
-    expect(await runtime.status(first.session.id)).toMatchObject({
-      found: true,
-      session: { id: first.session.id },
-    });
+    expect(await runtime.status(id)).toMatchObject({ found: true, session: { id } });
     const transcriptStartCall = harness.gatewayRequest.mock.calls.length;
-    expect(await runtime.transcript(first.session.id)).toMatchObject({
-      found: true,
-      lines: [],
-      nextIndex: 0,
-    });
+    expect(await runtime.transcript(id)).toMatchObject({ found: true, lines: [], nextIndex: 0 });
     const transcriptActScripts = expectTranscriptScripts(harness, transcriptStartCall);
     expect(transcriptActScripts[0]).toContain("const captureCaptions = true");
-    expect(await runtime.speak(first.session.id, "hello")).toMatchObject({
-      found: true,
-      spoken: false,
-    });
-    Object.assign(first.session.chrome?.health ?? {}, audioHealth(true));
-    expect(await runtime.leave(first.session.id)).toMatchObject({
+    expect(await runtime.speak(id, "hello")).toMatchObject({ found: true, spoken: false });
+    Object.assign(session.chrome?.health ?? {}, audioHealth(true));
+    const health = {
+      ...audioHealth(false),
+      ...options.endedHealth,
+      providerConnected: false,
+      realtimeReady: false,
+    };
+    expect(await runtime.leave(id)).toMatchObject({
       found: true,
       browserLeft: true,
-      session: {
-        state: "ended",
-        chrome: {
-          health: {
-            ...audioHealth(false),
-            ...options.endedHealth,
-            providerConnected: false,
-            realtimeReady: false,
-          },
-        },
-      },
+      session: { state: "ended", chrome: { health } },
     });
     expect(harness.gatewayRequest).toHaveBeenCalledWith(
       "browser.request",
@@ -109,12 +98,11 @@ export function defineMeetingSessionFlowTests(options: {
   });
 
   it("reads an archived transcript without reclaiming a newer live tab owner", async () => {
-    const { harness, runtime } = options.createFixture();
-    const joined = await joinMeeting(runtime);
+    const { harness, runtime, id } = await joinedFixture();
     harness.state.sessionConflict = true;
     harness.gatewayRequest.mockClear();
 
-    expect(await runtime.transcript(joined.session.id)).toMatchObject({
+    expect(await runtime.transcript(id)).toMatchObject({
       found: true,
       lines: [{ text: "Archived caption" }],
     });
@@ -122,16 +110,11 @@ export function defineMeetingSessionFlowTests(options: {
   });
 
   it("recovers and leaves a manually opened tab when Chrome launching is disabled", async () => {
-    const { harness, runtime } = options.createFixture({
+    const { harness, runtime, session, id } = await joinedFixture({
       harness: { tabOpen: true },
-      config: {
-        defaultMode: "transcribe",
-        chrome: { launch: false, waitForInCallMs: 1 },
-      },
+      config: { defaultMode: "transcribe", chrome: { launch: false, waitForInCallMs: 1 } },
     });
-
-    const joined = await joinMeeting(runtime);
-    expect(joined.session.chrome).toMatchObject({
+    expect(session.chrome).toMatchObject({
       browserTab: { openedByPlugin: false, targetId: options.tabId },
       launched: false,
     });
@@ -140,32 +123,24 @@ export function defineMeetingSessionFlowTests(options: {
       expect.objectContaining({ path: "/tabs/open" }),
       expect.anything(),
     );
-    expect(await runtime.leave(joined.session.id)).toMatchObject({
+    expect(await runtime.leave(id)).toMatchObject({
       browserLeft: true,
       session: { state: "ended" },
     });
   });
 
   it("refreshes a recovered browser tab target", async () => {
-    const { harness, runtime } = options.createFixture();
-    const joined = await joinMeeting(runtime);
-    harness.state.targetId = `${options.tabId}-replaced`;
-
-    await runtime.status(joined.session.id);
-
-    expect(joined.session.chrome?.browserTab).toEqual({
-      openedByPlugin: false,
-      targetId: `${options.tabId}-replaced`,
-    });
-
-    harness.state.targetId = `${options.tabId}-replaced-again`;
-    harness.gatewayRequest.mockClear();
-    await runtime.transcript(joined.session.id);
-
-    expect(joined.session.chrome?.browserTab).toEqual({
-      openedByPlugin: false,
-      targetId: `${options.tabId}-replaced-again`,
-    });
+    const { harness, runtime, session, id } = await joinedFixture();
+    for (const [method, suffix] of [
+      ["status", "replaced"],
+      ["transcript", "replaced-again"],
+    ] as const) {
+      const targetId = `${options.tabId}-${suffix}`;
+      harness.state.targetId = targetId;
+      harness.gatewayRequest.mockClear();
+      await runtime[method](id);
+      expect(session.chrome?.browserTab).toEqual({ openedByPlugin: false, targetId });
+    }
     const transcriptRead = harness.gatewayRequest.mock.calls.find(([, params]) => {
       const fn = (params.body as { fn?: unknown } | undefined)?.fn;
       return params.path === "/act" && typeof fn === "string" && fn.includes("expectedSessionId");
@@ -176,12 +151,11 @@ export function defineMeetingSessionFlowTests(options: {
   });
 
   it(options.rewrittenUrlTestName, async () => {
-    const { harness, runtime } = options.createFixture();
-    const joined = await joinMeeting(runtime);
+    const { harness, runtime, id } = await joinedFixture();
     harness.state.tabUrl = options.rewrittenUrl;
     harness.gatewayRequest.mockClear();
 
-    const status = await runtime.status(joined.session.id);
+    const status = await runtime.status(id);
 
     expect(status.session?.chrome?.health?.browserUrl).toBe(options.rewrittenUrl);
     expect(harness.gatewayRequest).toHaveBeenCalledWith(

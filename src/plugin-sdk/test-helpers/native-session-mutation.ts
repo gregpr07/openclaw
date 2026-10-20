@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type {
   AgentHarnessSessionDeletionMutation,
@@ -17,9 +18,8 @@ import { withPluginRuntimeRegistryScope } from "../../plugins/runtime/gateway-re
 import { createPluginRecord } from "../../plugins/status.test-helpers.js";
 
 type Hook = "withSessionDeletion" | "withSessionContextReset";
-type Target = Parameters<NonNullable<AgentHarnessV2["withSessionContextReset"]>>[0] & {
-  storePath: string;
-};
+type HostTarget = Parameters<NonNullable<AgentHarnessV2["withSessionContextReset"]>>[0];
+type Target = HostTarget & { storePath: string };
 
 /** Exercise plugin cleanup around a real host worker commit or compensated refusal. */
 export async function withNativeSessionMutationForTest(params: {
@@ -30,22 +30,15 @@ export async function withNativeSessionMutationForTest(params: {
   run: (settle: (outcome?: "commit" | "rollback") => Promise<void>) => Promise<void>;
 }): Promise<void> {
   const prepare = params.harness[params.hook];
-  if (!prepare) {
-    throw new Error(`Missing native session fixture hook: ${params.hook}`);
-  }
+  assert(prepare, `Missing native session fixture hook: ${params.hook}`);
   const refusal = new Error("Synthetic agent transaction commit refusal");
   let prepared = false;
   const wrapped = async <T>(
-    hostTarget: Parameters<NonNullable<AgentHarnessV2["withSessionContextReset"]>>[0],
+    hostTarget: HostTarget,
     commit: (mutation: AgentHarnessSessionDeletionMutation) => Promise<T>,
   ): Promise<T> => {
-    if (
-      hostTarget.agentId !== params.target.agentId ||
-      hostTarget.sessionKey !== params.target.sessionKey ||
-      hostTarget.sessionId !== params.target.sessionId ||
-      hostTarget.previousSessionId !== params.target.previousSessionId
-    ) {
-      throw new Error("Native session fixture host target differs from its expected identity");
+    for (const key of ["agentId", "sessionKey", "sessionId", "previousSessionId"] as const) {
+      assert.equal(hostTarget[key], params.target[key], `Native session target ${key}`);
     }
     prepared = true;
     return prepare<T>(
@@ -59,9 +52,7 @@ export async function withNativeSessionMutationForTest(params: {
       async (mutation) => {
         const settled: { result?: { value: T } | { error: unknown } } = {};
         await params.run(async (outcome = "commit") => {
-          if (settled.result) {
-            throw new Error("Native session fixture already settled");
-          }
+          assert(!settled.result, "Native session fixture already settled");
           const probe =
             outcome === "rollback"
               ? sqliteWorkerOwnerProbe.admission(admission, (request, grant, admit) => {
@@ -78,9 +69,7 @@ export async function withNativeSessionMutationForTest(params: {
               : undefined;
           try {
             settled.result = { value: await commit(mutation) };
-            if (outcome === "rollback") {
-              throw new Error("Native session fixture did not reach agent commit refusal");
-            }
+            assert.notEqual(outcome, "rollback", "Expected agent commit refusal");
           } catch (error) {
             settled.result = { error };
             if (error !== refusal) {
@@ -90,9 +79,7 @@ export async function withNativeSessionMutationForTest(params: {
             probe?.mockRestore();
           }
         });
-        if (!settled.result) {
-          throw new Error("Native session fixture did not settle its worker transaction");
-        }
+        assert(settled.result, "Native session fixture did not settle its worker transaction");
         if ("error" in settled.result) {
           throw settled.result.error;
         }
@@ -107,12 +94,8 @@ export async function withNativeSessionMutationForTest(params: {
     source: "runtime",
     harness: { ...params.harness, [params.hook]: wrapped },
   });
-  const scope = {
-    agentId: params.target.agentId,
-    sessionId: params.target.sessionId,
-    sessionKey: params.target.sessionKey,
-    storePath: params.target.storePath,
-  };
+  const { agentId, sessionId, sessionKey, storePath } = params.target;
+  const scope = { agentId, sessionId, sessionKey, storePath };
   if (params.hook === "withSessionContextReset") {
     replaceTranscriptEventsSync(scope, [
       {
@@ -133,18 +116,14 @@ export async function withNativeSessionMutationForTest(params: {
     await withPluginRuntimeRegistryScope(registry, async () => {
       if (params.hook === "withSessionContextReset") {
         const result = await rewindSessionToMessage({ ...scope, entryId: "fixture-user" });
-        if (result.status !== "created") {
-          throw new Error(`Native session fixture rewind returned ${result.status}`);
-        }
+        assert.equal(result.status, "created", "Native session rewind");
       } else {
         const result = await deleteSessionEntryLifecycle({
           ...scope,
           target: { canonicalKey: scope.sessionKey, storeKeys: [scope.sessionKey] },
           archiveTranscript: false,
         });
-        if (!result.deleted) {
-          throw new Error("Native session fixture did not delete its session");
-        }
+        assert(result.deleted, "Native session fixture did not delete its session");
       }
     });
   } catch (error) {
@@ -154,7 +133,5 @@ export async function withNativeSessionMutationForTest(params: {
   } finally {
     markPluginRegistryRetired(registry);
   }
-  if (!prepared) {
-    throw new Error("Native session fixture host did not invoke its registered harness");
-  }
+  assert(prepared, "Native session fixture host did not invoke its registered harness");
 }

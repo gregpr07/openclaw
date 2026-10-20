@@ -1,13 +1,7 @@
-// Deterministic image buffers for plugin SDK media tests.
 import { crc32, deflateSync } from "node:zlib";
 import { encodePngRgb, encodePngRgba } from "../../media/png-encode.js";
 
-type Rgba = {
-  r: number;
-  g: number;
-  b: number;
-  a?: number;
-};
+type Rgba = { r: number; g: number; b: number; a?: number };
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 // Minimal valid JPEG used when tests only need container detection.
@@ -34,7 +28,6 @@ export function createSolidPngBuffer(width: number, height: number, color: Rgba)
   return (opaque ? encodePngRgb : encodePngRgba)(pixels, width, height);
 }
 
-/** Create a deterministic RGB PNG with varied pixel values. */
 export function createNoisyPngBuffer(width: number, height: number): Buffer {
   return encodePngRgb(createNoisyPixels(width, height, 3), width, height);
 }
@@ -45,7 +38,6 @@ export function createGrayscaleAlphaPngBuffer(width: number, height: number): Bu
   const raw = Buffer.alloc((stride + 1) * height);
   for (let row = 0; row < height; row += 1) {
     const rawOffset = row * (stride + 1);
-    raw[rawOffset] = 0;
     for (let column = 0; column < width; column += 1) {
       const pixel = rawOffset + 1 + column * 2;
       const seed = row * width + column;
@@ -68,12 +60,10 @@ export function createGrayscaleAlphaPngBuffer(width: number, height: number): Bu
   ]);
 }
 
-/** Return a tiny valid JPEG fixture buffer. */
 export function createTinyJpegBuffer(): Buffer {
   return Buffer.from(TINY_JPEG);
 }
 
-/** Create deterministic RGBA pixels for encoder and media conversion tests. */
 export function createNoisyRgbaBuffer(width: number, height: number): Buffer {
   return createNoisyPixels(width, height, 4);
 }

@@ -1,4 +1,3 @@
-// Provider contract suites provide shared assertions for provider plugin behavior.
 import { expect, it } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { ProviderPlugin } from "../provider-model-shared.js";
@@ -6,20 +5,6 @@ import type { WebFetchProviderPlugin } from "../provider-web-fetch-contract.js";
 import type { WebSearchProviderPlugin } from "../provider-web-search-contract.js";
 
 type Lazy<T> = T | (() => T);
-
-type WebProviderCredentialContract = Pick<
-  WebSearchProviderPlugin,
-  | "createTool"
-  | "docsUrl"
-  | "envVars"
-  | "getCredentialValue"
-  | "hint"
-  | "id"
-  | "label"
-  | "placeholder"
-  | "setCredentialValue"
-  | "signupUrl"
->;
 
 function resolveLazy<T>(value: Lazy<T>): T {
   return typeof value === "function" ? (value as () => T)() : value;
@@ -32,7 +17,7 @@ function expectUnique(values: readonly unknown[] | undefined) {
 }
 
 function expectWebProviderCredentialContract(
-  provider: WebProviderCredentialContract,
+  provider: WebSearchProviderPlugin | WebFetchProviderPlugin,
   credentialValue: unknown,
 ) {
   expect(provider.id).toMatch(/^[a-z0-9][a-z0-9-]*$/);
@@ -115,9 +100,7 @@ export function installWebSearchProviderContractSuite(params: {
 }) {
   it("satisfies the base web search provider contract", () => {
     const provider = resolveLazy(params.provider);
-    const credentialValue = resolveLazy(params.credentialValue);
-
-    expectWebProviderCredentialContract(provider, credentialValue);
+    expectWebProviderCredentialContract(provider, resolveLazy(params.credentialValue));
     if (provider.runSetup) {
       expect(typeof provider.runSetup).toBe("function");
     }
