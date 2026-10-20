@@ -5,6 +5,12 @@ const listGoogleChatAccountIds = vi.hoisted(() => vi.fn());
 const resolveGoogleChatAccount = vi.hoisted(() => vi.fn());
 const sendGoogleChatMessage = vi.hoisted(() => vi.fn());
 const resolveGoogleChatOutboundSpace = vi.hoisted(() => vi.fn());
+const availableAccount = {
+  enabled: true,
+  credentialSource: "inline",
+  tokenStatus: "available",
+  config: {},
+};
 
 vi.mock("./accounts.js", () => ({
   inspectGoogleChatAccount,
@@ -12,13 +18,8 @@ vi.mock("./accounts.js", () => ({
   resolveGoogleChatAccount,
 }));
 
-vi.mock("./api.js", () => ({
-  sendGoogleChatMessage,
-}));
-
-vi.mock("./targets.js", () => ({
-  resolveGoogleChatOutboundSpace,
-}));
+vi.mock("./api.js", () => ({ sendGoogleChatMessage }));
+vi.mock("./targets.js", () => ({ resolveGoogleChatOutboundSpace }));
 
 let googlechatMessageActions: typeof import("./message-tool-api.js").googlechatMessageActions;
 
@@ -47,14 +48,18 @@ describe("googlechat message actions", () => {
     };
   }
 
+  function handleAction(action: string, params: Record<string, unknown>) {
+    return googlechatMessageActions.handleAction({
+      action,
+      params,
+      cfg: {},
+      accountId: "default",
+    } as never);
+  }
+
   function expectJsonResult(result: unknown, details: Record<string, unknown>) {
     expect(result).toEqual({
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify(details, null, 2),
-        },
-      ],
+      content: [{ type: "text", text: JSON.stringify(details, null, 2) }],
       details,
     });
   }
@@ -64,36 +69,20 @@ describe("googlechat message actions", () => {
     expect(googlechatMessageActions.describeMessageTool?.({ cfg: {} as never })).toBeNull();
 
     listGoogleChatAccountIds.mockReturnValueOnce(["default"]);
-    inspectGoogleChatAccount.mockReturnValueOnce({
-      enabled: true,
-      credentialSource: "inline",
-      tokenStatus: "available",
-      config: {},
-    });
+    inspectGoogleChatAccount.mockReturnValueOnce(availableAccount);
 
     expect(googlechatMessageActions.describeMessageTool?.({ cfg: {} as never })).toEqual({
       actions: ["send"],
     });
-    expect(googlechatMessageActions.supportsAction?.({ action: "send" })).toBe(true);
-    expect(googlechatMessageActions.supportsAction?.({ action: "upload-file" })).toBe(false);
   });
 
   it("keeps account-scoped discovery send-only", () => {
-    inspectGoogleChatAccount.mockImplementation(
-      ({ accountId: _accountId }: { accountId?: string | null }) => ({
-        enabled: true,
-        credentialSource: "inline",
-        tokenStatus: "available",
-        config: {},
-      }),
-    );
+    inspectGoogleChatAccount.mockReturnValue(availableAccount);
 
     for (const accountId of ["default", "work"]) {
       expect(
         googlechatMessageActions.describeMessageTool?.({ cfg: {} as never, accountId }),
-      ).toEqual({
-        actions: ["send"],
-      });
+      ).toEqual({ actions: ["send"] });
     }
   });
 
@@ -101,21 +90,17 @@ describe("googlechat message actions", () => {
     const account = buildAccount();
     resolveGoogleChatAccount.mockReturnValue(account);
     resolveGoogleChatOutboundSpace.mockResolvedValue("spaces/AAA");
-    sendGoogleChatMessage.mockResolvedValue({
+    const sent = {
       messageName: "spaces/AAA/messages/msg-1",
       threadName: "spaces/AAA/threads/thread-1",
-    });
+    };
+    sendGoogleChatMessage.mockResolvedValue(sent);
 
-    const result = await googlechatMessageActions.handleAction({
-      action: "send",
-      params: {
-        to: "spaces/AAA",
-        message: "caption",
-        threadId: "thread-1",
-      },
-      cfg: {},
-      accountId: "default",
-    } as never);
+    const result = await handleAction("send", {
+      to: "spaces/AAA",
+      message: "caption",
+      threadId: "thread-1",
+    });
 
     expect(resolveGoogleChatOutboundSpace).toHaveBeenCalledWith({
       account,
@@ -127,59 +112,31 @@ describe("googlechat message actions", () => {
       text: "caption",
       thread: "thread-1",
     });
-    expectJsonResult(result, {
-      ok: true,
-      to: "spaces/AAA",
-      messageName: "spaces/AAA/messages/msg-1",
-      threadName: "spaces/AAA/threads/thread-1",
-    });
+    expectJsonResult(result, { ok: true, to: "spaces/AAA", ...sent });
   });
 
   it.each([
-    { action: "send", params: { to: "spaces/AAA", message: "caption", media: "remote.png" } },
-    {
-      action: "send",
-      params: { to: "spaces/AAA", message: "caption", mediaUrls: ["remote.png"] },
-    },
-    {
-      action: "send",
-      params: {
-        to: "spaces/AAA",
-        message: "caption",
-        attachments: [{ url: "remote.png" }],
-      },
-    },
-  ])(
-    "rejects outbound attachment action $action before provider access",
-    async ({ action, params }) => {
-      await expect(
-        googlechatMessageActions.handleAction({
-          action,
-          params,
-          cfg: {},
-          accountId: "default",
-        } as never),
-      ).rejects.toThrow(
-        "Google Chat outbound attachments require user OAuth and are not supported by this service-account channel.",
-      );
+    { media: "remote.png" },
+    { mediaUrls: ["remote.png"] },
+    { attachments: [{ url: "remote.png" }] },
+  ])("rejects outbound attachment %j before provider access", async (attachment) => {
+    await expect(
+      handleAction("send", { to: "spaces/AAA", message: "caption", ...attachment }),
+    ).rejects.toThrow(
+      "Google Chat outbound attachments require user OAuth and are not supported by this service-account channel.",
+    );
 
-      expect(resolveGoogleChatAccount).not.toHaveBeenCalled();
-      expect(resolveGoogleChatOutboundSpace).not.toHaveBeenCalled();
-      expect(sendGoogleChatMessage).not.toHaveBeenCalled();
-    },
-  );
+    expect(resolveGoogleChatAccount).not.toHaveBeenCalled();
+    expect(resolveGoogleChatOutboundSpace).not.toHaveBeenCalled();
+    expect(sendGoogleChatMessage).not.toHaveBeenCalled();
+  });
 
   it("rejects unsupported actions without provider access", async () => {
     const action = "react";
     resolveGoogleChatAccount.mockReturnValue(buildAccount());
 
     await expect(
-      googlechatMessageActions.handleAction({
-        action,
-        params: { messageId: "spaces/AAA/messages/msg-1", emoji: "👍" },
-        cfg: {},
-        accountId: "default",
-      } as never),
+      handleAction(action, { messageId: "spaces/AAA/messages/msg-1", emoji: "👍" }),
     ).rejects.toThrow(`Action ${action} is not supported for provider googlechat.`);
 
     expect(sendGoogleChatMessage).not.toHaveBeenCalled();

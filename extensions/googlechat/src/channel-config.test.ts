@@ -1,4 +1,3 @@
-// Googlechat tests cover channel config plugin behavior.
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import { afterEach, describe, expect, it } from "vitest";
@@ -10,6 +9,8 @@ import {
 import { googlechatPlugin } from "./channel.js";
 
 describe("googlechatPlugin config adapter", () => {
+  const normalize = (payload: ReplyPayload) =>
+    googlechatPlugin.outbound?.normalizePayload?.({ cfg: {}, payload });
   afterEach(() => {
     googleChatApprovalControls.unregister(["token-1"]);
   });
@@ -22,19 +23,16 @@ describe("googlechatPlugin config adapter", () => {
     },
     { serviceAccount: undefined, configured: false, source: "none" },
   ])("inspects service account configuration as configured=$configured", async (entry) => {
+    const accountConfig = {
+      serviceAccount: entry.serviceAccount,
+      audienceType: "app-url" as const,
+      audience: "https://bot.example.com/googlechat",
+      webhookPath: "/googlechat",
+      webhookUrl: "https://bot.example.com/googlechat",
+    };
     const cfg = {
       channels: {
-        googlechat: {
-          accounts: {
-            work: {
-              serviceAccount: entry.serviceAccount,
-              audienceType: "app-url",
-              audience: "https://bot.example.com/googlechat",
-              webhookPath: "/googlechat",
-              webhookUrl: "https://bot.example.com/googlechat",
-            },
-          },
-        },
+        googlechat: { accounts: { work: accountConfig } },
       },
     } as OpenClawConfig;
     const account = inspectGoogleChatAccount({ cfg, accountId: "work" });
@@ -62,13 +60,9 @@ describe("googlechatPlugin config adapter", () => {
   });
 
   it("does not advertise user-auth-only actions", () => {
-    const cfg = {
-      channels: {
-        googlechat: {
-          serviceAccount: { client_email: "bot@example.com" },
-        },
-      },
-    } as OpenClawConfig;
+    const cfg: OpenClawConfig = {
+      channels: { googlechat: { serviceAccount: { client_email: "bot@example.com" } } },
+    };
 
     expect(googlechatPlugin.actions?.describeMessageTool?.({ cfg })).toEqual({
       actions: ["send"],
@@ -122,33 +116,19 @@ describe("googlechatPlugin config adapter", () => {
       messageName: "spaces/AAA/messages/msg-1",
       expiresAtMs: Date.now() + 60_000,
     });
+    const text = `/approve ${approvalId.slice(0, 8)} allow-once`;
     const unrelatedPayload: ReplyPayload = { text: "/approve deadbeef allow-once" };
     const metadataPayload: ReplyPayload = {
-      text: `/approve ${approvalId.slice(0, 8)} allow-once`,
+      text,
       channelData: { execApproval: { approvalId } },
     };
     const structuredPayload: ReplyPayload = {
-      text: `/approve ${approvalId.slice(0, 8)} allow-once`,
+      text,
       presentation: { blocks: [] },
     };
 
-    expect(
-      googlechatPlugin.outbound?.normalizePayload?.({
-        cfg: {} as OpenClawConfig,
-        payload: unrelatedPayload,
-      }),
-    ).toBe(unrelatedPayload);
-    expect(
-      googlechatPlugin.outbound?.normalizePayload?.({
-        cfg: {} as OpenClawConfig,
-        payload: metadataPayload,
-      }),
-    ).toBeNull();
-    expect(
-      googlechatPlugin.outbound?.normalizePayload?.({
-        cfg: {} as OpenClawConfig,
-        payload: structuredPayload,
-      }),
-    ).toBe(structuredPayload);
+    expect(normalize(unrelatedPayload)).toBe(unrelatedPayload);
+    expect(normalize(metadataPayload)).toBeNull();
+    expect(normalize(structuredPayload)).toBe(structuredPayload);
   });
 });
