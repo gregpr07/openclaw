@@ -44,8 +44,7 @@ export function listMatchedTestFiles(config: VitestConfig): string[] {
   const exclude = (testConfig.exclude ?? []).map((pattern) =>
     isAbsolute(pattern) ? toRepoPath(relative(cwd, pattern)) : toRepoPath(pattern),
   );
-  // Unit-fast ownership contributes hundreds of literal file exclusions.
-  // Compare those exactly after discovery; keep directory/glob pruning native.
+  // Prune globs during discovery; compare literal unit-fast exclusions afterward.
   const exactFiles = new Set(exclude.filter((pattern) => /^[\w/.-]+\.test\.ts$/u.test(pattern)));
   return globSync(testConfig.include ?? [], {
     cwd,
@@ -74,19 +73,13 @@ export function expectRuntimeReleaseInventory({
   const afterGroups = after.flatMap((shard) => shard.groups);
   const beforeFiles = beforeGroups.flatMap(groupFiles);
   const afterFiles = afterGroups.flatMap(groupFiles);
-  const timingLineage = (key: string) => {
-    const lineage = [key];
-    for (let split = parseCompactSplitTimingKey(key); split;) {
-      const parent = split.parentShardName;
-      lineage.push(parent);
-      split = parseCompactSplitTimingKey(parent);
-    }
-    return lineage;
+  const timingLineage = (key: string): string[] => {
+    const parent = parseCompactSplitTimingKey(key)?.parentShardName;
+    return [key, ...(parent ? timingLineage(parent) : [])];
   };
   const fullTimingParents = new Set(
     beforeGroups
       .flatMap((group) => timingLineage(group.timing_key ?? group.shard_name))
-      // The comparison plan can already omit tooling from mixed owners.
       .filter((parent) => !parent.startsWith("changed-")),
   );
   expect(beforeFiles.filter((file) => !afterFiles.includes(file)).toSorted()).toEqual(
@@ -126,18 +119,17 @@ export function expectRuntimeReleaseInventory({
     }
     for (const group of reduced) {
       expect(group.timing_key, "reduced runtime timing identity").toBeTypeOf("string");
-      const timingKey = group.timing_key!;
-      const lineage = timingLineage(timingKey);
+      const lineage = timingLineage(group.timing_key!);
       for (const parent of lineage) {
         expect(fullTimingParents.has(parent), `${owner}: ${parent}`).toBe(false);
       }
-      const timingParent = lineage.at(-1)!;
-      expect(
-        timingParent.replace(
+      const timingOwner = lineage
+        .at(-1)!
+        .replace(
           /(?:#workers-4|#file-parallel-(?:2|8)|-parallel(?:-2)?(?:-native-serial)?(?:-stripes)?)$/u,
           "",
-        ),
-      ).toBe(`changed-${owner}`);
+        );
+      expect(timingOwner).toBe(`changed-${owner}`);
     }
   }
 }

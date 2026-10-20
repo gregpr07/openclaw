@@ -1,9 +1,10 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { formatFailureReport, reportPrFailures } from "../../scripts/ci-pr-failure-report.mjs";
 import {
-  evaluateWorkflowExpression,
+  evaluateWorkflow,
+  expectIncludes,
   readCiWorkflow,
-  type WorkflowStep,
+  requiredWorkflowStep,
 } from "./ci-workflow.test-support.js";
 
 const repository = "openclaw/openclaw";
@@ -43,6 +44,9 @@ const options = {
   pullRequestNumber: 7,
   token: "synthetic-token",
 };
+const report = (overrides: Record<string, unknown> = {}) =>
+  reportPrFailures({ ...options, ...overrides });
+const passedPrerequisites = { preflightResult: "success", securityFastResult: "success" };
 
 function fixture(rows: ReturnType<typeof job>[], currentRun = run) {
   const mainJobs = [job(20, "build-artifacts", "failure"), job(21, "checks-ui")].map((entry) =>
@@ -72,17 +76,14 @@ it.each([
   [repository, "c".repeat(40)],
   ["contributor/openclaw", "main"],
 ])("checks out trusted reporter code for %s despite a stale event base", (headRepository, ref) => {
-  const checkout = readCiWorkflow().jobs["pr-failure-report"].steps.find(
-    (step: WorkflowStep) => step.name === "Checkout CI failure reporter",
+  const checkout = requiredWorkflowStep(
+    readCiWorkflow().jobs["pr-failure-report"].steps,
+    "Checkout CI failure reporter",
   );
-  expect(checkout).toBeDefined();
   expect(checkout.with.repository ?? repository).toBe(repository);
   expect(
-    evaluateWorkflowExpression(checkout.with.ref, {
-      eventName: "pull_request",
-      repository,
+    evaluateWorkflow(checkout.with.ref, {
       headRepository,
-      runAttempt: 1,
       sha: "c".repeat(40),
       githubEvent: {
         pull_request: {
@@ -95,14 +96,12 @@ it.each([
 });
 it("uses complete successful prerequisite results without enumerating jobs", async () => {
   const fetchMock = fixture([job(1, "checks-ui")]);
-  const report = await reportPrFailures({
-    ...options,
-    preflightResult: "success",
-    securityFastResult: "success",
+  const result = await report({
+    ...passedPrerequisites,
     jobResults: ["success", "success", "success", "skipped"],
   });
-  expect(report).toMatchObject({ failures: [], knownMainRed: false, failureJobId: "" });
-  expect(formatFailureReport(report, options)).toContain("prerequisite results");
+  expect(result).toMatchObject({ failures: [], knownMainRed: false, failureJobId: "" });
+  expect(formatFailureReport(result, options)).toContain("prerequisite results");
   expect(fetchMock.mock.calls.map(([url]) => new URL(url).pathname)).toEqual([
     `/repos/${repository}/actions/runs/100`,
   ]);
@@ -112,13 +111,11 @@ it.each(["failure", "cancelled", "unknown", "", undefined])(
   "enumerates jobs when a prerequisite result is %s",
   async (result) => {
     const fetchMock = fixture([job(1, "checks-ui", "timed_out")]);
-    const report = await reportPrFailures({
-      ...options,
-      preflightResult: "success",
-      securityFastResult: "success",
+    const outcome = await report({
+      ...passedPrerequisites,
       jobResults: ["success", "success", result],
     });
-    expect(report).toMatchObject({
+    expect(outcome).toMatchObject({
       failures: [{ job: "checks-ui", conclusion: "timed_out" }],
       knownMainRed: false,
       failureJobId: "1",
@@ -137,8 +134,8 @@ it("reports every failure without cancellation and preserves a blocking gate res
     job(6, "pr-failure-report", null),
     job(7, "openclaw/ci-gate", null),
   ]);
-  const report = await reportPrFailures(options);
-  expect(report).toMatchObject({
+  const result = await report();
+  expect(result).toMatchObject({
     failures: [
       { job: "build-artifacts", class: "pre-existing", mainRunId: 200, mainJobId: 20 },
       { job: "checks-ui", class: "new", mainRunId: 200, mainJobId: 21 },
@@ -147,33 +144,33 @@ it("reports every failure without cancellation and preserves a blocking gate res
     knownMainRed: false,
     failureJobId: "2",
   });
-  const summary = formatFailureReport(report, options);
-  expect(summary).toContain(
+  const summary = formatFailureReport(result, options);
+  expectIncludes(summary, [
     "| [build-artifacts](https://github.com/openclaw/openclaw/actions/runs/100/job/2) | failure | **pre-existing** |",
-  );
-  expect(summary).toContain("https://github.com/openclaw/openclaw/actions/runs/200/job/20");
-  expect(summary).toContain("**new**");
-  expect(summary).toContain("**unknown**");
+    "https://github.com/openclaw/openclaw/actions/runs/200/job/20",
+    "**new**",
+    "**unknown**",
+  ]);
 });
 
 it("does not grant the first-attempt allowance on a retry", async () => {
   const retry = { ...run, run_attempt: 2 };
   fixture([], retry);
-  const report = await reportPrFailures({ ...options, runAttempt: 2 });
-  expect(report).toMatchObject({ failures: [], knownMainRed: false, failureJobId: "" });
+  const result = await report({ runAttempt: 2 });
+  expect(result).toMatchObject({ failures: [], knownMainRed: false, failureJobId: "" });
 });
 
 it("waits for all validation jobs and rejects mismatched run identity", async () => {
   fixture([job(1, "checks-ui", null)]);
-  await expect(reportPrFailures(options)).rejects.toThrow("not all completed");
+  await expect(report()).rejects.toThrow("not all completed");
   fixture([], { ...run, head_sha: "b".repeat(40) });
-  await expect(reportPrFailures(options)).rejects.toThrow("identity changed");
+  await expect(report()).rejects.toThrow("identity changed");
 });
 
 it("escapes job-controlled table text", () => {
   const summary = formatFailureReport(
     {
-      jobs: [job(1, "bad")],
+      jobs: [{ id: 1 }],
       failures: [
         {
           job: "[bad]|<br>\nnext",
@@ -187,6 +184,5 @@ it("escapes job-controlled table text", () => {
     },
     options,
   );
-  expect(summary).toContain("&#91;bad&#93;&#124;&lt;br&gt; next");
-  expect(summary).toContain("a&#124;b");
+  expectIncludes(summary, ["&#91;bad&#93;&#124;&lt;br&gt; next", "a&#124;b"]);
 });

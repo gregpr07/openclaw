@@ -59,30 +59,27 @@ function qualifiedSource() {
   return { cwd, write, inspect, files: files.map((file) => path.join(cwd, file)) };
 }
 
-it("reports all changed inputs even when shared setup invalidates every entry", () => {
-  const { cwd, write, inspect } = qualifiedSource();
-  write(fixture.setup, "// changed setup\n");
-  write(fixture.tests[0], "// changed test\n");
-  fs.unlinkSync(path.join(cwd, fixture.helper));
-
-  inspect(fixture.tests, [
-    { file: fixture.tests[0], reason: "changed" },
-    { file: fixture.helper, reason: "unreadable" },
-    { file: fixture.setup, reason: "changed" },
-  ]);
-});
-
-it("reads shared and missing inputs only once and attributes a helper to both consumers", () => {
-  const { cwd, inspect, files } = qualifiedSource();
-  fs.unlinkSync(path.join(cwd, fixture.helper));
-  const read = vi.mocked(fs.readFileSync);
-  read.mockClear();
-
-  inspect(fixture.tests.slice(1), [{ file: fixture.helper, reason: "unreadable" }]);
-  const reads = read.mock.calls.map(([file]) => file);
-  expect(reads).toHaveLength(files.length);
-  expect(reads).toEqual(expect.arrayContaining(files));
-});
+it.each([false, true])(
+  "reports and deduplicates helper drift with shared setup drift=%s",
+  (sharedDrift) => {
+    const { cwd, write, inspect, files } = qualifiedSource();
+    if (sharedDrift) {
+      write(fixture.setup, "// changed setup\n");
+      write(fixture.tests[0], "// changed test\n");
+    }
+    fs.unlinkSync(path.join(cwd, fixture.helper));
+    const read = vi.mocked(fs.readFileSync);
+    read.mockClear();
+    const changed = (file: string) => ({ file, reason: "changed" as const });
+    inspect(sharedDrift ? fixture.tests : fixture.tests.slice(1), [
+      ...(sharedDrift ? [changed(fixture.tests[0])] : []),
+      { file: fixture.helper, reason: "unreadable" },
+      ...(sharedDrift ? [changed(fixture.setup)] : []),
+    ]);
+    const reads = read.mock.calls.map(([file]) => file);
+    expect(reads.toSorted()).toEqual(files.toSorted());
+  },
+);
 
 it("observes same-process test edits and repairs without retaining stale hashes", () => {
   const { write, inspect } = qualifiedSource();
