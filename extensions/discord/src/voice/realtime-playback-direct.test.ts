@@ -30,23 +30,20 @@ async function createDirectPlaybackFixture() {
     return successor.deliverRetainedSpeech.mock.calls;
   };
   const done = () => fixture.callbacks.onEvent?.({ direction: "server", type: "response.done" });
-  return { fixture, audio, output, sender, send, retain, done };
-}
-
-function captureEvents(
-  audio: ReturnType<typeof createRealtimePlaybackFixture>["roomPlayer"]["audio"],
-) {
-  const listeners = audio.listeners("event");
-  const delayed: DiscordAudioEvent[] = [];
-  const capture = (event: DiscordAudioEvent) => delayed.push(event);
-  audio.removeAllListeners("event");
-  audio.on("event", capture);
-  const restore = () => {
-    audio.off("event", capture);
-    listeners.forEach((listener) => audio.on("event", listener));
+  const captureEvents = () => {
+    const listeners = audio.listeners("event");
+    const delayed: DiscordAudioEvent[] = [];
+    const capture = (event: DiscordAudioEvent) => delayed.push(event);
+    audio.removeAllListeners("event");
+    audio.on("event", capture);
+    const restore = () => {
+      audio.off("event", capture);
+      listeners.forEach((listener) => audio.on("event", listener));
+    };
+    onTestFinished(() => audio.off("event", capture));
+    return { delayed, restore };
   };
-  onTestFinished(() => audio.off("event", capture));
-  return { delayed, restore };
+  return { fixture, audio, output, sender, send, retain, done, captureEvents };
 }
 
 it.each([0, 3])("preserves transferred PCM view bounds at offset %i", async (offset) => {
@@ -83,14 +80,11 @@ it.each([0, 3])("preserves transferred PCM view bounds at offset %i", async (off
   expect(append).toHaveBeenCalledTimes(2);
 });
 
-it.each([
-  { playback: "unheard", hold: true, delayEvents: false },
-  { playback: "started before main receives its events", hold: false, delayEvents: true },
-])("retains only unheard direct exact speech when $playback", async ({ hold, delayEvents }) => {
+it.each([true, false])("retains exact speech only while playback is held (%s)", async (hold) => {
   const { fixture, audio, send, retain } = await createDirectPlaybackFixture();
   fixture.playback.enqueueExactSpeechMessage("one answer");
   expect(fixture.sendUserMessage).toHaveBeenCalledWith("one answer");
-  if (delayEvents) {
+  if (!hold) {
     // Delay main-thread delivery, not the media owner.
     audio.removeAllListeners("event");
   }
@@ -114,9 +108,10 @@ it.each([
 it.each(["playback events", "flush receipt"])(
   "does not apply old direct %s to the next exact-speech request",
   async (receipt) => {
-    const { fixture, audio, send, retain, done } = await createDirectPlaybackFixture();
+    const { fixture, audio, send, retain, done, captureEvents } =
+      await createDirectPlaybackFixture();
     fixture.playback.enqueueExactSpeechMessage("old answer");
-    const captured = receipt === "playback events" ? captureEvents(audio) : undefined;
+    const captured = receipt === "playback events" ? captureEvents() : undefined;
     const flushed = captured ? undefined : once(audio, "event");
     if (captured) {
       await send();
@@ -179,11 +174,11 @@ it("ignores a late flush receipt after exact-speech ownership changes", async ()
 });
 
 it("waits for a pending direct flush when an older idle event arrives", async () => {
-  const { fixture, audio, send, done } = await createDirectPlaybackFixture();
+  const { fixture, audio, send, done, captureEvents } = await createDirectPlaybackFixture();
   fixture.playback.enqueueExactSpeechMessage("first answer");
   await send();
   fixture.playback.enqueueExactSpeechMessage("next answer");
-  const { delayed, restore } = captureEvents(audio);
+  const { delayed, restore } = captureEvents();
   fixture.player.stop(true);
   restore();
   expect(delayed.map((event) => event.type)).toContain("continuous-idle");

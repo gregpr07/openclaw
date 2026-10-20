@@ -95,13 +95,7 @@ export function createDiscordGatewayCaptureFixture(params: {
     wavCleanups.push(released.promise);
     return {
       ...wav,
-      cleanup: async () => {
-        try {
-          await wav.cleanup();
-        } finally {
-          released.resolve();
-        }
-      },
+      cleanup: () => wav.cleanup().finally(released.resolve),
     };
   });
   const decoding = new Set<Promise<void>>();
@@ -177,16 +171,9 @@ export function createDiscordGatewayCaptureFixture(params: {
           : undefined,
   } as unknown as Client;
   function restore() {
-    for (const spy of [
-      ...sttSpies.values(),
-      codecSpy,
-      wavSpy,
-      sdkSpy,
-      workerSpy,
-      ...receiveSpies,
-    ]) {
-      spy.mockRestore();
-    }
+    [...sttSpies.values(), codecSpy, wavSpy, sdkSpy, workerSpy, ...receiveSpies].forEach((spy) =>
+      spy.mockRestore(),
+    );
   }
   const createManager = (cfg: OpenClawConfig) => {
     const createdManager = new DiscordVoiceManager({
@@ -253,17 +240,15 @@ export function createDiscordGatewayCaptureFixture(params: {
       for (const capture of await discordVoiceTranscriptsSourceProvider.status!(source)) {
         if (capture.sessionId) {
           await discordVoiceTranscriptsSourceProvider.stop!({
-            sessionId: capture.sessionId,
             source,
+            sessionId: capture.sessionId,
           });
         }
       }
     } finally {
       await closingManager.destroy().finally(async () => {
-        for (const { streams } of transports) {
-          for (const stream of streams) {
-            stream.destroy();
-          }
+        for (const stream of transports.flatMap(({ streams }) => streams)) {
+          stream.destroy();
         }
         lateStt.resolve();
         await drain().finally(() =>

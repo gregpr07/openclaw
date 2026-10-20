@@ -12,11 +12,8 @@ defineDiscordVoiceTests((h) => {
       }
     });
     const decode = h.decodeOpusStreamChunksMock.getMockImplementation()!;
-    const connection = h.createConnectionMock();
-    h.joinVoiceChannelMock.mockReturnValueOnce(connection);
-    const manager = h.createManager({
-      voice: { enabled: true, mode: "stt-tts", ...voice },
-    });
+    const connection = h.useConnection();
+    const manager = h.createManager(h.makeVoiceConfig(voice));
     const start = async () => {
       await manager.join({ guildId: "g1", channelId: "1001" });
       const sink = vi.fn();
@@ -98,10 +95,9 @@ defineDiscordVoiceTests((h) => {
           await this.finish();
         });
       }
-      h.transcribeAudioFileMock.mockImplementation(async ({ filePath }) => {
-        const wav = await fs.readFile(filePath);
-        return { text: "segment-" + wav[44] };
-      });
+      h.transcribeAudioFileMock.mockImplementation(async ({ filePath }) => ({
+        text: "segment-" + (await fs.readFile(filePath))[44],
+      }));
       const first = new PassThrough({ objectMode: true });
       const second = new PassThrough({ objectMode: true });
       let receiving: Promise<void> | undefined;
@@ -118,9 +114,7 @@ defineDiscordVoiceTests((h) => {
         expect(first.destroyed).toBe(false);
         await vi.advanceTimersByTimeAsync(1);
         await entered.promise;
-        expect(first.destroyed).toBe(true);
-        expect(firstDone).toBe(false);
-        expect(entry.capture.has("u1")).toBe(false);
+        expect([first.destroyed, firstDone, entry.capture.has("u1")]).toEqual([true, false, false]);
 
         // Subscribe before releasing the prior decoder/recording frontier.
         connection.receiver.speaking.emit("start", "u1");
@@ -134,10 +128,10 @@ defineDiscordVoiceTests((h) => {
         expect(entry.capture.get("u1")).toBe(replacement);
         second.end();
         await vi.waitFor(() => expect(sink).toHaveBeenCalledTimes(2));
-        const texts = sink.mock.calls
-          .map(([utterance]) => utterance.text)
-          .toSorted((left, right) => left.localeCompare(right));
-        expect(texts).toEqual(["segment-1", "segment-2"]);
+        expect(sink.mock.calls.map(([utterance]) => utterance.text).toSorted()).toEqual([
+          "segment-1",
+          "segment-2",
+        ]);
       } finally {
         release.resolve();
         first.destroy();
