@@ -62,13 +62,14 @@ describe("plugin install path warnings", () => {
   });
 
   it("detects active custom plugin install paths", async () => {
-    const { issue, pluginPath } = await detectMatrixCustomPathIssue(
-      (resolvedPluginPath) => resolvedPluginPath,
-    );
-    expect(issue).toEqual({
-      kind: "custom-path",
-      pluginId: "matrix",
-      path: pluginPath,
+    await withTempHome(async (home) => {
+      const pluginPath = path.join(home, "matrix-plugin");
+      await fs.mkdir(pluginPath, { recursive: true });
+      expect(await detect(pluginPath)).toEqual({
+        kind: "custom-path",
+        pluginId: "matrix",
+        path: pluginPath,
+      });
     });
   });
 

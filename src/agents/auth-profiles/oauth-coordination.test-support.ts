@@ -26,6 +26,7 @@ export function oauth(
   overrides: Partial<OAuthCredential> = {},
 ): OAuthCredential {
   return createOAuthRefreshCredential({
+    provider,
     access: `${prefix}-access`,
     refresh: `${prefix}-refresh`,
     expires: Date.now() + 3_600_000,

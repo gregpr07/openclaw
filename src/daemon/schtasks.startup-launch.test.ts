@@ -108,4 +108,49 @@ describe("Windows Startup launcher", () => {
       }
     });
   });
+
+  it.each(["supervisor", "cmd"])("detaches the %s launcher only after admission", async (kind) => {
+    await withWindowsEnv("openclaw-win-startup-", async ({ env, tmpDir }) => {
+      env.OPENCLAW_STATE_DIR = path.join(tmpDir, "state & %USERPROFILE% !");
+      const scriptPath = resolveTaskScriptPath(env);
+      if (kind === "cmd") {
+        await writeCmdScript(env);
+      }
+      await expect(
+        launchFallbackTaskScript(
+          env,
+          kind === "supervisor"
+            ? {
+                programArguments: ["C:\\Program Files\\nodejs\\node.exe", "gateway.js"],
+                environment: { OPENCLAW_SERVICE_KIND: "gateway" },
+              }
+            : undefined,
+        ),
+      ).resolves.toBeUndefined();
+      expect(spawn.mock.calls.at(-1)).toEqual([
+        kind === "cmd" ? getWindowsCmdExePath() : "C:\\Program Files\\nodejs\\node.exe",
+        kind === "cmd"
+          ? ["/d", "/s", "/v:off", "/c", '""%OPENCLAW_TASK_SCRIPT%""']
+          : ["gateway.js", "--task-supervisor"],
+        expect.objectContaining({
+          detached: true,
+          stdio: "ignore",
+          windowsHide: true,
+          ...(kind === "cmd" ? { windowsVerbatimArguments: true } : {}),
+          env: expect.objectContaining({
+            BOUNDARY_PARENT_ONLY: "synthetic",
+            ...(kind === "cmd" ? { OPENCLAW_TASK_SCRIPT: scriptPath } : {}),
+          }),
+        }),
+      ]);
+      if (kind === "cmd") {
+        expect(spawnSync).toHaveBeenCalledOnce();
+        expect(spawnSync.mock.calls[0]?.[2]?.env).toMatchObject({
+          OPENCLAW_TASK_SCRIPT: scriptPath,
+        });
+        expect(spawnSync.mock.calls[0]?.[2]?.env).not.toHaveProperty("BOUNDARY_PARENT_ONLY");
+      }
+      expect(childUnref).toHaveBeenCalledOnce();
+    });
+  });
 });
