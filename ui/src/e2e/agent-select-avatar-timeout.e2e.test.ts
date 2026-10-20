@@ -1,10 +1,9 @@
 // Control UI tests cover bounded authenticated agent-picker avatar fetches.
-import path from "node:path";
-import type { Page, Route } from "playwright";
-import { beforeEach, expect, it } from "vitest";
+import type { Route } from "playwright";
+import { expect, it } from "vitest";
 import type { AgentSelectElement } from "../components/agent-select.ts";
-import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
+import { captureUiProof } from "./chat-flow.test-support.ts";
 import {
   createControlUiE2eContextOptions,
   createControlUiE2eSuite,
@@ -16,25 +15,6 @@ const suite = createControlUiE2eSuite({
   unavailableMessage: (executablePath) =>
     `Playwright Chromium is not available at ${executablePath}`,
 });
-
-const captureUiProof = process.env.OPENCLAW_CAPTURE_UI_PROOF === "1";
-let proofDir: string;
-beforeEach(() => {
-  if (captureUiProof) {
-    proofDir = createControlUiE2eArtifactDir("agent-select-avatar-timeout");
-  }
-});
-
-async function screenshot(page: Page, name: string) {
-  if (!captureUiProof) {
-    return;
-  }
-  await page.screenshot({
-    animations: "disabled",
-    fullPage: true,
-    path: path.join(proofDir, name),
-  });
-}
 
 suite.define(() => {
   it.each(["timeout", "loaded", "invalid image"] as const)(
@@ -63,24 +43,13 @@ suite.define(() => {
             "agent.identity.get": {
               cases: [
                 {
-                  match: { agentId: "main" },
-                  response: {
-                    agentId: "main",
-                    avatar: "/avatar/main",
-                    avatarStatus: "local",
-                    name: "Main agent",
-                  },
+                  agentId: "main",
+                  avatar: "/avatar/main",
+                  avatarStatus: "local",
+                  name: "Main agent",
                 },
-                {
-                  match: { agentId: "writer" },
-                  response: {
-                    agentId: "writer",
-                    avatar: "",
-                    avatarStatus: "none",
-                    name: "Writer",
-                  },
-                },
-              ],
+                { agentId: "writer", avatar: "", avatarStatus: "none", name: "Writer" },
+              ].map((response) => ({ match: { agentId: response.agentId }, response })),
             },
             "agents.list": {
               agents: [
@@ -106,7 +75,7 @@ suite.define(() => {
         const pendingBox = await avatar.boundingBox();
         expect(pendingBox?.width).toBeGreaterThan(0);
         expect(avatarAuthorization).toBe("Bearer e2e-device-token");
-        await screenshot(page, "01-request-stalled.png");
+        await captureUiProof(suite, page, "avatar", "01-request-stalled.png");
 
         if (outcome === "timeout") {
           await page.clock.runFor(30_000);
@@ -152,7 +121,7 @@ suite.define(() => {
           expect(await avatar.locator(".identity-avatar__agent-face").isVisible()).toBe(true);
         }
         expect(avatarRequestCount).toBe(1);
-        await screenshot(page, `02-${outcome.replaceAll(" ", "-")}.png`);
+        await captureUiProof(suite, page, "avatar", `02-${outcome.replaceAll(" ", "-")}.png`);
       });
     },
   );

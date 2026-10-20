@@ -21,6 +21,9 @@ const session = (state: "current" | "stale" | "updating" | "unavailable", text =
   updatedAt: Date.now() - 60_000,
   activitySummary: { state, canEnsure: true, text, updatedAt: Date.now() - 120_000 },
 });
+const ensuring = (text = oldText) => ({
+  sessions: [{ key, agentId: "main", activitySummary: session("updating", text).activitySummary }],
+});
 
 suite.define(() => {
   it.each([1440, 390])(
@@ -33,17 +36,22 @@ suite.define(() => {
             sessionKey: key,
             methodResponses: {
               "sessions.list": chatSessionListResponse([session("stale")]),
-              [ensureMethod]: {
-                sessions: [
-                  { key, agentId: "main", activitySummary: session("updating").activitySummary },
-                ],
-              },
+              [ensureMethod]: ensuring(),
             },
           });
           await page.goto(`${suite.server.baseUrl}activity`);
           await page.locator(`[data-activity-session="${key}"]`).waitFor();
           await page.screenshot({ path: path.join(suite.artifactDir, `01-initial-${width}.png`) });
           const recap = page.locator(`[data-activity-recap="${key}"]`);
+          const publishRecap = async (state: "current" | "unavailable") => {
+            await gateway.setSessionsListResponse(
+              chatSessionListResponse([session(state, newText)]),
+            );
+            await gateway.emitGatewayEvent("sessions.changed", {
+              sessionKey: key,
+              reason: "activity-summary",
+            });
+          };
           await expect.poll(() => recap.textContent()).toContain(oldText);
           await expect.poll(() => recap.getAttribute("data-state")).toBe("updating");
           const requests = await gateway.getRequests(ensureMethod);
@@ -63,13 +71,7 @@ suite.define(() => {
             ).length;
           const ordinaryListCount = await ordinaryListRequests();
 
-          await gateway.setSessionsListResponse(
-            chatSessionListResponse([session("current", newText)]),
-          );
-          await gateway.emitGatewayEvent("sessions.changed", {
-            sessionKey: key,
-            reason: "activity-summary",
-          });
+          await publishRecap("current");
           await expect.poll(() => recap.textContent()).toContain(newText);
           await expect.poll(() => recap.getAttribute("data-state")).toBe("current");
           expect(
@@ -80,24 +82,10 @@ suite.define(() => {
           });
           expect(await ordinaryListRequests()).toBe(ordinaryListCount);
 
-          await gateway.setSessionsListResponse(
-            chatSessionListResponse([session("unavailable", newText)]),
-          );
-          await gateway.emitGatewayEvent("sessions.changed", {
-            sessionKey: key,
-            reason: "activity-summary",
-          });
+          await publishRecap("unavailable");
           await expect.poll(() => recap.getAttribute("data-state")).toBe("unavailable");
           expect(await recap.textContent()).toContain(newText);
-          await gateway.setMethodResponse(ensureMethod, {
-            sessions: [
-              {
-                key,
-                agentId: "main",
-                activitySummary: session("updating", newText).activitySummary,
-              },
-            ],
-          });
+          await gateway.setMethodResponse(ensureMethod, ensuring(newText));
           await recap.getByRole("button", { name: "Retry recap", exact: true }).click();
           await expect.poll(async () => (await gateway.getRequests(ensureMethod)).length).toBe(2);
           await expect.poll(() => recap.getAttribute("data-state")).toBe("updating");

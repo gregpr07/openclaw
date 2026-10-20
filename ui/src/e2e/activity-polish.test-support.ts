@@ -1,4 +1,5 @@
-import type { Page } from "playwright";
+import type { Locator, Page } from "playwright";
+import { expect } from "vitest";
 import type { ControlUiSessionPullRequestsChanged } from "../../../src/gateway/control-ui-contract.js";
 import { SESSION_PULL_REQUESTS_SUBSCRIBE_METHOD } from "../lib/session-pull-requests.ts";
 import {
@@ -115,28 +116,7 @@ export async function activityPolishImages(page: Page) {
         context.fillStyle = "#172033";
         context.font = "600 32px sans-serif";
         context.fillText(title, 40, 65);
-        context.font = "19px sans-serif";
-        context.fillStyle = "#64748b";
-        context.fillText("Synthetic validation screenshot", 40, 100);
-        for (let row = 0; row < 4; row++) {
-          context.fillStyle = "#ffffff";
-          context.fillRect(40, 130 + row * 65, 720, 50);
-          context.fillStyle = "#15803d";
-          context.font = "22px sans-serif";
-          context.fillText("✓", 58, 164 + row * 65);
-          context.fillStyle = "#334155";
-          context.font = "19px sans-serif";
-          context.fillText(
-            [
-              "Connection restored",
-              "One notification delivered",
-              "No duplicate requests",
-              "Checks passed",
-            ][row]!,
-            96,
-            163 + row * 65,
-          );
-        }
+        context.fillText("Synthetic validation screenshot", 40, 110);
         return canvas.toDataURL("image/png");
       },
     ),
@@ -152,4 +132,19 @@ export async function activityPolishImages(page: Page) {
       download: { mode: "url" },
     })),
   };
+}
+
+export async function expectActivityImagesLoaded(images: Locator) {
+  await expect
+    .poll(() =>
+      images.evaluateAll(
+        (elements) =>
+          elements.length > 0 &&
+          elements.every(
+            (element) =>
+              element instanceof HTMLImageElement && element.complete && element.naturalWidth > 0,
+          ),
+      ),
+    )
+    .toBe(true);
 }

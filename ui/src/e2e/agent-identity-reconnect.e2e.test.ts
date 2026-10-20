@@ -1,6 +1,5 @@
 import path from "node:path";
 import { expect, it } from "vitest";
-import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import {
   defaultControlUiFeatureMethods,
   installMockGateway,
@@ -9,6 +8,7 @@ import {
   type MockGatewayWindow,
 } from "../test-helpers/control-ui-e2e.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
+import { configSnapshot } from "./model-setup-fixtures.test-support.ts";
 
 const suite = createControlUiE2eSuite({ name: "Agent identity save reconnect" });
 
@@ -54,21 +54,17 @@ suite.define(() => {
 
       await page.evaluate(() => {
         const fixture = (window as MockGatewayWindow).openclawControlUiE2eGateway!;
-        fixture.setRequestHandler("agent.identity.get", () => {
-          const request = fixture.findRequests("agent.identity.get").at(-1)!;
-          fixture.deliverLatest({
-            type: "res",
-            id: request.id,
-            ok: false,
-            error: {
+        fixture.setRequestHandler("agent.identity.get", ({ respond }) =>
+          respond({
+            __mockError: {
               code: "UNAVAILABLE",
               message: "agent.identity.get unavailable during gateway restart",
               retryable: true,
               retryAfterMs: 1_000,
               details: { reason: "gateway-restarting" },
             },
-          });
-        });
+          }),
+        );
       });
       await gateway.emitGatewayEvent("config.changed", { hash: "synthetic-restart" });
       await page.clock.runFor(1_000);
@@ -76,12 +72,6 @@ suite.define(() => {
       await gateway.emitGatewayEvent("shutdown", { restartExpectedMs: 1_500 });
       await page.clock.runFor(600_000);
       const afterDrain = await counts();
-      const drainCalls = Object.fromEntries(
-        methods.map((method) => [method, afterDrain[method] - beforeDrain[method]]),
-      );
-      console.log(
-        JSON.stringify({ connected, idle, idleMinutes: 10, drainMinutes: 10, drainCalls }),
-      );
       await page.evaluate(() => {
         (window as MockGatewayWindow).openclawControlUiE2eGateway!.setRequestHandler(
           "agent.identity.get",
@@ -95,7 +85,7 @@ suite.define(() => {
         .poll(() => page.locator(".agent-chat__welcome-identity h2").textContent())
         .toBe("Cedar");
       expect(idle).toEqual(connected);
-      expect(Object.values(drainCalls)).toEqual([0, 0, 0, 0]);
+      expect(afterDrain).toEqual(beforeDrain);
     });
   });
 
@@ -105,20 +95,12 @@ suite.define(() => {
       await suite.withPage(
         { locale: "en-US", viewport: { width: 1280, height: 900 } },
         async ({ page }) => {
-          const artifacts = createControlUiE2eArtifactDir("agent-identity-reconnect");
           const config = { agents: { entries: { main: {} } } };
           const gateway = await installMockGateway(page, {
             featureMethods: [...defaultControlUiFeatureMethods, "agents.update"],
             methodResponses: {
               "agents.update": { ok: true },
-              "config.get": {
-                config,
-                sourceConfig: config,
-                hash: "identity-fixture",
-                issues: [],
-                raw: JSON.stringify(config),
-                valid: true,
-              },
+              "config.get": configSnapshot(config, "identity-fixture"),
             },
           });
           await page.goto(`${suite.server.baseUrl}chat#token=test-token`);
@@ -141,7 +123,7 @@ suite.define(() => {
           const beforeRetry = (await gateway.getRequests("agents.update")).length;
           await reconnectMockGateway(page, gateway);
           await page.screenshot({
-            path: path.join(artifacts, "reconnected.png"),
+            path: path.join(suite.artifactDir, "reconnected.png"),
             animations: "disabled",
           });
           const retried = await gateway.waitForRequest("agents.update", { after: beforeRetry });

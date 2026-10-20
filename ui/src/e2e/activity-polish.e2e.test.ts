@@ -1,4 +1,5 @@
 import path from "node:path";
+import type { Page } from "playwright";
 import { expect, it } from "vitest";
 import { CONTROL_UI_SESSION_PULL_REQUESTS_CHANGED_EVENT } from "../../../src/gateway/control-ui-contract.js";
 import {
@@ -12,10 +13,17 @@ import {
   activityPolishImages,
   activityPolishKeys,
   activityPolishPullRequest,
+  expectActivityImagesLoaded,
 } from "./activity-polish.test-support.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
 const suite = createControlUiE2eSuite({ name: "Activity recap and screenshot polish" });
+const imageMatch = { sessionKey: activityPolishKeys.current, type: "image" };
+const screenshot = (page: Page, name: string) =>
+  page.screenshot({ path: path.join(suite.artifactDir, `${name}.png`) });
+const imageResponse = (response: Awaited<ReturnType<typeof activityPolishImages>>) => ({
+  cases: [{ match: imageMatch, response }, { response: { artifacts: [] } }],
+});
 
 suite.define(() => {
   it.each([1440, 390])("loads remote previews during refresh at %s px", async (width) => {
@@ -61,15 +69,7 @@ suite.define(() => {
             });
           });
         }
-        await gateway.setMethodResponse("artifacts.list", {
-          cases: [
-            {
-              match: { sessionKey: activityPolishKeys.current, type: "image" },
-              response: images,
-            },
-            { response: { artifacts: [] } },
-          ],
-        });
+        await gateway.setMethodResponse("artifacts.list", imageResponse(images));
         await gateway.resolveDeferred("sessions.list", fixture.list);
         const row = page.locator(".activity-feed__session-row").filter({
           has: page.locator(`[data-activity-session="${activityPolishKeys.current}"]`),
@@ -93,46 +93,14 @@ suite.define(() => {
             .evaluate((image: HTMLImageElement) => image.decode());
         }
         await expect.poll(() => thumbnails.locator("img").count()).toBe(4);
-        await expect
-          .poll(() =>
-            thumbnails
-              .locator("img")
-              .evaluateAll((elements) =>
-                elements.every(
-                  (element) => element instanceof HTMLImageElement && element.complete,
-                ),
-              ),
-          )
-          .toBe(true);
-        await page.screenshot({
-          path: path.join(suite.artifactDir, `remote-previews-${width}.png`),
-        });
-        await expect
-          .poll(() =>
-            thumbnails
-              .locator("img")
-              .evaluateAll((elements) =>
-                elements.every(
-                  (element) =>
-                    element instanceof HTMLImageElement &&
-                    element.complete &&
-                    element.naturalWidth > 0,
-                ),
-              ),
-          )
-          .toBe(true);
+        await expectActivityImagesLoaded(thumbnails.locator("img"));
+        await screenshot(page, `remote-previews-${width}`);
         expect(referrers).toHaveLength(4);
         expect(referrers.every((referrer) => referrer === undefined)).toBe(true);
         await thumbnails.last().focus();
         await page.keyboard.press("Enter");
         const expandedImage = page.locator("openclaw-image-lightbox img");
-        await expect
-          .poll(() =>
-            expandedImage.evaluate(
-              (element) => element instanceof HTMLImageElement && element.naturalWidth > 0,
-            ),
-          )
-          .toBe(true);
+        await expectActivityImagesLoaded(expandedImage);
         await page.getByRole("button", { name: "Previous image", exact: true }).click();
         await expect
           .poll(() => expandedImage.getAttribute("src"))
@@ -161,9 +129,7 @@ suite.define(() => {
           .poll(async () => (await gateway.getRequests("artifacts.list", match)).length)
           .toBe(requests + 1);
         try {
-          await page.screenshot({
-            path: path.join(suite.artifactDir, `refresh-gallery-${width}.png`),
-          });
+          await screenshot(page, `refresh-gallery-${width}`);
           expect(await thumbnails.count()).toBe(4);
         } finally {
           await gateway.resolveDeferred("artifacts.list", images);
@@ -192,18 +158,10 @@ suite.define(() => {
           await loading.waitFor();
           expect(await loading.getAttribute("aria-busy")).toBe("true");
           expect(await loading.locator(".skeleton").count()).toBeGreaterThan(0);
-          await page.screenshot({ path: path.join(suite.artifactDir, `01-loading-${width}.png`) });
+          await screenshot(page, `01-loading-${width}`);
 
           const images = await activityPolishImages(page);
-          await gateway.setMethodResponse("artifacts.list", {
-            cases: [
-              {
-                match: { sessionKey: activityPolishKeys.current, type: "image" },
-                response: images,
-              },
-              { response: { artifacts: [] } },
-            ],
-          });
+          await gateway.setMethodResponse("artifacts.list", imageResponse(images));
           await gateway.resolveDeferred("sessions.list", fixture.list);
           const activity = page.locator("openclaw-activity-page");
           const recap = (key: string) => activity.locator(`[data-activity-recap="${key}"]`);
@@ -223,19 +181,16 @@ suite.define(() => {
             match: { includeActivitySummary: true },
           });
           expect(listRequest.params).toMatchObject({ sortBy: "activity" });
-          expect(
-            await row(activityPolishKeys.current)
-              .locator(".activity-feed__session-time")
-              .textContent(),
-          ).toContain("1m");
+          const currentRow = row(activityPolishKeys.current);
+          expect(await currentRow.locator(".activity-feed__session-time").textContent()).toContain(
+            "1m",
+          );
           await expect
-            .poll(() => row(activityPolishKeys.current).locator(".agent-row-chip").textContent())
+            .poll(() => currentRow.locator(".agent-row-chip").textContent())
             .toContain("Roboclaw");
-          expect(
-            await row(activityPolishKeys.current)
-              .locator(".activity-feed__session-meta")
-              .textContent(),
-          ).toContain("Alex Morgan");
+          expect(await currentRow.locator(".activity-feed__session-meta").textContent()).toContain(
+            "Alex Morgan",
+          );
           expect(await recap(activityPolishKeys.updating).getAttribute("aria-busy")).toBe("true");
           expect(await recap(activityPolishKeys.updating).locator("p").textContent()).toContain(
             "Testing focus behavior",
@@ -250,7 +205,7 @@ suite.define(() => {
             "Recap unavailable",
           );
           expect(await recap(activityPolishKeys.initial).locator(".skeleton").count()).toBe(2);
-          const thumbnails = row(activityPolishKeys.current).locator(".chat-message-image-button");
+          const thumbnails = currentRow.locator(".chat-message-image-button");
           await expect.poll(() => thumbnails.count()).toBe(4);
           // Expanding the phone grid leaves later thumbnails offscreen. Admit
           // them by scrolling, as a user would, before requiring decoded pixels.
@@ -258,20 +213,7 @@ suite.define(() => {
             await thumbnail.scrollIntoViewIfNeeded();
             await thumbnail.locator("img").evaluate((image: HTMLImageElement) => image.decode());
           }
-          await expect
-            .poll(() =>
-              thumbnails
-                .locator("img")
-                .evaluateAll((elements) =>
-                  elements.every(
-                    (element) =>
-                      element instanceof HTMLImageElement &&
-                      element.complete &&
-                      element.naturalWidth > 0,
-                  ),
-                ),
-            )
-            .toBe(true);
+          await expectActivityImagesLoaded(thumbnails.locator("img"));
           const imageRequest = await gateway.waitForRequest("artifacts.list", {
             match: { sessionKey: activityPolishKeys.current },
           });
@@ -283,7 +225,7 @@ suite.define(() => {
           );
           const pr = row(activityPolishKeys.current).locator(".activity-feed__pr");
           await pr.waitFor();
-          await page.screenshot({ path: path.join(suite.artifactDir, `02-recaps-${width}.png`) });
+          await screenshot(page, `02-recaps-${width}`);
           const boxes = await thumbnails.evaluateAll((elements) =>
             elements.map((element) => {
               const rect = element.getBoundingClientRect();
@@ -303,21 +245,13 @@ suite.define(() => {
             message: "Preview enrichment unavailable",
           });
           await expect.poll(() => card.textContent()).toContain(activityPolishPullRequest.title);
-          await page.screenshot({ path: path.join(suite.artifactDir, `03-hover-${width}.png`) });
+          await screenshot(page, `03-hover-${width}`);
           await page.keyboard.press("Escape");
           await thumbnails.first().click();
           const lightbox = page.locator("openclaw-image-lightbox");
           await lightbox.locator("img").waitFor();
-          await expect
-            .poll(() =>
-              lightbox
-                .locator("img")
-                .evaluate(
-                  (element) => element instanceof HTMLImageElement && element.naturalWidth > 0,
-                ),
-            )
-            .toBe(true);
-          await page.screenshot({ path: path.join(suite.artifactDir, `04-expanded-${width}.png`) });
+          await expectActivityImagesLoaded(lightbox.locator("img"));
+          await screenshot(page, `04-expanded-${width}`);
           await page.keyboard.press("Escape");
           await lightbox.waitFor({ state: "detached" });
           expect(
