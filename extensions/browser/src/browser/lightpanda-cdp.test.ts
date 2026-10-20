@@ -21,72 +21,57 @@ const attachedPage = {
   sessionId: "browser-session",
   params: { sessionId: "page-session", targetInfo: { type: "page", targetId: "page-one" } },
 };
-const targetCommand = (id: number, sessionId = "browser-session") => ({
+const targetCommand = (id: number, page = false) => ({
   id,
-  method: "Target.getTargets",
-  sessionId,
-});
-const pageCommand = (id: number) => ({
-  ...targetCommand(id, "page-session"),
-  method: "Target.getTargetInfo",
+  method: page ? "Target.getTargetInfo" : "Target.getTargets",
+  sessionId: page ? "page-session" : "browser-session",
 });
 
-it.each([undefined, "lightpanda"] as const)(
-  "normalizes the observed protocol defect only for explicit engine %s",
-  async (engine) => {
-    vi.useFakeTimers();
-    const sent: object[] = [];
-    const received: object[] = [];
-    const wire: ConnectOverCDPTransport = {
-      send: (message) => sent.push(message),
-      close: vi.fn(),
-    };
-    connectMock.mockResolvedValue({} as Browser);
-    await connectOverCdpTransport("ws://127.0.0.1:9222", {
-      engine,
-      headers: {},
-      timeout: 1000,
-      preparedTransport: wire,
-    });
-    const connection = connectMock.mock.calls[0];
-    assert(connection, "Playwright transport was not connected");
-    const [client] = connection;
-    // oxlint-disable-next-line unicorn/prefer-add-event-listener -- Playwright exposes a transport callback, not EventTarget.
-    client.onmessage = (message) => received.push(message);
-    wire.onmessage?.(attachedPage);
-    const syntheticStartup = {
-      method: "Target.attachedToTarget",
-      params: {
-        sessionId: "STARTUP",
-        targetInfo: { type: "page", targetId: "TID-STARTUP", browserContextId: "BID-STARTUP" },
-      },
-    };
-    wire.onmessage?.(syntheticStartup);
-    const command = pageCommand(41);
-    client.send(command);
-    const reply = { id: 41, result: { targetInfo: { targetId: "page-one" } } };
-    wire.onmessage?.(reply);
-    await vi.runAllTimersAsync();
-    expect(sent).toEqual([
-      engine === "lightpanda" ? { ...command, params: { targetId: "page-one" } } : command,
-    ]);
-    expect(received).toEqual([
-      attachedPage,
-      ...(engine === "lightpanda" ? [] : [syntheticStartup]),
-      engine === "lightpanda" ? { ...reply, sessionId: "page-session" } : reply,
-    ]);
-  },
-);
+it.each([undefined, "lightpanda"] as const)("gates normalization by engine %s", async (engine) => {
+  vi.useFakeTimers();
+  const send = vi.fn<ConnectOverCDPTransport["send"]>();
+  const received: object[] = [];
+  const wire: ConnectOverCDPTransport = { send, close: vi.fn() };
+  connectMock.mockResolvedValue({} as Browser);
+  await connectOverCdpTransport("ws://127.0.0.1:9222", {
+    engine,
+    headers: {},
+    timeout: 1000,
+    preparedTransport: wire,
+  });
+  const client = connectMock.mock.calls[0]?.[0];
+  assert(client, "Playwright transport was not connected");
+  // oxlint-disable-next-line unicorn/prefer-add-event-listener -- Playwright exposes a transport callback, not EventTarget.
+  client.onmessage = (message) => received.push(message);
+  wire.onmessage?.(attachedPage);
+  const syntheticStartup = {
+    method: "Target.attachedToTarget",
+    params: {
+      sessionId: "STARTUP",
+      targetInfo: { type: "page", targetId: "TID-STARTUP", browserContextId: "BID-STARTUP" },
+    },
+  };
+  wire.onmessage?.(syntheticStartup);
+  const command = targetCommand(41, true);
+  client.send(command);
+  const reply = { id: 41, result: { targetInfo: { targetId: "page-one" } } };
+  wire.onmessage?.(reply);
+  await vi.runAllTimersAsync();
+  expect(send).toHaveBeenCalledExactlyOnceWith(
+    engine === "lightpanda" ? { ...command, params: { targetId: "page-one" } } : command,
+  );
+  expect(received).toEqual([
+    attachedPage,
+    ...(engine === "lightpanda" ? [] : [syntheticStartup]),
+    engine === "lightpanda" ? { ...reply, sessionId: "page-session" } : reply,
+  ]);
+});
 
 it("correlates concurrent replies by request and preserves explicit routing", () => {
   const normalize = createLightpandaCdpNormalizer();
   normalize.receive(attachedPage);
-  expect(
-    normalize.send({
-      ...pageCommand(1),
-      params: { targetId: "explicit-target" },
-    }),
-  ).toMatchObject({ params: { targetId: "explicit-target" } });
+  const explicit = { ...targetCommand(1, true), params: { targetId: "explicit-target" } };
+  expect(normalize.send(explicit)).toHaveProperty("params.targetId", "explicit-target");
   normalize.send(targetCommand(2));
   const reply = { id: 2, result: {} };
   expect(normalize.receive(reply)).toEqual({ ...reply, sessionId: "browser-session" });
@@ -101,11 +86,8 @@ it("correlates concurrent replies by request and preserves explicit routing", ()
 it("forgets detached targets and all state when the connection closes", () => {
   const normalize = createLightpandaCdpNormalizer();
   normalize.receive(attachedPage);
-  normalize.receive({
-    method: "Target.detachedFromTarget",
-    params: { sessionId: "page-session" },
-  });
-  const command = pageCommand(1);
+  normalize.receive({ method: "Target.detachedFromTarget", params: { sessionId: "page-session" } });
+  const command = targetCommand(1, true);
   expect(normalize.send(command)).toBe(command);
   normalize.receive(attachedPage);
   normalize.clear();

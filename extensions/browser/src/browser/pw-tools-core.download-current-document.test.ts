@@ -7,13 +7,9 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as outputFiles from "./output-files.js";
 import { observeOutputWriteSettlement } from "./output-files.test-support.js";
 import { downloadCurrentDocumentViaPlaywright } from "./pw-tools-core.downloads.js";
-import {
-  getPwToolsCoreSessionMocks,
-  installPwToolsCoreTestHooks,
-  setPwToolsCoreCurrentPage,
-} from "./pw-tools-core.test-harness.js";
+import * as harness from "./pw-tools-core.test-harness.js";
 
-installPwToolsCoreTestHooks();
+harness.installPwToolsCoreTestHooks();
 const expectedUrl = "http://127.0.0.1/inline.png";
 const privateNetwork = { dangerouslyAllowPrivateNetwork: true };
 const redirectError = "download redirects cannot be inspected";
@@ -27,7 +23,7 @@ beforeEach(async () => {
   currentUrl = expectedUrl;
   closed = false;
   evaluate.mockReset();
-  setPwToolsCoreCurrentPage({
+  harness.setPwToolsCoreCurrentPage({
     on: events.on.bind(events),
     off: events.off.bind(events),
     url: () => currentUrl,
@@ -63,7 +59,6 @@ function makeDownload(url = expectedUrl, beforeTrigger = () => {}) {
   });
   return download;
 }
-
 it("keeps the preview URL and publishes exact bytes under the managed root", async () => {
   const download = makeDownload("http://127.0.0.1/final.png", () =>
     events.emit("framenavigated", {}),
@@ -77,29 +72,24 @@ it("keeps the preview URL and publishes exact bytes under the managed root", asy
   expect(currentUrl).toBe(expectedUrl);
   expect(download.cancel).not.toHaveBeenCalled();
 });
-it.each<[DownloadOptions, string]>([
-  [{ expectedUrl: "file:///tmp/secret" }, "Only HTTP(S)"],
-  [{ ssrfPolicy: { dangerouslyAllowPrivateNetwork: false } }, redirectError],
-  [{ ssrfPolicy: undefined }, redirectError],
-  [
-    { ssrfPolicy: { ...privateNetwork, blockedHostnames: [" *.Forbidden.Example. "] } },
-    redirectError,
-  ],
-])("blocks %j before traffic", async (options, error) => {
-  await expect(start(options)).rejects.toThrow(error);
-  for (const mock of [evaluate, getPwToolsCoreSessionMocks().getPageForTargetId]) {
+it.each<[string, DownloadOptions["ssrfPolicy"], string]>([
+  ["file:///tmp/secret", privateNetwork, "Only HTTP(S)"],
+  [expectedUrl, { dangerouslyAllowPrivateNetwork: false }, redirectError],
+  [expectedUrl, undefined, redirectError],
+  [expectedUrl, { ...privateNetwork, blockedHostnames: [" *.Forbidden.Example. "] }, redirectError],
+])("blocks %s with policy %j before traffic", async (url, ssrfPolicy, error) => {
+  await expect(start({ expectedUrl: url, ssrfPolicy })).rejects.toThrow(error);
+  for (const mock of [evaluate, harness.getPwToolsCoreSessionMocks().getPageForTargetId]) {
     expect(mock).not.toHaveBeenCalled();
   }
   expect(await fs.readdir(rootDir)).toEqual([]);
 });
 it.each(["before", "during", "redirect"] as const)("rejects %s capture", async (stage) => {
   const changedUrl = "http://127.0.0.1/changed.png";
-  const download = makeDownload(
-    stage === "redirect" ? "file:///tmp/not-a-network-asset" : expectedUrl,
-    () => {
-      currentUrl = stage === "during" ? changedUrl : currentUrl;
-    },
-  );
+  const url = stage === "redirect" ? "file:///tmp/not-a-network-asset" : expectedUrl;
+  const download = makeDownload(url, () => {
+    currentUrl = stage === "during" ? changedUrl : currentUrl;
+  });
   currentUrl = stage === "before" ? changedUrl : expectedUrl;
   await expect(start()).rejects.toThrow(
     stage === "redirect" ? "unsupported protocol" : "The tab changed",
@@ -111,35 +101,32 @@ it.each(["before", "during", "redirect"] as const)("rejects %s capture", async (
   }
   expect(await fs.readdir(rootDir)).toEqual([]);
 });
-it.for(["caller", "navigation", "close"] as const)(
-  "cancels an active save on %s and leaves no partial file",
-  async (reason, { signal, onTestFinished }) => {
-    const { write, writeSettled } = observeOutputWriteSettlement(outputFiles);
-    onTestFinished(() => write.mockRestore());
-    const controller = new AbortController();
-    const download = makeDownload();
-    download.saveAs.mockImplementationOnce(async (destination) => {
-      await fs.writeFile(destination, "partial bytes");
-      const cancel = {
-        caller: () => controller.abort(new Error("caller cancelled")),
-        // A reload changes the document even when its URL is unchanged.
-        navigation: () => events.emit("framenavigated", mainFrame),
-        close: () => {
-          closed = true;
-          events.emit("close");
-        },
-      };
-      cancel[reason]();
-    });
-    await expect(start({ signal: controller.signal })).rejects.toThrow(
-      reason === "caller" ? "caller cancelled" : "The tab changed",
-    );
-    // Capture rejection precedes the output owner's staging cleanup.
-    await withinTest(writeSettled.promise, signal);
-    expect(await fs.readdir(rootDir)).toEqual([]);
-    expect(download.cancel).toHaveBeenCalledOnce();
-  },
-);
+it.for(["caller", "navigation", "close"] as const)("cancels %s save", async (reason, context) => {
+  const { write, writeSettled } = observeOutputWriteSettlement(outputFiles);
+  context.onTestFinished(() => write.mockRestore());
+  const controller = new AbortController();
+  const download = makeDownload();
+  download.saveAs.mockImplementationOnce(async (destination) => {
+    await fs.writeFile(destination, "partial bytes");
+    const cancel = {
+      caller: () => controller.abort(new Error("caller cancelled")),
+      // A reload changes the document even when its URL is unchanged.
+      navigation: () => events.emit("framenavigated", mainFrame),
+      close: () => {
+        closed = true;
+        events.emit("close");
+      },
+    };
+    cancel[reason]();
+  });
+  await expect(start({ signal: controller.signal })).rejects.toThrow(
+    reason === "caller" ? "caller cancelled" : "The tab changed",
+  );
+  // Capture rejection precedes the output owner's staging cleanup.
+  await withinTest(writeSettled.promise, context.signal);
+  expect(await fs.readdir(rootDir)).toEqual([]);
+  expect(download.cancel).toHaveBeenCalledOnce();
+});
 it("expires a missing download without retaining page listeners", async () => {
   await expect(start({ timeoutMs: 500 })).rejects.toThrow("Timeout waiting for download");
 });

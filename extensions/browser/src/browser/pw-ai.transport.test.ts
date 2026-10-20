@@ -25,17 +25,15 @@ const server = createServer((request, response) => {
     response.writeHead(404).end();
     return;
   }
-  response.writeHead(200, { "Content-Type": "application/json" }).end(
-    JSON.stringify({
-      webSocketDebuggerUrl: `${cdpUrl.replace("http:", "ws:")}${socketPath}`,
-    }),
-  );
+  const webSocketDebuggerUrl = `${cdpUrl.replace("http:", "ws:")}${socketPath}`;
+  response.writeHead(200, { "Content-Type": "application/json" });
+  response.end(JSON.stringify({ webSocketDebuggerUrl }));
 });
 const socketServer = new WebSocketServer({ server, path: socketPath });
 const socketConnections = vi.fn();
 socketServer.on("connection", socketConnections);
 
-function createPage(targetId: string, snapshotText = "SNAP") {
+function createPage(targetId: string, snapshotText: string) {
   const session = {
     send: vi.fn().mockResolvedValue({ targetInfo: { targetId } }),
     detach: vi.fn().mockResolvedValue(undefined),
@@ -58,6 +56,7 @@ function createBrowser(pages: unknown[]) {
   const events = new EventEmitter();
   const context = { pages: () => pages, on: vi.fn() };
   connectOverCdpMock.mockImplementation(async (transport) => {
+    const closed = once(events, "disconnected");
     const browser = {
       contexts: () => [context],
       on: events.on.bind(events),
@@ -67,13 +66,8 @@ function createBrowser(pages: unknown[]) {
         await closed;
       },
     } as unknown as Browser;
-    const closed = new Promise<void>((resolve) => {
-      // oxlint-disable-next-line unicorn/prefer-add-event-listener -- Playwright's transport owns this callback.
-      transport.onclose = () => {
-        events.emit("disconnected", browser);
-        resolve();
-      };
-    });
+    // oxlint-disable-next-line unicorn/prefer-add-event-listener -- Playwright's transport owns this callback.
+    transport.onclose = () => events.emit("disconnected", browser);
     return browser;
   });
 }
@@ -104,38 +98,33 @@ afterAll(async () => {
   }
 });
 
-it.each([
-  ["e1", "e2"],
-  ["1", "2"],
-])(
-  "acts on the selected target's snapshot ref %s over one connection",
-  async (buttonRef, linkRef) => {
-    const text = `- button "OK" [ref=${buttonRef}]\n- link "Docs" [ref=${linkRef}]`;
-    const p1 = createPage("T1", "OTHER PAGE");
-    const p2 = createPage("T2", text);
-    createBrowser([p1.page, p2.page]);
+it.each(["e", ""])("uses %s refs on the selected target over one connection", async (prefix) => {
+  const [buttonRef, linkRef] = [`${prefix}1`, `${prefix}2`] as const;
+  const text = `- button "OK" [ref=${buttonRef}]\n- link "Docs" [ref=${linkRef}]`;
+  const p1 = createPage("T1", "OTHER PAGE");
+  const p2 = createPage("T2", text);
+  createBrowser([p1.page, p2.page]);
 
-    const res = await snapshot("T2");
-    expect(res.snapshot).toBe(text);
-    expect(res.refs).toEqual({
-      [buttonRef]: { role: "button", name: "OK" },
-      [linkRef]: { role: "link", name: "Docs" },
-    });
-    expect(p1.session.detach).toHaveBeenCalled();
-    expect(p2.session.detach).toHaveBeenCalled();
-    expect(p2.page.off).toHaveBeenCalledWith("framenavigated", expect.any(Function));
-    expect(p2.page.off).toHaveBeenCalledWith("framedetached", expect.any(Function));
-    await clickViaPlaywright({ cdpUrl, targetId: "T2", ref: buttonRef });
+  const res = await snapshot("T2");
+  expect(res.snapshot).toBe(text);
+  expect(res.refs).toEqual({
+    [buttonRef]: { role: "button", name: "OK" },
+    [linkRef]: { role: "link", name: "Docs" },
+  });
+  expect(p1.session.detach).toHaveBeenCalled();
+  expect(p2.session.detach).toHaveBeenCalled();
+  expect(p2.page.off).toHaveBeenCalledWith("framenavigated", expect.any(Function));
+  expect(p2.page.off).toHaveBeenCalledWith("framedetached", expect.any(Function));
+  await clickViaPlaywright({ cdpUrl, targetId: "T2", ref: buttonRef });
 
-    expect(p2.locator).toHaveBeenCalledWith(`aria-ref=${buttonRef}`);
-    expect(p2.click).toHaveBeenCalledTimes(1);
-    expect(p1.click).not.toHaveBeenCalled();
-    expect(connectOverCdpMock).toHaveBeenCalledTimes(1);
-    expect(socketConnections).toHaveBeenCalledTimes(1);
-    expect(socketServer.clients.size).toBe(1);
-    expect(discoveryRequests).toHaveBeenCalledExactlyOnceWith("/json/version");
-  },
-);
+  expect(p2.locator).toHaveBeenCalledWith(`aria-ref=${buttonRef}`);
+  expect(p2.click).toHaveBeenCalledTimes(1);
+  expect(p1.click).not.toHaveBeenCalled();
+  expect(connectOverCdpMock).toHaveBeenCalledTimes(1);
+  expect(socketConnections).toHaveBeenCalledTimes(1);
+  expect(socketServer.clients.size).toBe(1);
+  expect(discoveryRequests).toHaveBeenCalledExactlyOnceWith("/json/version");
+});
 
 it("truncates oversized snapshots", async () => {
   const firstLine = "VISIBLE";
