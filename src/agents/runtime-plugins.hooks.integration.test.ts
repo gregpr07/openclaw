@@ -56,21 +56,20 @@ it("keeps a prepared registry alive after its temporary caller cache retires", a
     const registry = withPluginCache(callerCache, () =>
       loadAgentRuntimePluginRegistryHandle({ config, workspaceDir, metadataSnapshot }),
     );
-    const record = registry.plugins.find(({ id }) => id === plugin.id);
-    expect(record?.status).toBe("loaded");
-    const instance = record && getPluginInstance(record);
-    expect(instance).toBeDefined();
+    const record = registry.plugins.find(({ id }) => id === plugin.id)!;
+    const instance = getPluginInstance(record)!;
+    expect(record.status).toBe("loaded");
     const hooks = createHookRunner(registry, { catchErrors: false });
     const buildPrompt = (prompt: string) =>
       hooks.runBeforePromptBuild({ prompt, messages: [] }, {});
     await expect(buildPrompt("before")).resolves.toEqual({ prependContext: "prepared-owner" });
 
     await retirePluginCache(callerCache);
-    expect(instance!.lifecycle.signal.aborted).toBe(false);
+    expect(instance.lifecycle.signal.aborted).toBe(false);
     expect(fs.existsSync(closed)).toBe(false);
     await expect(buildPrompt("after")).resolves.toEqual({ prependContext: "prepared-owner" });
     await retirePluginCache(metadataCache);
-    expect(instance!.lifecycle.signal.aborted).toBe(true);
+    expect(instance.lifecycle.signal.aborted).toBe(true);
     expect(fs.readFileSync(closed, "utf8")).toBe("closed\n");
     await expect(buildPrompt("retired")).rejects.toThrow(
       "Plugin prepared-hook-owner was reloaded or disabled",
@@ -85,32 +84,25 @@ it("does not dispatch hooks from a disabled plugin", async () => {
     id: "prompt-hook-probe",
     registration: `        api.on("before_prompt_build", async () => ({ prependContext: "hook-injected" }));`,
   });
-  const config = pluginConfig(plugin, { enabled: false, hooks: { allowConversationAccess: true } });
-  await withAgentPluginRegistry({
-    config,
+  const result = await withAgentPluginRegistry({
+    config: pluginConfig(plugin, { enabled: false, hooks: { allowConversationAccess: true } }),
     workspaceDir: makePluginLoaderTempDir(),
-    run: async (registry) => {
-      const result = await createHookRunner(registry).runBeforePromptBuild(
-        { prompt: "test", messages: [] },
-        {},
-      );
-      expect(result?.prependContext).toBeUndefined();
-    },
+    run: (registry) =>
+      createHookRunner(registry).runBeforePromptBuild({ prompt: "test", messages: [] }, {}),
   });
+  expect(result?.prependContext).toBeUndefined();
 });
 
 it("blocks a tool call through the run's before_tool_call hook when no process registry was activated", async () => {
-  // A headless `agent exec` run: nothing activated a root registry, so the global
-  // runner did not exist and tool policy let every call through (#158824).
+  // Headless agent exec must enforce hooks without a global registry (#158824).
   resetGlobalHookRunner();
   const plugin = writePlugin({
     id: "headless-tool-guard",
     registration: `    api.on("before_tool_call", async (event) => ({ block: true, blockReason: "guarded " + event.toolName }));`,
   });
-  const config = pluginConfig(plugin, { enabled: true });
   expect(getGlobalHookRunner()).toBeNull();
   const outcome = await withAgentPluginRegistry({
-    config,
+    config: pluginConfig(plugin, { enabled: true }),
     workspaceDir: makePluginLoaderTempDir(),
     run: async () => runBeforeToolCallHook({ toolName: "exec", params: { command: "ls -a" } }),
   });

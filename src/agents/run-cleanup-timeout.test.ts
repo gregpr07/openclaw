@@ -6,22 +6,20 @@ const TRUNCATED = "...[truncated]";
 
 describe("agent cleanup timeout", () => {
   const log = { warn: vi.fn() };
-  const ids = {
-    runId: "run-trajectory",
-    sessionId: "session-trajectory",
-    step: "agent-trajectory-flush",
-  };
+  const runCleanup = (options: Partial<Parameters<typeof runAgentCleanupStep>[0]> = {}) =>
+    runAgentCleanupStep({
+      runId: "run-trajectory",
+      sessionId: "session-trajectory",
+      step: "agent-trajectory-flush",
+      cleanup: () => new Promise<never>(() => {}),
+      log,
+      ...options,
+    });
   const timeoutMessage =
     "agent cleanup timed out: runId=run-trajectory sessionId=session-trajectory step=agent-trajectory-flush timeoutMs=5";
 
   async function timeoutWithDetails(getTimeoutDetails: () => string, field = "details") {
-    const result = runAgentCleanupStep({
-      ...ids,
-      cleanup: () => new Promise<never>(() => {}),
-      log,
-      timeoutMs: 5,
-      getTimeoutDetails,
-    });
+    const result = runCleanup({ timeoutMs: 5, getTimeoutDetails });
     await vi.advanceTimersByTimeAsync(5);
     await expect(result).resolves.toBeUndefined();
     const message = String(log.warn.mock.calls.at(-1)?.[0] ?? "");
@@ -37,12 +35,10 @@ describe("agent cleanup timeout", () => {
   afterEach(() => vi.useRealTimers());
 
   it("bounds stalled cleanup with the trajectory environment override", async () => {
-    const result = runAgentCleanupStep({
+    const result = runCleanup({
       runId: "run-1",
       sessionId: "session-1",
       step: "openclaw-trajectory-flush",
-      cleanup: () => new Promise<never>(() => {}),
-      log,
       env: { OPENCLAW_TRAJECTORY_FLUSH_TIMEOUT_MS: "25000" },
     });
 
@@ -77,14 +73,13 @@ describe("agent cleanup timeout", () => {
     const inner = createAgentCleanupScope();
     const result = outer.run(() =>
       inner.run(async () => {
-        await runAgentCleanupStep({
+        await runCleanup({
           runId: "nested",
           sessionId: "isolated",
           step: "registered-owner",
           cleanup: async () => {
             throw new Error("cleanup failed");
           },
-          log,
         });
         throw failure;
       }),
@@ -105,11 +100,10 @@ describe("agent cleanup timeout", () => {
       });
       const scope = createAgentCleanupScope();
       const result = scope.run(() =>
-        runAgentCleanupStep({
+        runCleanup({
           runId: "automatic",
           sessionId: "isolated",
           step: "registered-owner",
-          log,
           timeoutMs: 5,
           cleanup: async () => {
             await held;

@@ -11,36 +11,15 @@ import {
 } from "./provider-local-service.js";
 import { registerProviderStreamForModel } from "./provider-stream.js";
 import { buildGuardedModelFetch } from "./provider-transport-fetch.js";
+import { makeProviderModelFixture } from "./test-helpers/provider-model-fixture.js";
 
-const { fetchWithSsrFGuard, prepare, providerStream, reconcile, runtimeHandle } = vi.hoisted(() => {
-  const prepareMock = vi.fn(async (_auth?: { mode: string; authFlow?: string }) => undefined);
-  const reconcileMock = vi.fn(async () => undefined);
-  return {
-    fetchWithSsrFGuard: vi.fn(),
-    prepare: prepareMock,
-    providerStream: vi.fn(),
-    reconcile: reconcileMock,
-    runtimeHandle: {
-      provider: "test-provider",
-      modelId: "test-model",
-      plugin: {
-        reconcileLocalService: reconcileMock,
-        wrapStreamFn:
-          ({
-            streamFn,
-            auth,
-          }: {
-            streamFn: typeof providerStream;
-            auth?: { mode: string; authFlow?: string };
-          }) =>
-          async (...args: Parameters<typeof providerStream>) => {
-            await prepareMock(auth);
-            return streamFn(...args);
-          },
-      },
-    },
-  };
-});
+type Auth = { mode: string; authFlow?: string };
+const { fetchWithSsrFGuard, prepare, providerStream, reconcile } = vi.hoisted(() => ({
+  fetchWithSsrFGuard: vi.fn(),
+  prepare: vi.fn(async (_auth?: Auth) => undefined),
+  providerStream: vi.fn(),
+  reconcile: vi.fn(async () => undefined),
+}));
 
 vi.mock("../infra/net/fetch-guard.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../infra/net/fetch-guard.js")>()),
@@ -58,24 +37,34 @@ vi.mock("../plugins/provider-hook-runtime.js", async (importOriginal) => {
     ...actual,
     resolveProviderRuntimePluginHandle: (
       params: Parameters<typeof actual.resolveProviderRuntimePluginHandle>[0],
-    ) => ({ ...runtimeHandle, provider: params.provider, modelId: params.modelId }),
+    ) => ({
+      provider: params.provider,
+      modelId: params.modelId,
+      plugin: {
+        reconcileLocalService: reconcile,
+        wrapStreamFn:
+          ({ streamFn, auth }: { streamFn: typeof providerStream; auth?: Auth }) =>
+          async (...args: Parameters<typeof providerStream>) => {
+            await prepare(auth);
+            return streamFn(...args);
+          },
+      },
+    }),
   };
 });
 
 function lifecycleModel(
   registry: ReturnType<typeof createApiRegistry>,
-  overrides: Pick<Model, "api" | "provider" | "id" | "baseUrl">,
+  overrides: Partial<Pick<Model, "api" | "provider" | "id" | "baseUrl">> = {},
 ) {
   return bindModelLlmRuntime(
-    {
-      name: "Test Model",
-      reasoning: false,
-      input: ["text"],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 1024,
-      maxTokens: 512,
+    makeProviderModelFixture({
+      api: "test-lifecycle-provider",
+      provider: "test-provider",
+      id: "test-model",
+      baseUrl: "https://example.test",
       ...overrides,
-    },
+    }),
     createLlmRuntime(registry),
   );
 }
@@ -95,7 +84,7 @@ describe("provider stream lifecycle registration", () => {
     reconcile.mockReset().mockResolvedValue(undefined);
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => new Response("{}", { status: 200 })),
+      vi.fn(async () => new Response("{}")),
     );
   });
 
@@ -107,13 +96,7 @@ describe("provider stream lifecycle registration", () => {
   it("registers provider streams with the resolved runtime lifecycle handle", async () => {
     providerStream.mockReturnValue(createAssistantMessageEventStream());
     const apiRegistry = createApiRegistry();
-    const model = lifecycleModel(apiRegistry, {
-      api: "test-lifecycle-provider",
-      provider: "test-provider",
-      id: "test-model",
-      baseUrl: "https://example.test",
-    });
-
+    const model = lifecycleModel(apiRegistry);
     const auth = { mode: "oauth", authFlow: "test-subscription" };
     const streamFn = registerProviderStreamForModel({ model, wrapProviderStream: true, auth });
     expect(streamFn).toBeTypeOf("function");

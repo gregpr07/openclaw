@@ -2,20 +2,21 @@ import { createServer, type IncomingHttpHeaders } from "node:http";
 import { createApiRegistry, createLlmRuntime } from "@openclaw/ai";
 import type { Model, StreamOptions } from "@openclaw/llm-core";
 import { describe, expect, it } from "vitest";
+import {
+  closeHttpServer,
+  listenLoopback,
+} from "../../test/helpers/gateway-integration-fixtures.js";
 import { ensureCustomApiRegistered } from "./custom-api-registry.js";
 import { attachModelProviderRequestTransport } from "./provider-request-config.js";
 import { registerProviderStreamForModel } from "./provider-stream.js";
+import { makeProviderModelFixture } from "./test-helpers/provider-model-fixture.js";
+
+const completion =
+  'data: {"id":"affinity","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"affinity-ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
+type AffinityCase = [string, StreamOptions, string | undefined, boolean?, boolean?];
 
 describe("registered managed completion API session affinity", () => {
-  it.each<
-    [
-      name: string,
-      options: StreamOptions,
-      expected: string | undefined,
-      openrouter?: boolean,
-      configured?: boolean,
-    ]
-  >([
+  it.each<AffinityCase>([
     ["explicit cache key", { sessionId: "session", promptCacheKey: "cache-key" }, "cache-key"],
     ["long cache key", { sessionId: "session", promptCacheKey: "k".repeat(80) }, "k".repeat(64)],
     ["missing session", {}, undefined],
@@ -50,41 +51,19 @@ describe("registered managed completion API session affinity", () => {
         request.resume();
         request.on("end", () => {
           response.writeHead(200, { "content-type": "text/event-stream" });
-          response.end(
-            `data: ${JSON.stringify({
-              id: "affinity",
-              object: "chat.completion.chunk",
-              choices: [
-                {
-                  index: 0,
-                  delta: { role: "assistant", content: "affinity-ok" },
-                  finish_reason: "stop",
-                },
-              ],
-            })}\n\ndata: [DONE]\n\n`,
-          );
+          response.end(completion);
         });
       });
       try {
-        await new Promise<void>((resolve) => {
-          server.listen(0, "127.0.0.1", resolve);
-        });
-        const address = server.address();
-        if (!address || typeof address === "string") {
-          throw new Error("Loopback receiver did not bind");
-        }
+        const baseUrl = `${await listenLoopback(server)}/v1`;
         const model = attachModelProviderRequestTransport<Model<"openai-completions">>(
-          {
+          makeProviderModelFixture<"openai-completions">({
             id: "affinity-fixture",
             name: "Affinity fixture",
             provider: "affinity-fixture",
             api: "openai-completions",
-            baseUrl: `http://127.0.0.1:${address.port}/v1`,
-            reasoning: false,
-            input: ["text"],
+            baseUrl,
             contextWindow: 128000,
-            maxTokens: 4096,
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
             compat: {
               sendSessionAffinityHeaders: true,
               ...(openrouter ? { thinkingFormat: "openrouter" } : {}),
@@ -98,7 +77,7 @@ describe("registered managed completion API session affinity", () => {
                     "X-Session-Affinity": "configured",
                   }
                 : undefined,
-          },
+          }),
           { tls: { insecureSkipVerify: false } },
         );
         const registry = createApiRegistry();
@@ -134,9 +113,7 @@ describe("registered managed completion API session affinity", () => {
           expect(headers["x-session-id"]).toBe(openrouter ? expected : undefined);
         }
       } finally {
-        await new Promise<void>((resolve, reject) => {
-          server.close((error) => (error ? reject(error) : resolve()));
-        });
+        await closeHttpServer(server);
       }
     },
   );
