@@ -6,11 +6,11 @@ import * as nativeProfiles from "../state/user-profile-list.native.js";
 import { linkEmail, syncGitHubIdentity } from "../state/user-profile-writes.worker.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import {
-  createSessionCatalogGitHubLinker,
-  createSessionCatalogSourceActorProjector,
-  prepareSessionCatalogGitHubLinker,
-  prepareSessionCatalogSourceActorProjector,
-  prepareSessionCatalogSourceParticipantProjector,
+  createSessionCatalogGitHubLinker as createLinker,
+  createSessionCatalogSourceActorProjector as createActorProjector,
+  prepareSessionCatalogGitHubLinker as prepareLinker,
+  prepareSessionCatalogSourceActorProjector as prepareActorProjector,
+  prepareSessionCatalogSourceParticipantProjector as prepareParticipantProjector,
 } from "./session-catalog-identity.js";
 
 afterEach(() => vi.restoreAllMocks());
@@ -31,10 +31,7 @@ it("keeps legacy creator reads lazy and resolves actors outside the prepared coh
     const unknown = profile(202, "unknown");
     const actor = { type: "human", source: "profile", id: known.id } as const;
     const reads = vi.spyOn(nativeProfiles, "getUserProfileDisplaysNative");
-    const project = createSessionCatalogSourceActorProjector({
-      ...sourceScope,
-      actors: [actor],
-    });
+    const project = createActorProjector({ ...sourceScope, actors: [actor] });
     expect(project(undefined)).toBeUndefined();
     expect(project({ type: "system" })).toEqual({ type: "system" });
     expect(reads).not.toHaveBeenCalled();
@@ -53,7 +50,7 @@ it("links every verified account to one person while exporting only the primary 
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const reads = vi.spyOn(stateReads, "executeExistingOpenClawStateRead");
     const remote = remoteParticipant("remote", "profile");
-    const unlinked = await prepareSessionCatalogGitHubLinker({ participants: [remote] });
+    const unlinked = await prepareLinker({ participants: [remote] });
     expect(unlinked.linkParticipant(remote)).toBe(remote);
     expect(unlinked.resolveOwner("profile:missing")).toBeUndefined();
     expect(reads).not.toHaveBeenCalled();
@@ -62,7 +59,7 @@ it("links every verified account to one person while exporting only the primary 
     const secondary = profile(102, "secondary");
     linkEmail("secondary@example.test", primary.id);
     const linkedIdentity = { type: "profile", id: primary.id };
-    const linker = createSessionCatalogGitHubLinker();
+    const linker = createLinker();
     for (const id of ["101", "102"]) {
       expect(linker.linkParticipant(remoteParticipant(id)).identity).toEqual(linkedIdentity);
     }
@@ -77,16 +74,14 @@ it("links every verified account to one person while exporting only the primary 
     });
     const actor = { type: "human", source: "profile", id: secondary.id } as const;
     const source = { ...sourceScope, actors: [actor] };
-    const portable = await prepareSessionCatalogSourceActorProjector(source);
+    const portable = await prepareActorProjector(source);
     expect(portable(actor)?.identity).toMatchObject({ idKind: "github-account", id: "101" });
     const senderIdentity = { type: "profile", id: secondary.id } as const;
-    const sender = await prepareSessionCatalogSourceParticipantProjector([senderIdentity]);
-    expect(sender.project({ ...sourceScope, identity: senderIdentity }).identity).toMatchObject({
-      idKind: "github-account",
-      id: "101",
-    });
+    const sender = await prepareParticipantProjector([senderIdentity]);
+    const projected = sender.project({ ...sourceScope, identity: senderIdentity });
+    expect(projected.identity).toMatchObject({ idKind: "github-account", id: "101" });
     const participants = ["101", "102"].map((id) => remoteParticipant(id));
-    const prepared = await prepareSessionCatalogGitHubLinker({
+    const prepared = await prepareLinker({
       participants,
       owners: ["github:SECONDARY", "profile:missing"],
     });
@@ -110,9 +105,9 @@ it("links every verified account to one person while exporting only the primary 
     } finally {
       foreign.close();
     }
-    const next = await prepareSessionCatalogSourceActorProjector(source);
+    const next = await prepareActorProjector(source);
     expect(next(actor)?.label).toBe("Changed Person");
-    const changed = await prepareSessionCatalogGitHubLinker({
+    const changed = await prepareLinker({
       participants,
       owners: ["github:SECONDARY", "github:RENAMED-SECONDARY"],
     });

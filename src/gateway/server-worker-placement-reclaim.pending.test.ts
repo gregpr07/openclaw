@@ -1,15 +1,9 @@
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import {
-  clearRuntimeConfigSnapshot,
-  setRuntimeConfigSnapshot,
-} from "../config/runtime-snapshot.js";
+import * as config from "../config/runtime-snapshot.js";
 import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
-import {
-  beginSessionEffect,
-  runSessionMutation,
-} from "../sessions/session-controller.lifecycle.js";
+import * as lifecycle from "../sessions/session-controller.lifecycle.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { createGatewayWorkerPlacementReclaimBarriers } from "./server-worker-placement-reclaim.js";
 import { resolveGatewaySessionStoreTargetInWorker } from "./session-utils-store-worker.js";
@@ -17,21 +11,25 @@ import { resolveCanonicalSessionEntryFromStoreKeys } from "./session-utils-store
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => closeOpenClawAgentDatabasesForTest());
-afterEach(clearRuntimeConfigSnapshot);
+afterEach(config.clearRuntimeConfigSnapshot);
 
-it.each(["active", "failed"] as const)(
+it.each([
+  ["active", "runReclaimBarrier"],
+  ["failed", "runFailedReclaimBarrier"],
+] as const)(
   "a %s reclaim whose canonical cancellation rejects preserves its mutation-owned effect",
-  async (state) => {
-    setRuntimeConfigSnapshot({});
+  async (state, method) => {
+    config.setRuntimeConfigSnapshot({});
     const scope = path.join(tempDirs.make(`cancel-failure-${state}-`), "sessions.sqlite");
     const sessionKey = "agent:main:cancel-failure";
     const sessionId = "cancel-failure-session";
     const owner = { scope, identities: [sessionKey, sessionId], agentId: "main" };
-    const worktree = {
+    const workspace = {
       id: "cancel-failure-worktree",
-      branch: "cancel-failure",
-      repoRoot: "/fixture/workspace",
+      ownerId: sessionKey,
+      path: "/fixture/workspace",
     };
+    const worktree = { id: workspace.id, branch: "cancel-failure", repoRoot: workspace.path };
     const entry = { sessionId, updatedAt: 1, worktree };
     await replaceSessionEntry({ agentId: "main", sessionKey, storePath: scope }, entry);
     const cancellationFailure = new Error("canonical terminal drain rejected");
@@ -44,11 +42,7 @@ it.each(["active", "failed"] as const)(
       },
       loadSessionRuntime: async () => ({
         managedWorktrees: {
-          findLiveByOwner: async () => ({
-            id: worktree.id,
-            ownerId: sessionKey,
-            path: worktree.repoRoot,
-          }),
+          findLiveByOwner: async () => workspace,
         },
         resolveGatewaySessionStoreTargetInWorker: (params) =>
           resolveGatewaySessionStoreTargetInWorker({
@@ -63,23 +57,17 @@ it.each(["active", "failed"] as const)(
     const interrupted = vi.fn();
     const validated = vi.fn();
     const acquiredInterrupted = vi.fn();
-    const acquired = await beginSessionEffect({
-      ...owner,
-      assertAllowed: () => {},
-      onInterrupt: acquiredInterrupted,
-    });
+    const effect = (assertAllowed = () => {}, onInterrupt?: () => void) =>
+      lifecycle.beginSessionEffect({ ...owner, assertAllowed, onInterrupt });
+    const acquired = await effect(undefined, acquiredInterrupted);
     const begin = vi.fn();
     const reclaim = vi.fn();
     let pending!: Promise<{ admitted: boolean; error?: unknown }>;
     try {
-      await runSessionMutation({
+      await lifecycle.runSessionMutation({
         ...owner,
         run: async () => {
-          pending = beginSessionEffect({
-            ...owner,
-            assertAllowed: validated,
-            onInterrupt: interrupted,
-          }).then(
+          pending = effect(validated, interrupted).then(
             (lease) => {
               expect(lease.isActive()).toBe(true);
               lease.release();
@@ -88,15 +76,10 @@ it.each(["active", "failed"] as const)(
             (error: unknown) => ({ admitted: false, error }),
           );
           const request = { sessionId, sessionKey, agentId: "main", begin, reclaim };
-          const stop =
-            state === "failed"
-              ? barriers.runFailedReclaimBarrier(request)
-              : barriers.runReclaimBarrier(request);
-          await expect(stop).rejects.toBe(cancellationFailure);
+          await expect(barriers[method](request)).rejects.toBe(cancellationFailure);
         },
       });
       expect(cancel).toHaveBeenCalledOnce();
-      // Cancellation failure must leave mutation-owned work active.
       for (const callback of [begin, reclaim, acquiredInterrupted]) {
         expect(callback).not.toHaveBeenCalled();
       }
@@ -104,10 +87,7 @@ it.each(["active", "failed"] as const)(
       expect(await pending).toEqual({ admitted: true });
       expect(interrupted).not.toHaveBeenCalled();
       expect(validated).toHaveBeenCalledOnce();
-      const fresh = await beginSessionEffect({
-        ...owner,
-        assertAllowed: () => {},
-      });
+      const fresh = await effect();
       fresh.release();
     } finally {
       acquired.release();
