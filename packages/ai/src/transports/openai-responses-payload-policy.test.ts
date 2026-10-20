@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   resolveOpenAIResponsesRequestContextTokens,
-  resolveOpenAIResponsesServerCompactionPlan,
+  resolveOpenAIResponsesServerCompactionPlan as compactionPlan,
 } from "./openai-responses-payload-policy.js";
 
 const nativeModel = {
@@ -9,6 +9,8 @@ const nativeModel = {
   api: "openai-responses",
   baseUrl: "https://api.openai.com/v1",
 };
+const plan = (model: Record<string, unknown> = {}, params?: Record<string, unknown>) =>
+  compactionPlan({ ...nativeModel, ...model }, params);
 
 describe("OpenAI Responses request context", () => {
   it.each([
@@ -48,24 +50,21 @@ describe("OpenAI Responses compact threshold", () => {
     { params: { fastMode: "ultrafast", serviceTier: "auto" }, threshold: 260_000 },
     { params: { fastMode: "ultrafast", responsesCompactThreshold: 120_000 }, threshold: 120_000 },
   ])("resolves tier/config precedence for $params", ({ params, threshold }) => {
-    expect(
-      resolveOpenAIResponsesServerCompactionPlan(
-        {
-          ...nativeModel,
-          contextWindow: 1_050_000,
-          contextTokens: 922_000,
-        },
-        { responsesCompactThreshold: 700_000, ...params },
-      ).threshold,
-    ).toBe(threshold);
+    const model = { contextWindow: 1_050_000, contextTokens: 922_000 };
+    expect(plan(model, { responsesCompactThreshold: 700_000, ...params }).threshold).toBe(
+      threshold,
+    );
   });
 
   it("keeps disabled compaction disabled under Ultrafast", () => {
     expect(
-      resolveOpenAIResponsesServerCompactionPlan(nativeModel, {
-        fastMode: "ultrafast",
-        responsesServerCompaction: false,
-      }),
+      plan(
+        {},
+        {
+          fastMode: "ultrafast",
+          responsesServerCompaction: false,
+        },
+      ),
     ).toEqual({ enabled: false, threshold: undefined });
   });
 
@@ -85,11 +84,8 @@ describe("OpenAI Responses compact threshold", () => {
     ["nonfinite threshold", {}, Number.POSITIVE_INFINITY, 80_000],
   ] as const)("resolves %s", (_name, model, responsesCompactThreshold, expected) => {
     expect(
-      resolveOpenAIResponsesServerCompactionPlan(
-        {
-          ...nativeModel,
-          ...model,
-        },
+      plan(
+        model,
         responsesCompactThreshold === undefined ? undefined : { responsesCompactThreshold },
       ).threshold,
     ).toBe(expected);

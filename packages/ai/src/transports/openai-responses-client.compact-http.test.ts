@@ -1,4 +1,7 @@
+import assert from "node:assert/strict";
+import { once } from "node:events";
 import { createServer } from "node:http";
+import { promisify } from "node:util";
 import type { Context } from "@openclaw/llm-core";
 import OpenAI from "openai";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -35,9 +38,7 @@ describe("prepared Responses compaction HTTP lifetime", () => {
     const response = await createBoundedOpenAIResponsesCompactionFetch(
       async () => new Response(body),
     )("https://synthetic.invalid/compact");
-    if (!response.body) {
-      throw new Error("Bounded response is missing its body");
-    }
+    assert(response.body, "Bounded response is missing its body");
     const reader = response.body.getReader();
     const pending = reader.read();
     await pulling;
@@ -104,9 +105,8 @@ describe("prepared Responses compaction HTTP lifetime", () => {
           response.write('{"object":"response.compaction","output":[');
         }
       });
-      await new Promise<void>((resolve) => {
-        server.listen(0, "127.0.0.1", resolve);
-      });
+      server.listen(0, "127.0.0.1");
+      await once(server, "listening");
       const watchdog = setTimeout(() => {
         watchdogFired = true;
         abortController.abort(new Error("fixture cleanup: compaction did not settle"));
@@ -118,9 +118,7 @@ describe("prepared Responses compaction HTTP lifetime", () => {
           vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
         }
         const address = server.address();
-        if (!address || typeof address === "string") {
-          throw new Error("Missing loopback address");
-        }
+        assert(address && typeof address !== "string", "Missing loopback address");
         const model = createModel({
           id: "synthetic-model",
           name: "Synthetic model",
@@ -168,9 +166,7 @@ describe("prepared Responses compaction HTTP lifetime", () => {
         clearTimeout(watchdog);
         abortController.abort();
         server.closeAllConnections();
-        await new Promise<void>((resolve) => {
-          server.close(() => resolve());
-        });
+        await promisify(server.close.bind(server))();
       }
     },
   );

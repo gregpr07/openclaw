@@ -16,12 +16,9 @@ const context: Context = {
 
 const baseModel = createModel({
   id: "synthetic-opaque",
-  name: "Synthetic name",
   provider: "synthetic-proxy",
   baseUrl: "https://broker.example.test/private/v1",
   input: ["text", "image"],
-  contextWindow: 8192,
-  maxTokens: 1024,
 });
 
 const expectedMessage = (text: string | undefined, role = "user") => ({
@@ -36,12 +33,11 @@ describe("Responses prompt role", () => {
     ["http://localhost:8080/v1", true, "user"],
     ["http://localhost:8080/v1", false, "user"],
   ] as const)(
-    "serializes runtime carriers at %s with developer=%s as %s without rewriting history",
+    "runtime carriers %s developer=%s use %s",
     async (baseUrl, supportsDeveloperRole, role) => {
       const model: Model<"openai-responses"> = {
         ...baseModel,
         provider: "openai",
-        api: "openai-responses",
         baseUrl,
         compat: { supportsDeveloperRole },
       };
@@ -50,14 +46,9 @@ describe("Responses prompt role", () => {
       const input: Context = {
         messages: [
           userMessage("First question", 1),
-          { ...userMessage(quotedData, 2), runtimeContext: { retained: true } },
+          userMessage(quotedData, 2, { runtimeContext: { retained: true } }),
           userMessage("Second question", 3),
-          {
-            role: "user",
-            content: [{ type: "text", text: "Retained legacy context" }],
-            timestamp: 4,
-            runtimeContextCarrier: true,
-          },
+          userMessage([{ type: "text", text: "Legacy" }], 4, { runtimeContextCarrier: true }),
         ],
       };
       const original = structuredClone(input);
@@ -71,16 +62,12 @@ describe("Responses prompt role", () => {
           },
         });
         expect((await stream.result()).stopReason).toBe("error");
-        expect(JSON.parse(serializedRequest)).toEqual(
-          expect.objectContaining({
-            input: [
-              expectedMessage("First question"),
-              expectedMessage(quotedData, role),
-              expectedMessage("Second question"),
-              expectedMessage("Retained legacy context", role),
-            ],
-          }),
-        );
+        expect(JSON.parse(serializedRequest).input).toEqual([
+          expectedMessage("First question"),
+          expectedMessage(quotedData, role),
+          expectedMessage("Second question"),
+          expectedMessage("Legacy", role),
+        ]);
       }
       expect(input).toEqual(original);
     },
@@ -92,7 +79,7 @@ describe("Responses prompt role", () => {
     ["azure-openai-responses", true, true, "developer"],
     ["azure-openai-responses", false, true, "system"],
   ] as const)(
-    "%s with reasoning=%s and developer=%s uses %s",
+    "%s reasoning=%s developer=%s uses %s",
     (api, reasoning, supportsDeveloperRole, role) => {
       const model: Model = {
         ...baseModel,
@@ -104,7 +91,6 @@ describe("Responses prompt role", () => {
         expectedMessage(context.systemPrompt, role),
         { type: "message", role: "user" },
       ];
-      // The provider and transport entrypoints share the model's explicit role policy.
       expect(convertProviderResponsesMessages(model, context, new Set())).toMatchObject(expected);
       expect(convertResponsesMessages(model, context, new Set())).toMatchObject(expected);
       expect(buildOpenAIResponsesParams(model, context, undefined).input).toMatchObject(expected);
@@ -117,7 +103,7 @@ describe("Responses prompt role", () => {
     ["openai-responses", "https://broker.example.test/v1", true, "user"],
     ["openai-chatgpt-responses", "https://chatgpt.com/backend-api/codex", true, "user"],
   ] as const)(
-    "%s at %s preserves text-only operator updates in place with developer=%s",
+    "operator updates %s at %s developer=%s",
     (api, baseUrl, supportsDeveloperRole, role) => {
       const model: Model = {
         ...baseModel,
@@ -129,40 +115,33 @@ describe("Responses prompt role", () => {
       const input: Context = {
         messages: [
           userMessage("First turn", 1),
-          {
-            ...userMessage("Updated skill instructions", 2),
-            operatorMessage: { turnScoped: false },
-          },
+          userMessage("Updated skill", 2, { operatorMessage: { turnScoped: false } }),
           userMessage("Second turn", 3),
-          {
-            role: "user",
-            content: [{ type: "text", text: "Current runtime facts" }],
-            timestamp: 4,
+          userMessage([{ type: "text", text: "Runtime facts" }], 4, {
             operatorMessage: { turnScoped: true },
-          },
-          {
-            role: "user",
-            content: [
-              { type: "text", text: "Image content stays a user message" },
+          }),
+          userMessage(
+            [
+              { type: "text", text: "image" },
               { type: "image", mimeType: "image/png", data: "aW1n" },
             ],
-            timestamp: 5,
-            operatorMessage: { turnScoped: false },
-          },
+            5,
+            { operatorMessage: { turnScoped: false } },
+          ),
         ],
       };
       const original = structuredClone(input);
       const request = buildOpenAIResponsesParams(model, input, undefined);
       expect(request.input).toEqual([
         expectedMessage("First turn"),
-        expectedMessage("Updated skill instructions", role),
+        expectedMessage("Updated skill", role),
         expectedMessage("Second turn"),
-        expectedMessage("Current runtime facts", role),
+        expectedMessage("Runtime facts", role),
         {
           type: "message",
           role: "user",
           content: [
-            { type: "input_text", text: "Image content stays a user message" },
+            { type: "input_text", text: "image" },
             { type: "input_image", detail: "auto", image_url: "data:image/png;base64,aW1n" },
           ],
         },

@@ -1,5 +1,7 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { text } from "node:stream/consumers";
+import { promisify } from "node:util";
 import type { Context } from "@openclaw/llm-core";
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanupSessionResources } from "../session-resources.js";
@@ -20,19 +22,12 @@ const context: Context = {
 // Real HTTP/SSE verifies wire bytes through the unmocked OpenAI SDK.
 async function runOnce(compat?: Record<string, boolean>) {
   const requests: Array<Record<string, unknown>> = [];
-  const server = createServer((req, res) => {
-    let body = "";
-    req.setEncoding("utf8");
-    req.on("data", (chunk) => {
-      body += chunk;
-    });
-    req.on("end", () => {
-      requests.push(JSON.parse(body) as Record<string, unknown>);
-      res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
-      res.end(
-        `data: ${JSON.stringify(completedResponse("resp_1", [outputMessage("answer", "msg_resp_1")], { usage: responseUsage }))}\n\n`,
-      );
-    });
+  const server = createServer(async (req, res) => {
+    requests.push(JSON.parse(await text(req)) as Record<string, unknown>);
+    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+    res.end(
+      `data: ${JSON.stringify(completedResponse("resp_1", [outputMessage("answer", "msg_resp_1")], { usage: responseUsage }))}\n\n`,
+    );
   });
   await new Promise<void>((resolve) => {
     server.listen(0, "127.0.0.1", resolve);
@@ -63,9 +58,7 @@ async function runOnce(compat?: Record<string, boolean>) {
     expect(requests).toHaveLength(1);
     return requests[0];
   } finally {
-    await new Promise<void>((resolve, reject) => {
-      server.close((error) => (error ? reject(error) : resolve()));
-    });
+    await promisify(server.close.bind(server))();
   }
 }
 
