@@ -21,35 +21,36 @@ import { handleGatewayRequest } from "./server-methods.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 
 const identity = { channelId: "discord", accountId: "team-bot", senderId: "100000000000000001" };
-async function dispatch(
-  method: string,
-  params: unknown,
-  scopes: string[],
-  profileId: string,
-  expectedProfileId?: string,
-  cfg: OpenClawConfig = {},
-) {
-  const respond = vi.fn();
-  await handleGatewayRequest({
-    req: {
-      type: "req",
-      id: method,
-      method,
-      params,
-      ...(expectedProfileId ? { expectedProfileId } : {}),
-    },
-    respond,
-    isWebchatConnect: () => false,
-    client: authorizationClient("channel-identity-test", scopes, {
-      authenticatedUserId: "admin@example.test",
-      authenticatedUserProfile: { profileId, displayName: "Admin", hasAvatar: false, updatedAt: 1 },
-    }),
-    context: {
-      getRuntimeConfig: () => cfg,
-      logGateway: { warn: vi.fn() },
-    } as unknown as GatewayRequestContext,
-  });
-  return respond.mock.calls[0];
+function createRequests(profileId: string, expectedProfileId?: string, cfg: OpenClawConfig = {}) {
+  return async (action: string, params: unknown, scopes = ["operator.admin"]) => {
+    const method = `users.${action}`;
+    const respond = vi.fn();
+    await handleGatewayRequest({
+      req: {
+        type: "req",
+        id: method,
+        method,
+        params,
+        ...(expectedProfileId ? { expectedProfileId } : {}),
+      },
+      respond,
+      isWebchatConnect: () => false,
+      client: authorizationClient("channel-identity-test", scopes, {
+        authenticatedUserId: "admin@example.test",
+        authenticatedUserProfile: {
+          profileId,
+          displayName: "Admin",
+          hasAvatar: false,
+          updatedAt: 1,
+        },
+      }),
+      context: {
+        getRuntimeConfig: () => cfg,
+        logGateway: { warn: vi.fn() },
+      } as unknown as GatewayRequestContext,
+    });
+    return respond.mock.calls[0];
+  };
 }
 
 it.each(["person", "shared owner"] as const)(
@@ -78,19 +79,14 @@ it.each(["person", "shared owner"] as const)(
         },
       };
       const link = { profileId: person.id, identity };
-      const request = (method: string, params: unknown, scopes = ["operator.admin"]) =>
-        dispatch(`users.${method}`, params, scopes, admin.id, admin.id, cfg);
+      const request = createRequests(admin.id, admin.id, cfg);
+      const email = { email: "secondary@example.test", targetProfileId: person.id };
       const operations = [
         ["linkChannelIdentity", link, validLink, link],
         ["listChannelIdentities", { profileId: person.id }, validList, { links: [link] }],
         ["unlinkChannelIdentity", link, validUnlink, { removed: true }],
         ["setRole", { profileId: person.id, role: "admin" }, validRole, undefined],
-        [
-          "linkEmail",
-          { email: "secondary@example.test", targetProfileId: person.id },
-          validEmail,
-          undefined,
-        ],
+        ["linkEmail", email, validEmail, undefined],
       ] as const;
       for (const [method, params] of operations) {
         const denied = await request(method, params, ["operator.read", "operator.write"]);
@@ -125,18 +121,14 @@ it("rejects malformed or conflicting assignments without changing the saved bind
     const admin = ensureProfileForEmail("admin@example.test");
     const other = ensureProfileForEmail("other@example.test");
     const link = { profileId: admin.id, identity };
-    await dispatch("users.linkChannelIdentity", link, ["operator.admin"], admin.id);
+    const request = createRequests(admin.id);
+    await request("linkChannelIdentity", link);
     for (const params of [
       { ...link, identity: { ...identity, senderId: " " } },
       { ...link, unexpected: true },
       { ...link, profileId: other.id },
     ]) {
-      const denied = await dispatch(
-        "users.linkChannelIdentity",
-        params,
-        ["operator.admin"],
-        admin.id,
-      );
+      const denied = await request("linkChannelIdentity", params);
       expect(denied).toMatchObject([false, undefined, { code: "INVALID_REQUEST" }]);
       expect(resolveUserChannelIdentity(identity)?.profileId).toBe(admin.id);
     }
