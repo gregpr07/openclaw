@@ -142,23 +142,19 @@ async function runProof(
         import.meta.url,
       ),
     );
+  const boardName = async (store: WorkboardStore) =>
+    (await store.listBoards()).boards.find((board) => board.id === "mixed-proof")?.name;
   let workboard: WorkboardStore | undefined;
   try {
     workboard = openWorkboard();
     await workboard.ready();
-    const initialBoardName = (await workboard.listBoards()).boards.find(
-      (board) => board.id === "mixed-proof",
-    )?.name;
+    const initialBoardName = await boardName(workboard);
     await workboard.upsertBoard({ id: "mixed-proof", name: "Mixed proof" });
-    const boardName = (await workboard.listBoards()).boards.find(
-      (board) => board.id === "mixed-proof",
-    )?.name;
+    const writtenBoardName = await boardName(workboard);
     await workboard.close();
     workboard = openWorkboard();
     await workboard.ready();
-    const reopenedBoardName = (await workboard.listBoards()).boards.find(
-      (board) => board.id === "mixed-proof",
-    )?.name;
+    const reopenedBoardName = await boardName(workboard);
     await workboard.close();
     workboard = undefined;
     const result = await inspectOwners({ stateDir, selection: selection! });
@@ -166,7 +162,7 @@ async function runProof(
     return {
       ...result,
       initialBoardName,
-      boardName,
+      boardName: writtenBoardName,
       reopenedBoardName,
       requestEngines: [...requestEngines].toSorted(),
     };
@@ -176,21 +172,27 @@ async function runProof(
   }
 }
 
-it("boots the unchanged SQLite owners, captures only SQLite statements, and reopens persisted data", async () => {
-  const result = await runProof(tempDirs.make("mixed-mode-sqlite-"), "sqlite");
+async function assertBoot(mode: "sqlite" | "state-postgres" | "workboard-postgres") {
+  const result = await runProof(tempDirs.make(`mixed-mode-${mode}-`), mode);
   expect(result).toMatchObject({
-    stateEngine: "sqlite",
+    stateEngine: mode === "state-postgres" ? "postgres" : "sqlite",
     agentEngine: "sqlite",
-    workboardEngine: "sqlite",
+    workboardEngine: mode === "workboard-postgres" ? "postgres" : "sqlite",
     boardName: "Mixed proof",
     reopenedBoardName: "Mixed proof",
     stateValue: "retained",
+    requestEngines: [mode === "workboard-postgres" ? "postgres" : "sqlite"],
   });
-  expect(result.statementEngines).toEqual(["sqlite"]);
+  if (mode !== "workboard-postgres") {
+    expect(result.statementEngines).toEqual(
+      mode === "sqlite" ? ["sqlite"] : ["postgres", "sqlite"],
+    );
+  }
   expect(result.statementCount).toBeGreaterThan(0);
   expect(result.statementThreadIds.every((id) => id !== 0)).toBe(true);
-  expect(result.requestEngines).toEqual(["sqlite"]);
-});
+}
+
+it("boots SQLite owners and reopens persisted data", () => assertBoot("sqlite"));
 
 describe.skipIf(!connection)("mixed-mode boot conformance", () => {
   it("uses homogeneous overrides for lifecycle connections", async () => {
@@ -213,32 +215,10 @@ describe.skipIf(!connection)("mixed-mode boot conformance", () => {
     expect(result.rows).toEqual([{ value: 42 }]);
   });
 
-  it("boots fresh PostgreSQL state with real SQLite agent and Workboard owners", async () => {
-    const result = await runProof(tempDirs.make("mixed-mode-state-"), "state-postgres");
-    expect(result).toMatchObject({
-      stateEngine: "postgres",
-      agentEngine: "sqlite",
-      workboardEngine: "sqlite",
-      stateValue: "retained",
-      reopenedBoardName: "Mixed proof",
-    });
-    expect(result.statementEngines).toEqual(["postgres", "sqlite"]);
-    expect(result.statementThreadIds.every((id) => id !== 0)).toBe(true);
-    expect(result.requestEngines).toEqual(["sqlite"]);
-  });
-
-  it("boots fresh SQLite state with the PostgreSQL Workboard opener and preserves selection on reopen", async () => {
-    const result = await runProof(tempDirs.make("mixed-mode-workboard-"), "workboard-postgres");
-    expect(result).toMatchObject({
-      stateEngine: "sqlite",
-      agentEngine: "sqlite",
-      workboardEngine: "postgres",
-      stateValue: "retained",
-      reopenedBoardName: "Mixed proof",
-    });
-    expect(result.requestEngines).toEqual(["postgres"]);
-    expect(result.statementThreadIds.every((id) => id !== 0)).toBe(true);
-  });
+  it.each(["state-postgres", "workboard-postgres"] as const)(
+    "boots %s owners and reopens persisted data",
+    assertBoot,
+  );
 
   it("refuses an existing SQLite Workboard override with the port remedy and retains its data", async () => {
     const stateDir = tempDirs.make("mixed-mode-mismatch-");
