@@ -37,36 +37,31 @@ function buildOwners(): PluginMetadataSnapshotOwnerMaps {
   };
 }
 
+function preparedModel(owners = buildOwners()) {
+  return attachModelProviderRequestRouteFacts(
+    makeProviderModelFixture<"openai-responses">({
+      id: "gpt-5.6-luna",
+      provider: "openai",
+      api: "openai-responses",
+      baseUrl: "https://prepared.example/v1",
+    }),
+    owners,
+  );
+}
+
 describe("AI transport prepared provider routes", () => {
   it("keeps headers, capabilities, and SSRF posture on the prepared metadata generation", () => {
-    const model = attachModelProviderRequestRouteFacts(
-      makeProviderModelFixture<"openai-responses">({
-        id: "gpt-5.6-luna",
-        provider: "openai",
-        api: "openai-responses",
-        baseUrl: "https://prepared.example/v1",
-      }),
-      buildOwners(),
-    );
+    const model = preparedModel();
     const host = getAiTransportHost();
-    const headers = host.resolveProviderRequestHeaders({
-      model,
-      provider: model.provider,
-      api: model.api,
-      baseUrl: model.baseUrl,
-    });
+    const route = { model, provider: model.provider, api: model.api, baseUrl: model.baseUrl };
+    const headers = host.resolveProviderRequestHeaders(route);
     const capabilities = host.resolveProviderRequestCapabilities({
-      model,
-      provider: model.provider,
-      api: model.api,
-      baseUrl: model.baseUrl,
+      ...route,
       capability: "llm",
       transport: "stream",
     });
     const requestPolicy = resolveProviderRequestPolicyConfig({
-      provider: model.provider,
-      api: model.api,
-      baseUrl: model.baseUrl,
+      ...route,
       routeFacts: getModelProviderRequestRouteFacts(model),
       capability: "llm",
       transport: "stream",
@@ -82,15 +77,7 @@ describe("AI transport prepared provider routes", () => {
 
   it("re-resolves projected transport routes against the same metadata generation", () => {
     const owners = buildOwners();
-    const source = attachModelProviderRequestRouteFacts(
-      makeProviderModelFixture<"openai-responses">({
-        id: "gpt-5.6-luna",
-        provider: "openai",
-        api: "openai-responses",
-        baseUrl: "https://prepared.example/v1",
-      }),
-      owners,
-    );
+    const source = preparedModel(owners);
     const projected = getAiTransportHost().inheritManagedTransport(source, {
       ...source,
       baseUrl: "https://projected.example/v1",
@@ -98,8 +85,10 @@ describe("AI transport prepared provider routes", () => {
     const routeFacts = getModelProviderRequestRouteFacts(projected);
 
     expect(routeFacts?.providerMetadataOwners).toBe(owners);
-    expect(routeFacts?.capabilities.endpointClass).toBe("anthropic-public");
-    expect(routeFacts?.providerOwner).toBe("anthropic-public");
+    expect(routeFacts).toMatchObject({
+      capabilities: { endpointClass: "anthropic-public" },
+      providerOwner: "anthropic-public",
+    });
   });
 
   it("reconciles the current source before fetching with a structured-cloned projection", async () => {

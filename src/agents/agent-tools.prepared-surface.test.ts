@@ -10,26 +10,29 @@ import * as coreCodingTools from "./core-coding-tools.js";
 import { prepareCoreToolPolicy, projectAgentToolDefinition } from "./prepared-tool-surface.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const baseOptions = (openClaw = false) => ({
+  workspaceDir: tempDirs.make("prepared-surface-"),
+  wrapBeforeToolCallHook: false,
+  toolConstructionPlan: {
+    includeBaseCodingTools: !openClaw,
+    includeShellTools: !openClaw,
+    includeChannelTools: false,
+    includeOpenClawTools: openClaw,
+    includePluginTools: false,
+  },
+});
 
 it.each([false, true])(
   "preserves local definition bytes and policy for placement (deny process=%s)",
   (denyProcess) => {
     const construct = vi.spyOn(coreCodingTools, "createCoreCodingTools");
     const options = {
-      workspaceDir: tempDirs.make("prepared-surface-assembly-"),
+      ...baseOptions(),
       config: {
         tools: {
           exec: { host: "gateway" as const },
           deny: ["write", ...(denyProcess ? ["process"] : [])],
         },
-      },
-      wrapBeforeToolCallHook: false,
-      toolConstructionPlan: {
-        includeBaseCodingTools: true,
-        includeShellTools: true,
-        includeChannelTools: false,
-        includeOpenClawTools: false,
-        includePluginTools: false,
       },
     };
     try {
@@ -62,18 +65,7 @@ it.each([false, true])(
 );
 
 it("retains Gateway tools while replacing a placed session tool's schema and execution", async () => {
-  const options = {
-    workspaceDir: tempDirs.make("prepared-surface-gateway-"),
-    config: {},
-    wrapBeforeToolCallHook: false,
-    toolConstructionPlan: {
-      includeBaseCodingTools: false,
-      includeShellTools: false,
-      includeChannelTools: false,
-      includeOpenClawTools: true,
-      includePluginTools: false,
-    },
-  };
+  const options = { ...baseOptions(true), config: {} };
   const result = { content: [], details: { childSessionKey: "placed-child" } };
   const execute = vi.fn<AnyAgentTool["execute"]>().mockResolvedValue(result);
   const adapter: AnyAgentTool = {

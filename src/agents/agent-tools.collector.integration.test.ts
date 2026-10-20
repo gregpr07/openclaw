@@ -68,6 +68,11 @@ it.each([{ toolsAllow: undefined }, { toolsAllow: [] }])(
     });
     const tools = applyEmbeddedAttemptToolsAllow(constructedTools, context.runtimeToolAllowlist);
     const names = tools.map((tool) => tool.name);
+    const find = (name: string) =>
+      expectDefined(
+        tools.find((tool) => tool.name === name),
+        name,
+      );
     if (toolsAllow) {
       expect(names.toSorted()).toEqual([...toolsAllow, "structured_output"].toSorted());
     }
@@ -78,19 +83,11 @@ it.each([{ toolsAllow: undefined }, { toolsAllow: [] }])(
       expect(names).toEqual(
         expect.arrayContaining(["read", "write", "edit", "apply_patch", "exec", "process"]),
       );
-      const write = expectDefined(
-        tools.find((tool) => tool.name === "write"),
-        "workspace write",
-      );
-      await write.execute("collector-write", {
+      await find("write").execute("collector-write", {
         path: "result.txt",
         content: "collector file proof",
       });
-      const read = expectDefined(
-        tools.find((tool) => tool.name === "read"),
-        "workspace read",
-      );
-      const result = await read.execute("collector-read", { path: "result.txt" });
+      const result = await find("read").execute("collector-read", { path: "result.txt" });
       expect(result.content).toContainEqual(
         expect.objectContaining({
           type: "text",
@@ -98,10 +95,7 @@ it.each([{ toolsAllow: undefined }, { toolsAllow: [] }])(
         }),
       );
     }
-    const output = expectDefined(
-      tools.find((tool) => tool.name === "structured_output"),
-      "collector output transport",
-    );
+    const output = find("structured_output");
     expect(output.catalogMode).toBe("direct-only");
     const result = await output.execute("collector-result", { result: { answer: "ok" } });
     expect(result.details).toEqual({ status: "recorded" });

@@ -46,21 +46,23 @@ function context(dedicated: boolean, attached: boolean, locked = false) {
   );
 }
 
-async function tools(
+async function portalTool(
   builder: "agent" | "gateway" | "http",
   cfg: OpenClawConfig = { tools: { profile: "coding" } },
   senderIsOwner = false,
 ) {
-  return builder === "agent"
-    ? createOpenClawCodingTools({ ...identity, config: cfg, senderIsOwner })
-    : (
-        await resolveGatewayScopedTools({
-          ...identity,
-          cfg,
-          senderIsOwner,
-          surface: builder === "http" ? "http" : "loopback",
-        })
-      ).tools;
+  const tools =
+    builder === "agent"
+      ? createOpenClawCodingTools({ ...identity, config: cfg, senderIsOwner })
+      : (
+          await resolveGatewayScopedTools({
+            ...identity,
+            cfg,
+            senderIsOwner,
+            surface: builder === "http" ? "http" : "loopback",
+          })
+        ).tools;
+  return tools.find((tool) => tool.name === "portal");
 }
 
 describe("attached conversation portal tool availability", () => {
@@ -79,14 +81,9 @@ describe("attached conversation portal tool availability", () => {
       await withPluginRuntimeGatewayContextResolver(
         () => ctx,
         async () => {
-          const portal = (await tools(builder, undefined, owner)).find(
-            (tool) => tool.name === "portal",
-          );
-          // Non-owner turns keep the owner's portal definition so the prompt prefix stays
-          // stable; the captured target or the owner gate applies when the call runs.
-          const ownerPortal = (await tools(builder, undefined, true)).find(
-            (tool) => tool.name === "portal",
-          );
+          const portal = await portalTool(builder, undefined, owner);
+          // Keep the owner's definition stable; gate authority at execution.
+          const ownerPortal = await portalTool(builder, undefined, true);
           if (access === "scoped") {
             expect(portal).toBeDefined();
             expect(portal?.parameters).toEqual(ownerPortal?.parameters);
@@ -95,10 +92,8 @@ describe("attached conversation portal tool availability", () => {
               portal!.execute("host", { action: "open", port: 3000, environmentId: "other" }),
             ).rejects.toThrow("bound");
             expect(
-              (await tools(builder, { tools: { profile: "coding", deny: ["portal"] } })).some(
-                (tool) => tool.name === "portal",
-              ),
-            ).toBe(false);
+              await portalTool(builder, { tools: { profile: "coding", deny: ["portal"] } }),
+            ).toBeUndefined();
           } else if (access === "global") {
             expect(portal?.parameters).toHaveProperty("properties.environmentId");
           } else if (access === "refused") {
@@ -110,9 +105,7 @@ describe("attached conversation portal tool availability", () => {
             expect(portal).toBeUndefined();
           }
           if (locked) {
-            expect(
-              (await tools(builder, undefined, true)).some((tool) => tool.name === "portal"),
-            ).toBe(true);
+            expect(ownerPortal).toBeDefined();
           }
         },
       );
