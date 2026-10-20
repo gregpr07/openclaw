@@ -48,46 +48,39 @@ describe("automatic media selection", () => {
     const cfg: OpenClawConfig = {
       agents: { defaults: { imageModel: { primary: "openrouter/google/gemini-2.5-flash" } } },
     };
-    await selection.discover.withImplementation(
-      () => {
-        throw new Error("fallback provider discovery unavailable");
-      },
-      async () => {
-        await expect(
-          resolveAutoImageModel({ cfg, activeModel: { provider: "openai", model: "gpt-4.1" } }),
-        ).resolves.toEqual({ provider: "openrouter", model: "google/gemini-2.5-flash" });
-      },
-    );
+    selection.discover.mockImplementation(() => {
+      throw new Error("fallback provider discovery unavailable");
+    });
+    await expect(
+      resolveAutoImageModel({ cfg, activeModel: { provider: "openai", model: "gpt-4.1" } }),
+    ).resolves.toEqual({ provider: "openrouter", model: "google/gemini-2.5-flash" });
   });
 
   it.each(["manifest", "config"] as const)(
     "auto-selects hookless image providers from %s",
     async (source) => {
       const provider = "selection-image";
-      const cfg: OpenClawConfig =
-        source === "config"
-          ? {
-              models: {
-                providers: {
-                  [provider]: {
-                    baseUrl: "https://image.example/v1",
-                    models: [
-                      {
-                        id: "vision",
-                        name: "Vision",
-                        reasoning: false,
-                        input: ["text", "image"],
-                        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                        contextWindow: 8192,
-                        maxTokens: 128,
-                      },
-                    ],
-                  },
+      const cfg: OpenClawConfig = {};
+      if (source === "config") {
+        cfg.models = {
+          providers: {
+            [provider]: {
+              baseUrl: "https://image.example/v1",
+              models: [
+                {
+                  id: "vision",
+                  name: "Vision",
+                  reasoning: false,
+                  input: ["text", "image"],
+                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                  contextWindow: 8192,
+                  maxTokens: 128,
                 },
-              },
-            }
-          : {};
-      if (source === "manifest") {
+              ],
+            },
+          },
+        };
+      } else {
         selection.providers.push({
           id: provider,
           capabilities: ["image"],

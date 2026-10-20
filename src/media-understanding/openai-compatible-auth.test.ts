@@ -11,6 +11,16 @@ import type { AudioTranscriptionRequest } from "./types.js";
 
 installPinnedHostnameTestHooks();
 
+const noAuth = { kind: "none", source: "local provider" } as const;
+const typedAuth = { kind: "api-key", apiKey: "typed-key" } as const;
+const bearerRequest = { auth: { mode: "authorization-bearer", token: "request-key" } } as const;
+type AuthCase = [
+  name: string,
+  request: Partial<Pick<AudioTranscriptionRequest, "apiKey" | "auth" | "headers" | "request">>,
+  authorization: string | null,
+  customHeader?: string,
+];
+
 describe.each([
   { capability: "audio", send: transcribeOpenAiCompatibleAudio, errorLabel: "Audio transcription" },
   {
@@ -30,71 +40,40 @@ describe.each([
     defaultPrompt: "Describe the media.",
     providerLabel: "Local media",
   };
-  it.each<{
-    name: string;
-    request: Partial<Pick<AudioTranscriptionRequest, "apiKey" | "auth" | "headers" | "request">>;
-    authorization: string | null;
-    customHeader?: string;
-  }>([
-    {
-      name: "explicit no-auth suppresses the legacy marker",
-      request: {
-        apiKey: CUSTOM_LOCAL_AUTH_MARKER,
-        auth: { kind: "none", source: "local provider" },
-      },
-      authorization: null,
-    },
-    {
-      name: "typed API key takes precedence over the legacy key",
-      request: { auth: { kind: "api-key", apiKey: "typed-key" } },
-      authorization: "Bearer typed-key",
-    },
-    {
-      name: "legacy API key remains supported",
-      request: {},
-      authorization: "Bearer legacy-key",
-    },
-    {
-      name: "empty legacy API key omits the bearer header",
-      request: { apiKey: "" },
-      authorization: null,
-    },
-    {
-      name: "caller headers override provider auth and request overrides",
-      request: {
-        auth: { kind: "none", source: "local provider" },
+  it.each<AuthCase>([
+    ["no-auth suppresses the marker", { apiKey: CUSTOM_LOCAL_AUTH_MARKER, auth: noAuth }, null],
+    ["typed key overrides legacy key", { auth: typedAuth }, "Bearer typed-key"],
+    ["legacy key", {}, "Bearer legacy-key"],
+    ["empty legacy key", { apiKey: "" }, null],
+    [
+      "caller headers override provider and request auth",
+      {
+        auth: noAuth,
         headers: { Authorization: "Bearer caller-key" },
-        request: { auth: { mode: "authorization-bearer", token: "request-key" } },
+        request: bearerRequest,
       },
-      authorization: "Bearer caller-key",
-    },
-    {
-      name: "configured bearer overrides provider no-auth",
-      request: {
-        auth: { kind: "none", source: "local provider" },
-        request: { auth: { mode: "authorization-bearer", token: "request-key" } },
-      },
-      authorization: "Bearer request-key",
-    },
-    {
-      name: "configured custom auth replaces the provider bearer header",
-      request: {
-        auth: { kind: "api-key", apiKey: "typed-key" },
+      "Bearer caller-key",
+    ],
+    [
+      "request bearer overrides no-auth",
+      { auth: noAuth, request: bearerRequest },
+      "Bearer request-key",
+    ],
+    [
+      "custom auth replaces provider bearer",
+      {
+        auth: typedAuth,
         request: { auth: { mode: "header", headerName: "X-Custom-Key", value: "custom-key" } },
       },
-      authorization: null,
-      customHeader: "custom-key",
-    },
-  ])("$name", async ({ request, authorization, customHeader }) => {
+      null,
+      "custom-key",
+    ],
+  ])("%s", async (_name, request, authorization, customHeader) => {
     const { fetchFn, getRequest } = createRequestCaptureJsonFetch({
       text: "ok",
       choices: [{ message: { content: "ok" } }],
     });
-    const result = await send({
-      ...defaults,
-      fetchFn,
-      ...request,
-    });
+    const result = await send({ ...defaults, fetchFn, ...request });
 
     expect(result.text).toBe("ok");
     const headers = new Headers(getRequest().init?.headers);

@@ -1,12 +1,10 @@
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthProfileStore } from "../agents/auth-profiles/types.js";
 import { CUSTOM_LOCAL_AUTH_MARKER } from "../agents/model-auth-markers.js";
 import type { OpenClawConfig } from "../config/types.js";
 import type { ModelProviderConfig } from "../config/types.models.js";
 import type { MediaUnderstandingModelConfig } from "../config/types.tools.js";
+import { withTestDir } from "../test-helpers/temp-dir.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { buildProviderRegistry, runCapability } from "./runner.js";
 import { withAudioFixture } from "./runner.test-utils.js";
@@ -27,16 +25,15 @@ vi.mock("../agents/model-auth.js", async (importOriginal) => {
   return {
     ...actual,
     resolveApiKeyForProviderCore: async (
-      ...args: Parameters<typeof actual.resolveApiKeyForProviderCore>
+      params: Parameters<typeof actual.resolveApiKeyForProviderCore>[0],
     ) => {
       if (modelAuthTestControl.forceMissingProvider) {
         throw new actual.ProviderAuthError(
           "missing-provider-auth",
-          args[0].provider,
-          `No API key found for provider "${args[0].provider}".`,
+          params.provider,
+          `No API key found for provider "${params.provider}".`,
         );
       }
-      const [params] = args;
       return await actual.resolveApiKeyForProviderCore({
         ...params,
         store: modelAuthTestControl.store ?? params.store,
@@ -61,7 +58,7 @@ const AUTH_ENV = {
   LOCAL_AUDIO_API_KEY: undefined,
   REMOTE_AUDIO_API_KEY: undefined,
   OPENCLAW_AGENT_DIR: undefined,
-} satisfies Record<string, string | undefined>;
+};
 
 beforeEach(() => {
   modelAuthTestControl.forceMissingProvider = false;
@@ -76,7 +73,6 @@ type AudioCase = {
   providerConfig?: ModelProviderConfig;
   entry?: Partial<MediaUnderstandingModelConfig>;
   resolveAuth?: MediaUnderstandingProvider["resolveAuth"];
-  env?: Record<string, string | undefined>;
 };
 
 const noAuth = () => ({ kind: "none" as const, source: "media plugin no-auth" });
@@ -99,9 +95,8 @@ async function withAudioCase(
       },
     },
   };
-  const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-local-audio-auth-"));
-  try {
-    await withEnvAsync(params.env ?? AUTH_ENV, async () => {
+  await withTestDir({ prefix: "openclaw-local-audio-auth-" }, async (agentDir) => {
+    await withEnvAsync(AUTH_ENV, async () => {
       await withAudioFixture("openclaw-audio-auth", async ({ ctx, media, cache }) => {
         const result = await runCapability({
           capability: "audio",
@@ -125,9 +120,7 @@ async function withAudioCase(
         check(result, requests);
       });
     });
-  } finally {
-    await fs.rm(agentDir, { recursive: true, force: true });
-  }
+  });
 }
 
 function expectAuthenticated(

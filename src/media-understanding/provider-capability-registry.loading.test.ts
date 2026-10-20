@@ -12,6 +12,14 @@ import { createColdPluginFixture } from "../plugins/test-helpers/cold-plugin-fix
 import { buildMediaUnderstandingCapabilityRegistry } from "./provider-capability-registry.js";
 
 let root: string;
+type LoadingCase = [
+  name: string,
+  active: boolean,
+  providerId: string,
+  configuredId?: string,
+  imageFallback?: boolean,
+  taggedPeers?: boolean,
+];
 
 async function resetFixtureState() {
   resetPluginRuntimeStateForTest();
@@ -59,56 +67,31 @@ describe("media capability inference owner loading", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  it.each([
-    {
-      name: "direct active provider",
-      active: true,
-      providerId: "qa-audio",
-      configuredId: "qa-audio",
-      imageFallback: false,
-    },
-    {
-      name: "cold runtime-only provider",
-      active: false,
-      providerId: "qa-audio",
-      configuredId: "qa-audio",
-      imageFallback: false,
-    },
-    {
-      name: "normalized media alias",
-      active: true,
-      providerId: "google",
-      configuredId: " GEMINI ",
-      imageFallback: false,
-    },
-    {
-      name: "plugin capability ahead of config image fallback",
-      active: true,
-      providerId: "qa-audio",
-      configuredId: "qa-audio",
-      imageFallback: true,
-    },
-    {
-      name: "provider alongside explicitly tagged shared models",
-      active: true,
-      providerId: "qa-audio",
-      configuredId: "qa-audio",
-      imageFallback: false,
-      taggedPeers: true,
-    },
+  it.each<LoadingCase>([
+    ["direct active provider", true, "qa-audio"],
+    ["cold runtime-only provider", false, "qa-audio"],
+    ["normalized media alias", true, "google", " GEMINI "],
+    ["plugin capability ahead of config image fallback", true, "qa-audio", undefined, true],
+    ["provider alongside tagged peers", true, "qa-audio", undefined, false, true],
   ])(
-    "infers a $name without importing unrelated owners",
-    ({ active, providerId, configuredId, imageFallback, taggedPeers }) => {
+    "infers a %s without importing unrelated owners",
+    (
+      _name,
+      active,
+      providerId,
+      configuredId = providerId,
+      imageFallback = false,
+      taggedPeers = false,
+    ) => {
       const selected = createMediaOwner("qa-selected-owner", providerId);
       const unrelated = createMediaOwner("qa-unrelated-owner", "qa-unrelated");
       const config: OpenClawConfig = {
         plugins: {
           allow: [selected.pluginId, unrelated.pluginId],
           load: { paths: [selected.rootDir, unrelated.rootDir] },
-          entries: {
-            [selected.pluginId]: { enabled: true },
-            [unrelated.pluginId]: { enabled: true },
-          },
+          entries: Object.fromEntries(
+            [selected, unrelated].map(({ pluginId }) => [pluginId, { enabled: true }]),
+          ),
         },
         tools: {
           media: {

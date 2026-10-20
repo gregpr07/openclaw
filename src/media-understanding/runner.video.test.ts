@@ -91,24 +91,30 @@ async function runVideo(
   return expectDefined(result, "video result");
 }
 
+async function runNativeVideo(ctx: Parameters<typeof normalizeMediaAttachments>[0]) {
+  const media = normalizeMediaAttachments(ctx);
+  const cache = createMediaAttachmentCache(media);
+  try {
+    return await runCapability({
+      capability: "video",
+      cfg: nativeVideoConfig(),
+      ctx,
+      attachments: cache,
+      media,
+      providerRegistry: new Map(),
+      activeModel: { provider: "lmstudio", model: "video-model" },
+    });
+  } finally {
+    await cache.cleanup();
+  }
+}
+
 describe("runCapability video", () => {
   it.each([
-    {
-      name: "hands configured completions video to the active model",
-      cfg: nativeVideoConfig(),
-      kind: "handed-to-native-vision",
-    },
-    {
-      name: "does not hand video to a text-only completions model",
-      cfg: nativeVideoConfig(["text"]),
-      kind: "no-model",
-    },
-    {
-      name: "does not hand video to a model using another API",
-      cfg: nativeVideoConfig(["text", "video"], "openai-responses"),
-      kind: "no-model",
-    },
-  ])("$name", async ({ cfg, kind }) => {
+    ["configured video", nativeVideoConfig(), "handed-to-native-vision"],
+    ["text-only model", nativeVideoConfig(["text"]), "no-model"],
+    ["another API", nativeVideoConfig(["text", "video"], "openai-responses"), "no-model"],
+  ] as const)("native video handoff: %s", async (_name, cfg, kind) => {
     const result = await runVideo({ id: "lmstudio" }, cfg, {
       provider: "lmstudio",
       model: "video-model",
@@ -136,52 +142,23 @@ describe("runCapability video", () => {
     await withVideoFixture("openclaw-video-first", async (first) => {
       await withVideoFixture("openclaw-video-second", async (second) => {
         const ctx = { media: [...first.ctx.media, ...second.ctx.media] };
-        const media = normalizeMediaAttachments(ctx);
-        const cache = createMediaAttachmentCache(media);
-        try {
-          const result = await runCapability({
-            capability: "video",
-            cfg: nativeVideoConfig(),
-            ctx,
-            attachments: cache,
-            media,
-            providerRegistry: new Map(),
-            activeModel: { provider: "lmstudio", model: "video-model" },
-          });
-          expect(result.decision.attachmentDispositions).toEqual({
-            0: { kind: "handed-to-native-vision" },
-            1: { kind: "handed-to-native-vision" },
-          });
-        } finally {
-          await cache.cleanup();
-        }
+        const result = await runNativeVideo(ctx);
+        expect(result.decision.attachmentDispositions).toEqual({
+          0: { kind: "handed-to-native-vision" },
+          1: { kind: "handed-to-native-vision" },
+        });
       });
     });
   });
 
   it("does not claim native handoff for a remote video URL", async () => {
-    const ctx = {
+    const result = await runNativeVideo({
       media: [{ url: "https://cdn.example.test/video.mp4", contentType: "video/mp4" }],
-    };
-    const media = normalizeMediaAttachments(ctx);
-    const cache = createMediaAttachmentCache(media);
-    try {
-      const result = await runCapability({
-        capability: "video",
-        cfg: nativeVideoConfig(),
-        ctx,
-        attachments: cache,
-        media,
-        providerRegistry: new Map(),
-        activeModel: { provider: "lmstudio", model: "video-model" },
-      });
-      expect(result.decision.attachmentDispositions).toEqual({
-        0: { kind: "failed", reason: "remote-url video is not natively deliverable" },
-      });
-      expect(result.decision.attachments).toEqual([{ attachmentIndex: 0, attempts: [] }]);
-    } finally {
-      await cache.cleanup();
-    }
+    });
+    expect(result.decision.attachmentDispositions).toEqual({
+      0: { kind: "failed", reason: "remote-url video is not natively deliverable" },
+    });
+    expect(result.decision.attachments).toEqual([{ attachmentIndex: 0, attempts: [] }]);
   });
 
   it("truncates provider output without splitting a boundary emoji", async () => {
