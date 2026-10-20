@@ -8,26 +8,31 @@ import { resumeStoredChatOutboxes } from "./chat-send-actions.ts";
 import { handleSendChat } from "./chat-send-submit.ts";
 import { useChatSendBrowserFixture } from "./outbox-browser.test-support.ts";
 useChatSendBrowserFixture();
-it("retains foreground attachment custody when history settles during the input handoff", async () => {
+const historyRow = (
+  key: string,
+  activeLeafEntryId: string,
+  active = false,
+): NonNullable<ChatHistoryResult["sessionInfo"]> => ({
+  key,
+  activeLeafEntryId,
+  kind: "direct" as const,
+  updatedAt: 1,
+  sessionId: "current-session",
+  hasActiveRun: active,
+  status: active ? "running" : "done",
+  ...(active ? { activeRunIds: ["active-run"] } : {}),
+});
+it("holds attachments across history settlement", async () => {
   const history = createDeferred<ChatHistoryResult>();
   const result: ChatHistoryResult = {
     messages: [],
     sessionId: "current-session",
-    sessionInfo: {
-      key: "agent:main:main",
-      kind: "direct",
-      updatedAt: 1,
-      sessionId: "current-session",
-      activeLeafEntryId: "held-enter-terminal",
-      hasActiveRun: false,
-      status: "done",
-    },
+    sessionInfo: historyRow("agent:main:main", "held-enter-terminal"),
   };
   const host = makeChatHost({
     sessionKey: "agent:main:main",
     currentSessionId: "current-session",
     chatDisplayedLeafEntryId: "previous-leaf",
-    chatMessage: "",
     chatAttachments: [
       {
         id: "file",
@@ -62,8 +67,7 @@ it("retains foreground attachment custody when history settles during the input 
       resumeStoredChatOutboxes(host),
       resumeStoredChatOutboxes({ ...host, chatQueue: [] }),
     ]);
-    // Main now retains this admission in the shared outbox owner. Neither
-    // history settlement nor a passive drain may deliver before input resumes.
+    // Neither history nor passive drains may deliver before input resumes.
     expect(requestCalls(host.request, "chat.send")).toHaveLength(0);
   } finally {
     history.resolve(result);
@@ -82,23 +86,14 @@ it("retains foreground attachment custody when history settles during the input 
 });
 
 it.each([false, true])(
-  "delivers steering across superseded history (refresh before send: %s)",
+  "steers after superseded history (refresh first: %s)",
   async (refreshBeforeSend) => {
     const history = createDeferred<ChatHistoryResult>();
     const admitted = createDeferred();
     const sessionKey = "agent:main:history-steer";
     const result: ChatHistoryResult = {
       messages: [],
-      sessionInfo: {
-        key: sessionKey,
-        kind: "direct",
-        updatedAt: 1,
-        sessionId: "current-session",
-        activeLeafEntryId: "active-leaf",
-        hasActiveRun: true,
-        status: "running",
-        activeRunIds: ["active-run"],
-      },
+      sessionInfo: historyRow(sessionKey, "active-leaf", true),
     };
     let reads = 0;
     const host = makeChatHost({
@@ -132,14 +127,16 @@ it.each([false, true])(
       });
       await Promise.all([loading, refresh, sending]);
       expect(reads).toBe(2);
-      expect(host.chatDisplayedLeafEntryId).toBe("active-leaf");
+      expect(host).toMatchObject({
+        chatDisplayedLeafEntryId: "active-leaf",
+        chatRunId: "active-run",
+      });
       expect(requestCalls(host.request, "chat.send")).toHaveLength(1);
       expect(findChatSendPayload(host)).toMatchObject({
         sessionKey,
         message: "Correct the active reply",
         queueMode: "steer",
       });
-      expect(host.chatRunId).toBe("active-run");
     } finally {
       history.resolve(result);
       await Promise.all([loading, refresh, sending]);

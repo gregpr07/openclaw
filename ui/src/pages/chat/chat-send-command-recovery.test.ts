@@ -29,116 +29,97 @@ describe.each(["steer", "redirect"] as const)("handleSendChat /%s recovery", (co
   const commandHost = (response: unknown, overrides: Parameters<typeof makeChatHost>[0] = {}) =>
     makeChatHost({ chatMessage: draft, requestHandlers: { "chat.send": response }, ...overrides });
 
-  it.each(["timeout", "error", "rejected"] as const)(
-    "restores submitted input after the %s acknowledgment",
-    async (outcome) => {
-      const attachment = createStagedAttachment(`${command}-${outcome}`);
+  it.each(["timeout", "error", "rejected", "started", "in_flight", "ok"] as const)(
+    "settles a %s command ACK",
+    async (status) => {
+      const failed = ["timeout", "error", "rejected"].includes(status);
+      const attachment = createStagedAttachment(`${command}-${status}`);
       const host = commandHost(
         () => {
-          if (outcome === "rejected") {
+          if (status === "rejected") {
             throw new GatewayRequestError({ code: "UNAVAILABLE", message: "Request rejected" });
           }
-          return { runId: "command-run", status: outcome };
+          return { runId: "command-run", status };
         },
-        { chatAttachments: [attachment] },
+        { chatAttachments: [attachment], ...(failed ? {} : { chatRunId: "active-run" }) },
       );
-
       await handleSendChat(host);
-
       expect(findChatSendPayload(host)).toMatchObject({
         message: "keep the correction available",
         queueMode: command === "steer" ? "steer" : "interrupt",
         attachments: sentAttachments,
       });
-      expect(host.chatMessage).toBe(draft);
-      expect(host.chatAttachments).toEqual([expect.objectContaining({ id: attachment.id })]);
-      expect(getChatAttachmentDataUrl(host.chatAttachments[0]!)).toBe(attachmentDataUrl);
-      expect(host.chatError).toBeTruthy();
-      expect(host.chatQueue).toEqual([]);
+      expect(host).toMatchObject({
+        chatMessage: failed ? draft : "",
+        chatAttachments: failed ? [{ id: attachment.id }] : [],
+      });
+      expect(getChatAttachmentDataUrl(failed ? host.chatAttachments[0]! : attachment)).toBe(
+        failed ? attachmentDataUrl : null,
+      );
+      if (failed) {
+        expect(host.chatQueue).toEqual([]);
+        expect(host.chatError).toBeTruthy();
+      } else {
+        expect(host.chatRunId).toBe(
+          command === "redirect" && status !== "ok" ? "command-run" : "active-run",
+        );
+        expect(host.chatComposerFallbackByScope).toEqual({});
+        expect(host.chatError).toBeFalsy();
+      }
     },
   );
 
-  it.each(["started", "in_flight", "ok"] as const)(
-    "retires the submitted draft after a successful %s acknowledgment",
-    async (status) => {
-      const attachment = createStagedAttachment(`${command}-${status}`);
+  it.each([false, true])(
+    "keeps newer input after a failed command (navigated: %s)",
+    async (navigated) => {
+      const acknowledgment = createDeferred<{ runId: string; status: "timeout" }>();
+      const attachment = createStagedAttachment(
+        `${command}-${navigated ? "submitted-session" : "newer"}`,
+      );
       const host = commandHost(
-        { runId: "command-run", status },
-        {
-          chatAttachments: [attachment],
-          chatRunId: "active-run",
-        },
+        () => acknowledgment.promise,
+        navigated ? { sessionKey: "agent:main:first", chatAttachments: [attachment] } : {},
+      );
+      const submittedScopeKey = storedChatOutboxScopeKey(
+        captureChatOutboxAdmission(host, host.sessionKey).scope,
       );
 
-      await handleSendChat(host);
+      const send = handleSendChat(host);
+      await vi.waitFor(() => expect(findChatSendPayload(host)).toBeDefined());
+      if (navigated) {
+        host.sessionKey = "agent:main:second";
+        host.chatMessage = "Second session draft";
+        host.chatError = "Second session error";
+      } else {
+        host.chatMessage = "Newer operator draft";
+        host.chatAttachments = [attachment];
+      }
+      acknowledgment.resolve({ runId: "command-run", status: "timeout" });
+      await send;
 
-      expect(host.chatMessage).toBe("");
-      expect(findChatSendPayload(host)).toMatchObject({ attachments: sentAttachments });
-      expect(host.chatAttachments).toEqual([]);
-      expect(getChatAttachmentDataUrl(attachment)).toBeNull();
-      expect(host.chatComposerFallbackByScope).toEqual({});
-      expect(host.chatError).toBeFalsy();
-      expect(host.chatRunId).toBe(
-        command === "redirect" && status !== "ok" ? "command-run" : "active-run",
-      );
+      if (navigated) {
+        expect(host).toMatchObject({
+          chatMessage: "Second session draft",
+          chatError: "Second session error",
+        });
+        const fallbacks = Object.entries(host.chatComposerFallbackByScope);
+        expect(fallbacks).toHaveLength(1);
+        const [scopeKey, fallback] = fallbacks[0]!;
+        expect(scopeKey).toBe(submittedScopeKey);
+        expect(fallback.message).toBe(draft);
+        expect(getChatAttachmentDataUrl(fallback.attachments[0]!)).toBe(attachmentDataUrl);
+      } else {
+        expect(host.chatMessage).toBe("Newer operator draft");
+        expect(host.chatAttachments).toEqual([attachment]);
+        expect(getChatAttachmentDataUrl(attachment)).toBe(attachmentDataUrl);
+      }
     },
   );
-
-  it("does not restore a failed command over a newer draft", async () => {
-    const acknowledgment = createDeferred<{ runId: string; status: "timeout" }>();
-    const newerAttachment = createStagedAttachment(`${command}-newer`);
-    const host = commandHost(() => acknowledgment.promise);
-
-    const send = handleSendChat(host);
-    await vi.waitFor(() => expect(findChatSendPayload(host)).toBeDefined());
-    host.chatMessage = "Newer operator draft";
-    host.chatAttachments = [newerAttachment];
-    acknowledgment.resolve({ runId: "command-run", status: "timeout" });
-    await send;
-
-    expect(host.chatMessage).toBe("Newer operator draft");
-    expect(host.chatAttachments).toEqual([newerAttachment]);
-    expect(getChatAttachmentDataUrl(newerAttachment)).toBe(attachmentDataUrl);
-  });
-
-  it("retains a failed command in its submitted session after navigation", async () => {
-    const acknowledgment = createDeferred<{ runId: string; status: "timeout" }>();
-    const attachment = createStagedAttachment(`${command}-submitted-session`);
-    const host = commandHost(() => acknowledgment.promise, {
-      sessionKey: "agent:main:first",
-      chatAttachments: [attachment],
-    });
-    const submittedScopeKey = storedChatOutboxScopeKey(
-      captureChatOutboxAdmission(host, host.sessionKey).scope,
-    );
-
-    const send = handleSendChat(host);
-    await vi.waitFor(() => expect(findChatSendPayload(host)).toBeDefined());
-    host.sessionKey = "agent:main:second";
-    host.chatMessage = "Second session draft";
-    host.chatError = "Second session error";
-    acknowledgment.resolve({ runId: "command-run", status: "timeout" });
-    await send;
-
-    expect(host.chatMessage).toBe("Second session draft");
-    expect(host.chatError).toBe("Second session error");
-    const fallbacks = Object.entries(host.chatComposerFallbackByScope);
-    expect(fallbacks).toHaveLength(1);
-    const [scopeKey, fallback] = fallbacks[0]!;
-    expect(scopeKey).toBe(submittedScopeKey);
-    expect(fallback.message).toBe(draft);
-    expect(getChatAttachmentDataUrl(fallback.attachments[0]!)).toBe(attachmentDataUrl);
-  });
 
   if (command === "redirect") {
-    it("does not send captured files into a conversation selected during the route wait", async () => {
+    it("does not send files after navigation", async () => {
       const attachment = createStagedAttachment("redirect-route");
-      const host = commandHost(
-        { status: "ok" },
-        {
-          chatAttachments: [attachment],
-        },
-      );
+      const host = commandHost({ status: "ok" }, { chatAttachments: [attachment] });
       const send = handleSendChat(host);
       host.sessionKey = "agent:main:other";
       await send;

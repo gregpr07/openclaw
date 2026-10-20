@@ -1,5 +1,5 @@
 /* @vitest-environment jsdom */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import {
   registerControlUiReloadGuard,
@@ -35,13 +35,12 @@ beforeEach(() => {
   recovery.toast.mockClear();
 });
 
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
+afterEach(() => vi.unstubAllGlobals());
 
 function createControllerFixture(withClient = false) {
   const controller = createChatState<ChatPageHost>({ awaitDomCommit: async () => true });
   const dispose = controller.dispose;
+  onTestFinished(dispose);
   const state = createPageState(createInitializationContext(), controller.createRenderLifecycle(), {
     dispatchEvent: () => true,
   });
@@ -52,88 +51,81 @@ function createControllerFixture(withClient = false) {
   return { state, dispose };
 }
 
-describe("queued edit page callbacks", () => {
-  it.each([
-    [conflict, conflict, null, null],
-    [conflict, storageError, null, storageError],
-    [historyError, storageError, historyError, storageError],
-  ] as const)(
-    "clears only resolved edit feedback when opening a queued editor (%s, %s)",
-    (lastError, chatError, expectedLastError, expectedChatError) => {
-      const { state, dispose } = createControllerFixture(true);
-      try {
-        const queued = enqueueChatMessage(state, "queued original")!;
-        state.chatMessage = "separate composer draft";
-        state.lastError = lastError;
-        state.chatError = chatError;
+it.each([
+  [conflict, conflict, null, null],
+  [conflict, storageError, null, storageError],
+  [historyError, storageError, historyError, storageError],
+] as const)(
+  "clears only edit feedback (%s, %s)",
+  (lastError, chatError, expectedLastError, expectedChatError) => {
+    const { state, dispose } = createControllerFixture(true);
+    const queued = enqueueChatMessage(state, "queued original")!;
+    state.chatMessage = "separate composer draft";
+    state.lastError = lastError;
+    state.chatError = chatError;
 
-        state.editQueuedChatMessage(queued.id);
+    state.editQueuedChatMessage(queued.id);
 
-        expect(state.chatQueuedEdit?.draftText).toBe("queued original");
-        expect(state.chatMessage).toBe("separate composer draft");
-        state.chatMessage = "";
-        expect(canReloadControlUiDocument()).toBe(false);
-        expect(state).toMatchObject({ lastError: expectedLastError, chatError: expectedChatError });
-      } finally {
-        dispose();
-      }
-      expect(canReloadControlUiDocument()).toBe(true);
-    },
-  );
+    expect(state.chatQueuedEdit?.draftText).toBe("queued original");
+    expect(state.chatMessage).toBe("separate composer draft");
+    state.chatMessage = "";
+    expect(canReloadControlUiDocument()).toBe(false);
+    expect(state).toMatchObject({ lastError: expectedLastError, chatError: expectedChatError });
+    dispose();
+    expect(canReloadControlUiDocument()).toBe(true);
+  },
+);
 
-  it.each(["later edit", "another reload guard", "confirmed discard", "private fallback"] as const)(
-    "keeps private-draft discard scoped during %s",
-    async (scenario) => {
-      const { state, dispose } = createControllerFixture();
-      state.sessionKey = "agent:main:dashboard:incognito-private-review";
-      state.chatMessage = "captured private text";
-      if (scenario === "private fallback") {
-        storeChatComposerMemoryFallback(
-          state,
-          { sessionKey: state.sessionKey },
-          { message: "private fallback", attachments: [] },
-        );
-        state.chatMessage = "";
-      }
-      const pending = createDeferred<boolean>();
-      recovery.review.mockReturnValue(pending.promise);
-      const reloadAllowed: boolean[] = [];
-      state.captureComposerRecoveryReload = () => async () => {
-        const allowed = canReloadControlUiDocument();
-        reloadAllowed.push(allowed);
-        return allowed;
-      };
-      const releaseOther =
-        scenario === "another reload guard"
-          ? registerControlUiReloadGuard(
-              () => false,
-              () => undefined,
-            )
-          : () => undefined;
-      try {
-        expect(canReloadControlUiDocument(true)).toBe(false);
-        recovery.toast.mock.lastCall?.[0].onAction?.();
-        expect(recovery.review).toHaveBeenCalledOnce();
-        if (scenario === "later edit") {
-          state.handleChatDraftChange("newer private edit", []);
-        }
-        pending.resolve(true);
-        await pending.promise;
-        expect(state.chatMessage).toBe(scenario === "later edit" ? "newer private edit" : "");
-        if (scenario === "private fallback") {
-          expect(state.chatComposerFallbackByScope).toEqual({});
-        }
-        expect(reloadAllowed).toEqual(
-          scenario === "later edit" ? [] : [scenario !== "another reload guard"],
-        );
-        if (scenario === "later edit") {
-          expect(recovery.toast.mock.lastCall?.[0].message).toContain("draft changed");
-        }
-      } finally {
-        releaseOther();
-        dispose();
-      }
-      expect(canReloadControlUiDocument()).toBe(true);
-    },
-  );
-});
+it.each(["later edit", "another reload guard", "confirmed discard", "private fallback"] as const)(
+  "keeps private-draft discard scoped during %s",
+  async (scenario) => {
+    const { state, dispose } = createControllerFixture();
+    state.sessionKey = "agent:main:dashboard:incognito-private-review";
+    state.chatMessage = "captured private text";
+    if (scenario === "private fallback") {
+      storeChatComposerMemoryFallback(
+        state,
+        { sessionKey: state.sessionKey },
+        { message: "private fallback", attachments: [] },
+      );
+      state.chatMessage = "";
+    }
+    const pending = createDeferred<boolean>();
+    recovery.review.mockReturnValue(pending.promise);
+    const reloadAllowed: boolean[] = [];
+    state.captureComposerRecoveryReload = () => async () => {
+      const allowed = canReloadControlUiDocument();
+      reloadAllowed.push(allowed);
+      return allowed;
+    };
+    const releaseOther =
+      scenario === "another reload guard"
+        ? registerControlUiReloadGuard(
+            () => false,
+            () => undefined,
+          )
+        : () => undefined;
+    onTestFinished(releaseOther);
+    expect(canReloadControlUiDocument(true)).toBe(false);
+    recovery.toast.mock.lastCall?.[0].onAction?.();
+    expect(recovery.review).toHaveBeenCalledOnce();
+    if (scenario === "later edit") {
+      state.handleChatDraftChange("newer private edit", []);
+    }
+    pending.resolve(true);
+    await pending.promise;
+    expect(state.chatMessage).toBe(scenario === "later edit" ? "newer private edit" : "");
+    if (scenario === "private fallback") {
+      expect(state.chatComposerFallbackByScope).toEqual({});
+    }
+    expect(reloadAllowed).toEqual(
+      scenario === "later edit" ? [] : [scenario !== "another reload guard"],
+    );
+    if (scenario === "later edit") {
+      expect(recovery.toast.mock.lastCall?.[0].message).toContain("draft changed");
+    }
+    releaseOther();
+    dispose();
+    expect(canReloadControlUiDocument()).toBe(true);
+  },
+);

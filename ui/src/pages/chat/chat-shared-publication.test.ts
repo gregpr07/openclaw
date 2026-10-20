@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 import { createComponent, flush } from "solid-js";
-import { describe, expect, it } from "vitest";
+import { expect, it } from "vitest";
 import { mountSolid } from "../../test-helpers/mount-solid.ts";
 import {
   options,
@@ -30,113 +30,105 @@ const completed = { result: published, confirmation: null };
 const publicationCalls = (request: ReturnType<typeof setup>["request"]) =>
   request.mock.calls.filter(([method]) => method === "sessions.github.publish");
 
-describe("shared publication observation", () => {
-  it("retires an obsolete shared failure when discovery confirms it is no longer actionable", async () => {
-    const failure = {
-      result: {
-        requestId,
-        publisher: shared,
-        status: "failed" as const,
-        code: "unavailable" as const,
-        message: "GitHub publication failed.",
-        nextAction: "Inspect the unpublished changes.",
-      },
-      confirmation: null,
-    };
-    const { controller, request } = setup({ ...options, latestShared: failure });
-    expect((await settled(controller)).result).toEqual(failure.result);
-    request.mockResolvedValue(options);
-    controller.view()?.onRefresh();
-    expect((await settled(controller)).result).toBeNull();
-    controller.view()?.onRefresh();
-    expect((await settled(controller)).result).toBeNull();
-    expect(request.mock.calls.every(([method]) => method === "sessions.github.options")).toBe(true);
-  });
+it("retires obsolete failures on discovery", async () => {
+  const failure = {
+    result: {
+      requestId,
+      publisher: shared,
+      status: "failed" as const,
+      code: "unavailable" as const,
+      message: "GitHub publication failed.",
+      nextAction: "Inspect the unpublished changes.",
+    },
+    confirmation: null,
+  };
+  const { controller, request } = setup({ ...options, latestShared: failure });
+  expect((await settled(controller)).result).toEqual(failure.result);
+  request.mockResolvedValue(options);
+  controller.view()?.onRefresh();
+  expect((await settled(controller)).result).toBeNull();
+  controller.view()?.onRefresh();
+  expect((await settled(controller)).result).toBeNull();
+  expect(request.mock.calls.every(([method]) => method === "sessions.github.options")).toBe(true);
+});
 
-  it("restores a terminal shared receipt after reconnect and acknowledges it without a write", async () => {
-    const { controller, request } = setup({ ...options, latestShared: completed });
-    const restored = await settled(controller);
-    expect(restored.result).toEqual(published);
-    expect(restored.onPublish).toBeUndefined();
-    restored.onNewAction?.();
-    const fresh = await settled(controller);
-    expect(fresh.result).toBeNull();
-    expect(fresh.onPublish).toBeTypeOf("function");
-    expect(publicationCalls(request)).toHaveLength(0);
-  });
+it("restores and acknowledges receipts without writing", async () => {
+  const { controller, request } = setup({ ...options, latestShared: completed });
+  const restored = await settled(controller);
+  expect(restored.result).toEqual(published);
+  expect(restored.onPublish).toBeUndefined();
+  restored.onNewAction?.();
+  const fresh = await settled(controller);
+  expect(fresh.result).toBeNull();
+  expect(fresh.onPublish).toBeTypeOf("function");
+  expect(publicationCalls(request)).toHaveLength(0);
+});
 
-  it("checks an accepted shared request by reading its receipt, never replaying publish", async () => {
-    const { controller, request } = setup();
-    await settled(controller);
-    request.mockResolvedValueOnce(accepted);
-    controller.view()?.onPublish?.();
-    await settled(controller);
-    request.mockImplementation(async (method: string) => {
-      if (method === "sessions.github.status") {
-        return completed;
-      }
-      if (method === "sessions.github.options") {
-        return options;
-      }
-      throw new Error("An observation must not execute publication");
-    });
-    const container = document.createElement("div");
-    const { unmount } = mountSolid(
-      () => createComponent(GitHubPublicationAction, { publication: controller.view()! }),
-      { container },
-    );
-    try {
-      flush();
-      container.querySelector<HTMLButtonElement>("button.chat-pr__create")!.click();
-      expect((await settled(controller)).result).toEqual(published);
-      expect(request).toHaveBeenLastCalledWith("sessions.github.status", {
-        sessionKey: "agent:main:one",
-        agentId: "main",
-        requestId,
-      });
-      expect(publicationCalls(request)).toHaveLength(1);
-    } finally {
-      unmount();
+it("checks receipts without replaying publication", async () => {
+  const { controller, request } = setup();
+  await settled(controller);
+  request.mockResolvedValueOnce(accepted);
+  controller.view()?.onPublish?.();
+  await settled(controller);
+  request.mockImplementation(async (method: string) => {
+    if (method === "sessions.github.status") {
+      return completed;
     }
+    if (method === "sessions.github.options") {
+      return options;
+    }
+    throw new Error("An observation must not execute publication");
   });
+  const { container } = mountSolid(() =>
+    createComponent(GitHubPublicationAction, { publication: controller.view()! }),
+  );
+  flush();
+  container.querySelector<HTMLButtonElement>("button.chat-pr__create")!.click();
+  expect((await settled(controller)).result).toEqual(published);
+  expect(request).toHaveBeenLastCalledWith("sessions.github.status", {
+    sessionKey: "agent:main:one",
+    agentId: "main",
+    requestId,
+  });
+  expect(publicationCalls(request)).toHaveLength(1);
+});
 
-  it("reports failed account discovery as unavailable options until a read succeeds", async () => {
-    const { controller, request } = setup();
-    await settled(controller);
-    request.mockRejectedValueOnce(new Error("GitHub publication options timed out"));
-    controller.view()?.onRefresh();
-    const failed = await settled(controller);
-    expect(failed).toMatchObject({
-      optionsUnavailable: true,
-      error: "GitHub publication options timed out",
-    });
-    controller.view()?.onRefresh();
-    const recovered = await settled(controller);
-    expect(recovered).toMatchObject({ optionsUnavailable: false, error: null });
+it("clears discovery failure after a successful read", async () => {
+  const { controller, request } = setup();
+  await settled(controller);
+  request.mockRejectedValueOnce(new Error("GitHub publication options timed out"));
+  controller.view()?.onRefresh();
+  const failed = await settled(controller);
+  expect(failed).toMatchObject({
+    optionsUnavailable: true,
+    error: "GitHub publication options timed out",
   });
+  controller.view()?.onRefresh();
+  const recovered = await settled(controller);
+  expect(recovered).toMatchObject({ optionsUnavailable: false, error: null });
+});
 
-  it("recovers an unknown shared outcome only through its exact invocation key", async () => {
-    const { controller, request } = setup();
-    await settled(controller);
-    request.mockRejectedValueOnce(new Error("The acknowledgement was lost"));
-    controller.view()?.onPublish?.();
-    const unknown = await settled(controller);
-    expect(unknown).toMatchObject({ locked: true, optionsUnavailable: false });
-    const key = request.mock.calls.at(-1)![1].idempotencyKey;
-    request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
-      if (method !== "sessions.github.options") {
-        throw new Error("Recovery must only read");
-      }
-      expect(params.idempotencyKey).toBe(key);
-      return { ...options, latestShared: completed };
-    });
-    controller.view()?.onRefresh();
-    expect((await settled(controller)).result).toEqual(published);
-    expect(request).toHaveBeenLastCalledWith("sessions.github.options", {
-      sessionKey: "agent:main:one",
-      agentId: "main",
-      idempotencyKey: key,
-    });
-    expect(publicationCalls(request)).toHaveLength(1);
+it("recovers unknown outcomes by exact invocation key", async () => {
+  const { controller, request } = setup();
+  await settled(controller);
+  request.mockRejectedValueOnce(new Error("The acknowledgement was lost"));
+  controller.view()?.onPublish?.();
+  const unknown = await settled(controller);
+  expect(unknown).toMatchObject({ locked: true, optionsUnavailable: false });
+  const key = request.mock.calls.at(-1)![1].idempotencyKey;
+  request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+    if (method !== "sessions.github.options") {
+      throw new Error("Recovery must only read");
+    }
+    expect(params.idempotencyKey).toBe(key);
+    return { ...options, latestShared: completed };
   });
+  controller.view()?.onRefresh();
+  expect((await settled(controller)).result).toEqual(published);
+  expect(request).toHaveBeenLastCalledWith("sessions.github.options", {
+    sessionKey: "agent:main:one",
+    agentId: "main",
+    idempotencyKey: key,
+  });
+  expect(publicationCalls(request)).toHaveLength(1);
 });

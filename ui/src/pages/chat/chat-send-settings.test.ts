@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { afterEach, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { SessionsListResult, SessionsPatchResult } from "../../api/types.ts";
 import {
@@ -16,6 +16,7 @@ import { switchChatModel } from "./chat-session.ts";
 import { getPendingChatPickerPatch } from "./chat-settings-patches.ts";
 
 afterEach(() => vi.unstubAllGlobals());
+beforeEach(() => vi.stubGlobal("sessionStorage", createStorageMock()));
 const mainHello = () => ({
   ...sessionMutationGatewayHello(),
   snapshot: {
@@ -26,36 +27,35 @@ const mainHello = () => ({
     },
   },
 });
+function modelHost(
+  overrides: Parameters<typeof makeChatHost>[0] & { requestHandlers: Record<string, unknown> },
+) {
+  const host = makeChatHost(overrides);
+  onTestFinished(() => host.sessions.dispose());
+  return host;
+}
 
 it("does not patch the model for a locked session", async () => {
-  const host = makeChatHost({
+  const sessionsResult = createSessionsListResult({ model: "gpt-5.5" });
+  Object.assign(sessionsResult.sessions[0]!, {
+    key: "agent:main:main",
+    modelSelectionLocked: true,
+    updatedAt: 1,
+  });
+  const host = modelHost({
     requestHandlers: {},
     sessionKey: "main",
     hello: mainHello(),
-    sessionsResult: {
-      ...createSessionsListResult(),
-      sessions: [
-        {
-          key: "agent:main:main",
-          kind: "direct",
-          model: "gpt-5.5",
-          modelProvider: "openai",
-          modelSelectionLocked: true,
-          updatedAt: 1,
-        },
-      ],
-    },
+    sessionsResult,
   });
-  onTestFinished(() => host.sessions.dispose());
 
   await expect(switchChatModel(host, "openai/gpt-5.4")).resolves.toBe(false);
   expect(host.request).not.toHaveBeenCalled();
 });
 
-it("dispatches a fresh-pane send without waiting for background roster loading", async () => {
-  vi.stubGlobal("sessionStorage", createStorageMock());
+it("sends without waiting for the background roster", async () => {
   const roster = createDeferred<SessionsListResult>();
-  const host = makeChatHost({
+  const host = modelHost({
     requestHandlers: {
       "sessions.list": () => roster.promise,
       "chat.send": { status: "started" },
@@ -75,14 +75,12 @@ it("dispatches a fresh-pane send without waiting for background roster loading",
   } finally {
     roster.resolve(createSessionsListResult());
     await refresh;
-    host.sessions.dispose();
   }
 });
 
 it.each(["success", "failure"] as const)(
-  "settles picker reconciliation on its own %s while a later roster refresh remains pending",
+  "settles picker %s before a later roster refresh",
   async (outcome) => {
-    vi.stubGlobal("sessionStorage", createStorageMock());
     const patch = createDeferred<SessionsPatchResult>();
     const reconciliation = createDeferred<SessionsListResult>();
     const unrelated = createDeferred<SessionsListResult>();
@@ -96,7 +94,7 @@ it.each(["success", "failure"] as const)(
       modelOverrideSource: "user",
     });
     let lists = 0;
-    const host = makeChatHost({
+    const host = modelHost({
       sessionKey: "main",
       hello: mainHello(),
       requestHandlers: {
@@ -118,8 +116,7 @@ it.each(["success", "failure"] as const)(
       expect(host.request.mock.calls.some(([method]) => method === "chat.send")).toBe(false);
       patch.resolve(createResolvedModelPatch("gpt-5.6-luna", "openai"));
       await waitForFast(() => expect(lists).toBe(2));
-      // This refresh was requested after the picker's own reconciliation began.
-      // Its lifetime must not extend the settings barrier seen by delivery.
+      // A later roster read must not extend the picker's delivery barrier.
       later = host.sessions.refresh({ force: true, backgroundHydrate: true });
       if (outcome === "failure") {
         reconciliation.reject(new Error("Roster refresh unavailable"));
@@ -142,7 +139,6 @@ it.each(["success", "failure"] as const)(
       reconciliation.resolve(result);
       unrelated.resolve(result);
       await Promise.allSettled([selection, send, later]);
-      host.sessions.dispose();
     }
   },
 );
