@@ -1,7 +1,6 @@
 import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { appendGatewayLifecycleAuditLog, resolveGatewayRestartLogPath } from "./restart-logs.js";
 import { readGatewayForcedRestartSummary, warnAboutGatewayRestartStorm } from "./restart-storm.js";
 
@@ -9,7 +8,6 @@ const { findForeignLaunchdJobs } = vi.hoisted(() => ({
   findForeignLaunchdJobs: vi.fn(async () => [
     {
       label: "ai.openclaw.test.storm",
-      program: "/tmp/synthetic-updater.sh",
       keepAlive: true,
       gatewayActions: ["restart"],
       safeToRemove: true,
@@ -20,21 +18,19 @@ const { findForeignLaunchdJobs } = vi.hoisted(() => ({
 vi.mock("./launchd-foreign-jobs.js", () => ({ findForeignLaunchdJobs }));
 
 describe("managed Gateway external restart storm diagnostics", () => {
-  let stateDir: string;
+  const dirs = useAutoCleanupTempDirTracker(afterEach);
+  const warn = vi.fn();
   let env: NodeJS.ProcessEnv;
 
   beforeEach(() => {
-    stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-restart-storm-"));
-    env = { OPENCLAW_STATE_DIR: stateDir };
+    env = { OPENCLAW_STATE_DIR: dirs.make("openclaw-restart-storm-") };
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-01T12:00:00.000Z"));
     findForeignLaunchdJobs.mockClear();
+    warn.mockClear();
   });
 
-  afterEach(() => {
-    vi.useRealTimers();
-    fs.rmSync(stateDir, { recursive: true, force: true });
-  });
+  afterEach(() => vi.useRealTimers());
 
   function restart(count = 1) {
     for (let i = 0; i < count; i++) {
@@ -49,14 +45,6 @@ describe("managed Gateway external restart storm diagnostics", () => {
 
   const append = (text: string) => fs.appendFileSync(resolveGatewayRestartLogPath(env), text);
 
-  function record(fields: string, ageMs = 0) {
-    const logPath = resolveGatewayRestartLogPath(env);
-    fs.mkdirSync(path.dirname(logPath), { recursive: true });
-    append(
-      `[${new Date(Date.now() - ageMs).toISOString()}] openclaw gateway lifecycle ${fields}\n`,
-    );
-  }
-
   it("warns at the third external restart, names the likely job, and deduplicates across startup calls", async () => {
     const firstStartup = vi.fn();
     restart(2);
@@ -66,11 +54,13 @@ describe("managed Gateway external restart storm diagnostics", () => {
 
     restart();
     await warnAboutGatewayRestartStorm(env, firstStartup);
-    expect(firstStartup).toHaveBeenCalledExactlyOnceWith(
-      expect.stringContaining("3 external CLI restarts in 10 minutes"),
-    );
-    expect(firstStartup.mock.calls[0]?.[0]).toContain("ai.openclaw.test.storm");
-    expect(firstStartup.mock.calls[0]?.[0]).toContain("openclaw doctor --fix");
+    expect(firstStartup.mock.calls).toEqual([
+      [
+        expect.stringMatching(
+          /3 external CLI restarts in 10 minutes.*ai\.openclaw\.test\.storm.*openclaw doctor --fix/,
+        ),
+      ],
+    ]);
 
     const nextStartup = vi.fn();
     restart();
@@ -86,12 +76,13 @@ describe("managed Gateway external restart storm diagnostics", () => {
     restart(3);
     await warnAboutGatewayRestartStorm(env, vi.fn());
     vi.setSystemTime(new Date("2026-09-01T12:10:00.001Z"));
-    record("source=cli action=restart mode=kickstart", -60_000);
+    append(
+      "[2026-09-01T12:11:00.001Z] openclaw gateway lifecycle source=cli action=restart mode=kickstart\n",
+    );
     append("[invalid] openclaw gateway lifecycle source=cli action=restart mode=kickstart\n");
     expect(readGatewayForcedRestartSummary(env).count).toBe(0);
 
     restart(3);
-    const warn = vi.fn();
     await warnAboutGatewayRestartStorm(env, warn);
     expect(warn).toHaveBeenCalledTimes(1);
   });
@@ -100,7 +91,6 @@ describe("managed Gateway external restart storm diagnostics", () => {
     restart(3);
     append(`${"x".repeat(256 * 1024)}\n`);
     restart(2);
-    const warn = vi.fn();
     await warnAboutGatewayRestartStorm(env, warn);
     expect(readGatewayForcedRestartSummary(env).count).toBe(2);
     expect(warn).not.toHaveBeenCalled();
@@ -108,7 +98,6 @@ describe("managed Gateway external restart storm diagnostics", () => {
   });
 
   it("does not block startup when history is absent or job inspection fails", async () => {
-    const warn = vi.fn();
     await warnAboutGatewayRestartStorm(env, warn);
     expect(warn).not.toHaveBeenCalled();
     restart(3);

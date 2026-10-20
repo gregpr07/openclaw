@@ -8,20 +8,17 @@ import { renderSystemLaunchDaemonOwnershipShellProbe } from "./launchd-system.js
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const plist = (body: string) => `<plist version="1.0"><dict>${body}</dict></plist>`;
 const label = "<key>Label</key><string>ai.openclaw.gateway</string>";
+const owner = expect.stringContaining("unrelated-name.plist");
+const writeShell = (file: string, source: string) => writeFileSync(file, source, { mode: 0o700 });
 
-function runFallback(
-  contents: string,
-  options: {
-    binary?: boolean;
-    parserDenied?: boolean;
-    perlUnicode?: string;
-    deniedRead?: boolean;
-    directory?: boolean;
-    missingReader?: boolean;
-    loadedAfterScan?: boolean;
-    extractionFailure?: 2 | 126 | 127 | "signal";
-  } = {},
-) {
+type ProbeOptions = Partial<
+  Record<
+    "binary" | "parserDenied" | "deniedRead" | "directory" | "missingReader" | "loadedAfterScan",
+    boolean
+  >
+> & { perlUnicode?: string; extractionFailure?: 2 | 126 | 127 | "signal" };
+
+function runFallback(contents: string, options: ProbeOptions = {}) {
   const root = tempDirs.make("openclaw-system-shell-");
   const daemons = path.join(root, "daemons");
   const bin = path.join(root, "bin");
@@ -37,7 +34,7 @@ function runFallback(
     }
   }
   const parser = path.join(bin, "plutil");
-  writeFileSync(
+  writeShell(
     parser,
     `#!/bin/sh
 for last; do :; done
@@ -51,9 +48,8 @@ ${options.deniedRead ? '/bin/chmod 000 "$last"' : ":"}
 printf 'parser blocked by endpoint policy\\n' >&2
 exit 1
 `,
-    { mode: 0o700 },
   );
-  writeFileSync(
+  writeShell(
     path.join(bin, "launchctl"),
     `#!/bin/sh
 if [ -e "$TEST_QUERY_MARKER" ]; then
@@ -63,7 +59,6 @@ fi
 printf 'Could not find service\\n' >&2
 exit 113
 `,
-    { mode: 0o700 },
   );
   let script = renderSystemLaunchDaemonOwnershipShellProbe("ai.openclaw.gateway")
     .replaceAll("/Library/LaunchDaemons", daemons)
@@ -71,23 +66,17 @@ exit 113
   if (options.missingReader) {
     script = script.replaceAll("/usr/bin/perl", path.join(bin, "missing-perl"));
   }
-  const result = execFileSync(
-    "/bin/sh",
-    [
-      "-c",
-      `${script}\nprintf '%s\\n%s' "$openclaw_system_launchd_conflict" "$openclaw_system_launchd_detail"`,
-    ],
-    {
-      encoding: "utf8",
-      timeout: 10_000,
-      env: {
-        PATH: bin,
-        TMPDIR: root,
-        TEST_QUERY_MARKER: path.join(root, "queried"),
-        PERL_UNICODE: options.perlUnicode,
-      },
+  script += `\nprintf '%s\\n%s' "$openclaw_system_launchd_conflict" "$openclaw_system_launchd_detail"`;
+  const result = execFileSync("/bin/sh", ["-c", script], {
+    encoding: "utf8",
+    timeout: 10_000,
+    env: {
+      PATH: bin,
+      TMPDIR: root,
+      TEST_QUERY_MARKER: path.join(root, "queried"),
+      PERL_UNICODE: options.perlUnicode,
     },
-  );
+  });
   expect(readdirSync(root).filter((entry) => entry.startsWith("openclaw-launchd-"))).toEqual([]);
   const [conflict, detail] = result.split("\n");
   if (options.binary !== undefined) {
@@ -97,36 +86,30 @@ exit 113
 }
 
 describe.skipIf(process.platform !== "darwin")("detached launchd native fallback", () => {
-  it.each([false, true])("detects a parser-blocked owner (binary=%s)", (binary) => {
-    expect(runFallback(plist(label), { binary })).toContain("unrelated-name.plist");
+  const nested = plist(`<key>Nested</key><dict>${label}</dict>`);
+  const integer = plist("<key>Label</key><integer>42</integer>");
+  const newline = plist(label.replace("gateway</", "gateway\n</"));
+  it.each([
+    ["XML owner", plist(label), { binary: false }, owner],
+    ["binary owner", plist(label), { binary: true }, owner],
+    ["nested label", nested, {}, ""],
+    ["newly loaded owner", nested, { loadedAfterScan: true }, "system/ai.openclaw.gateway"],
+    ["native label type", integer, { parserDenied: false }, ""],
+    ["fallback label type", integer, { parserDenied: true }, ""],
+    ["native label bytes", newline, { parserDenied: false }, ""],
+    ["fallback label bytes", newline, { parserDenied: true }, ""],
+    ["inherited Unicode", plist(label), { binary: true, perlUnicode: "D" }, owner],
+    ["extraction 2", plist(label), { extractionFailure: 2 }, owner],
+    ["extraction 126", plist(label), { extractionFailure: 126 }, owner],
+    ["extraction 127", plist(label), { extractionFailure: 127 }, owner],
+    ["extraction signal", plist(label), { extractionFailure: "signal" }, owner],
+    ["malformed", "not a plist", {}, owner],
+    ["oversize", "x".repeat(1048577), {}, owner],
+    ["nonregular", "", { directory: true }, owner],
+    ["missing reader", plist(label), { missingReader: true }, owner],
+  ] as const)("handles %s", (_name, contents, options, expected) => {
+    expect(runFallback(contents, options)).toEqual(expected);
   });
-
-  it("ignores nested labels but rechecks for a newly loaded owner", () => {
-    const contents = plist(`<key>Nested</key><dict>${label}</dict>`);
-    expect(runFallback(contents)).toBe("");
-    expect(runFallback(contents, { loadedAfterScan: true })).toBe("system/ai.openclaw.gateway");
-  });
-
-  it.each([false, true])("preserves label type and bytes (parser denied=%s)", (parserDenied) => {
-    expect(runFallback(plist("<key>Label</key><integer>42</integer>"), { parserDenied })).toBe("");
-    expect(runFallback(plist(label.replace("gateway</", "gateway\n</")), { parserDenied })).toBe(
-      "",
-    );
-  });
-
-  it("reads binary snapshots despite inherited Perl Unicode settings", () => {
-    expect(runFallback(plist(label), { binary: true, perlUnicode: "D" })).toContain(
-      "unrelated-name.plist",
-    );
-  });
-
-  it.each([2, 126, 127, "signal"] as const)(
-    "refuses incomplete snapshot extraction (%s) even when lint would pass",
-    (extractionFailure) => {
-      expect(runFallback(plist(label), { extractionFailure })).toContain("unrelated-name.plist");
-    },
-  );
-
   it.skipIf(process.getuid?.() === 0)(
     "classifies actual read denial after readable preflight",
     () => {
@@ -136,13 +119,4 @@ describe.skipIf(process.platform !== "darwin")("detached launchd native fallback
       );
     },
   );
-
-  it.each([
-    ["malformed", "not a plist", {}],
-    ["oversize", "x".repeat(1048577), {}],
-    ["nonregular", "", { directory: true }],
-    ["missing reader", plist(label), { missingReader: true }],
-  ] as const)("refuses %s fallback input", (_name, contents, options) => {
-    expect(runFallback(contents, options)).toContain("unrelated-name.plist");
-  });
 });

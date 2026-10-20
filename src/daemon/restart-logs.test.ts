@@ -55,13 +55,9 @@ describe("restart log conventions", () => {
   it("appends a profile-aware lifecycle audit line with stable key-value fields", () => {
     const env = { OPENCLAW_STATE_DIR: tempDirs.make("openclaw-lifecycle-audit-") };
     appendGatewayLifecycleAuditLog(env, { ...auditEntry, source: "safe-rpc", pid: 4242 });
-    const line = readLog(env);
-    expect(line).toMatch(/^\[[^\]]+\] openclaw gateway lifecycle /);
-    expect(line).toContain("source=safe-rpc");
-    expect(line).toContain("action=restart");
-    expect(line).toContain("mode=deferred");
-    expect(line).toContain("pid=4242");
-    expect(line).toContain("interactive=0");
+    expect(readLog(env)).toMatch(
+      /^\[[^\]]+\] openclaw gateway lifecycle source=safe-rpc action=restart mode=deferred pid=4242 interactive=0\n$/,
+    );
   });
 
   it("advertises the actual restart log when a POSIX state path contains a backslash", () => {

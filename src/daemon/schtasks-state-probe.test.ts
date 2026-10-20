@@ -12,7 +12,9 @@ import {
 
 vi.mock("node:child_process", () => ({ spawnSync: vi.fn() }));
 
-beforeEach(() => vi.mocked(spawnSync).mockReset());
+const native = vi.mocked(spawnSync);
+const respond = (value: unknown) => native.mockReturnValue(nativeResult(JSON.stringify(value)));
+beforeEach(() => native.mockReset());
 
 it.each([
   [true, "S-1-5-18", 1, "allowed"],
@@ -21,16 +23,7 @@ it.each([
 ] as const)(
   "keeps native task access uncertainty distinct from elevation: %j",
   (callerElevated, taskUserSid, taskRunLevel, expected) => {
-    vi.mocked(spawnSync).mockReturnValue(
-      nativeResult(
-        JSON.stringify({
-          callerSid: "S-1-5-21-111-222-333-1001",
-          callerElevated,
-          taskUserSid,
-          taskRunLevel,
-        }),
-      ),
-    );
+    respond({ callerSid: "S-1-5-21-111-222-333-1001", callerElevated, taskUserSid, taskRunLevel });
     expect(probeScheduledTaskUpdateAccess("Synthetic Gateway").status).toBe(expected);
   },
 );
@@ -55,7 +48,7 @@ it.each([false, true])(
         },
       ],
     };
-    vi.mocked(spawnSync).mockImplementation((_command, _args, options) =>
+    native.mockImplementation((_command, _args, options) =>
       options?.windowsHide === true
         ? nativeResult("", 2)
         : nativeResult(JSON.stringify(inventory ? [snapshot] : snapshot)),
@@ -68,7 +61,7 @@ it.each([false, true])(
 );
 
 it("explains an empty exit-2 result", () => {
-  vi.mocked(spawnSync).mockReturnValue(nativeResult(" \r\n", 2));
+  native.mockReturnValue(nativeResult(" \r\n", 2));
   expect(probeScheduledTaskState("OpenClaw Gateway")).toEqual({
     status: "unknown",
     detail: "Scheduled Task check failed (exit 2): no output from PowerShell.",
@@ -87,22 +80,13 @@ it.each([
 ] as const)(
   "bounds native inspection (budget=%s, timeout=%s, inventory=%s)",
   (budget, expected, inventory) => {
-    vi.mocked(spawnSync).mockImplementation((_command, _args, options) => {
-      const timeout = options?.timeout;
-      // Node rejects fractional timeouts before native spawn.
-      if (timeout != null && !(Number.isInteger(timeout) && timeout >= 0)) {
-        throw Object.assign(new RangeError("timeout must be an unsigned integer"), {
-          code: "ERR_OUT_OF_RANGE",
-        });
-      }
-      return expected === 0
-        ? nativeResult("-2147024894", 1)
-        : nativeResult(
-            "",
-            null,
-            Object.assign(new Error("spawnSync powershell.exe ETIMEDOUT"), { code: "ETIMEDOUT" }),
-          );
-    });
+    native.mockReturnValue(
+      nativeResult(
+        "",
+        null,
+        Object.assign(new Error("spawnSync powershell.exe ETIMEDOUT"), { code: "ETIMEDOUT" }),
+      ),
+    );
     if (inventory) {
       expect(() => listScheduledTasks(budget)).toThrow(ScheduledTaskInspectionError);
     } else {
@@ -120,7 +104,7 @@ it.each([
       expect(probeScheduledTaskExists("OpenClaw Gateway", budget)).toBeNull();
       expect(spawnSync).not.toHaveBeenCalled();
     } else {
-      expect(vi.mocked(spawnSync).mock.calls[0]?.[2]?.timeout).toBe(expected);
+      expect(native.mock.calls[0]?.[2]?.timeout).toBe(expected);
       expect(spawnSync).toHaveBeenCalledTimes(1);
     }
   },
@@ -134,19 +118,19 @@ it.each([
   "bounds process snapshot allowance %s without extending the native cap",
   (allowance, expected) =>
     withMockedPlatform("win32", () => {
-      const stdout = JSON.stringify([{ ProcessId: 1234, CommandLine: "fixture process" }]);
-      vi.mocked(spawnSync).mockReturnValue(nativeResult(stdout));
+      respond([{ ProcessId: 1234, CommandLine: "fixture process" }]);
       const result = readWindowsProcessSnapshot(allowance);
       if (expected === undefined) {
         expect(result).toBeNull();
         expect(spawnSync).not.toHaveBeenCalled();
       } else {
         expect(result).toHaveLength(1);
-        expect(spawnSync).toHaveBeenCalledWith(
+        expect(spawnSync).toHaveBeenCalledOnce();
+        expect(native.mock.calls[0]).toEqual([
           expect.any(String),
           expect.any(Array),
           expect.objectContaining({ timeout: expected }),
-        );
+        ]);
       }
     }),
 );

@@ -1,4 +1,3 @@
-// Startup launcher spawn admission is independent of Scheduled Task takeover.
 import type { SpawnSyncOptions } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -48,6 +47,11 @@ async function writeCmdScript(env: Record<string, string | undefined>) {
   await fs.writeFile(scriptPath, "@echo off\r\nrem no parsed command\r\n", "utf8");
   return scriptPath;
 }
+const node = "C:\\Program Files\\nodejs\\node.exe";
+const supervisor = {
+  programArguments: [node, "gateway.js"],
+  environment: { OPENCLAW_SERVICE_KIND: "gateway" },
+};
 
 describe("Windows Startup launcher", () => {
   it.each(["cmd", "bat"])("launches an installed .%s wrapper through cmd.exe", async (ext) => {
@@ -74,33 +78,34 @@ describe("Windows Startup launcher", () => {
     });
   });
 
-  it("rejects asynchronous cmd spawn failure without detaching", async () => {
-    await withWindowsEnv("openclaw-win-startup-", async ({ env }) => {
-      await writeCmdScript(env);
-      const error = Object.assign(new Error("spawn cmd ENOENT"), { code: "ENOENT" });
-      spawn.mockImplementationOnce(() => createSpawnChild(childUnref, error));
-      await expect(launchFallbackTaskScript(env)).rejects.toThrow("spawn cmd ENOENT");
-      expect(childUnref).not.toHaveBeenCalled();
-    });
-  });
-
-  it("rejects cmd ACL script access before spawning", async () => {
+  it.each(["spawn", "access"])("rejects %s failure without detaching", async (failure) => {
     await withWindowsEnv("openclaw-win-startup-", async ({ env, tmpDir }) => {
       env.OPENCLAW_STATE_DIR = path.join(tmpDir, "state & %USERPROFILE%");
       const scriptPath = await writeCmdScript(env);
-      spawnSync.mockReturnValueOnce(makeSpawnSyncResult({ status: 1 }));
-      await expect(launchFallbackTaskScript(env, null)).rejects.toMatchObject({ code: "EACCES" });
-      expect(spawnSync).toHaveBeenCalledWith(
-        getWindowsPowerShellExePath(),
-        expect.arrayContaining(["-EncodedCommand"]),
-        expect.objectContaining({
-          env: expect.objectContaining({ OPENCLAW_TASK_SCRIPT: scriptPath }),
-          stdio: "ignore",
-          windowsHide: true,
-        }),
+      const error = Object.assign(new Error("spawn cmd ENOENT"), { code: "ENOENT" });
+      if (failure === "access") {
+        spawnSync.mockReturnValueOnce(makeSpawnSyncResult({ status: 1 }));
+      } else {
+        spawn.mockImplementationOnce(() => createSpawnChild(childUnref, error));
+      }
+      await expect(
+        launchFallbackTaskScript(env, failure === "access" ? null : undefined),
+      ).rejects.toMatchObject(
+        failure === "access" ? { code: "EACCES" } : { code: "ENOENT", message: "spawn cmd ENOENT" },
       );
-      expect(spawn).not.toHaveBeenCalled();
       expect(childUnref).not.toHaveBeenCalled();
+      if (failure === "access") {
+        expect(spawn).not.toHaveBeenCalled();
+        expect(spawnSync).toHaveBeenCalledWith(
+          getWindowsPowerShellExePath(),
+          expect.arrayContaining(["-EncodedCommand"]),
+          expect.objectContaining({
+            env: expect.objectContaining({ OPENCLAW_TASK_SCRIPT: scriptPath }),
+            stdio: "ignore",
+            windowsHide: true,
+          }),
+        );
+      }
     });
   });
 
@@ -113,18 +118,10 @@ describe("Windows Startup launcher", () => {
         await writeCmdScript(env);
       }
       await expect(
-        launchFallbackTaskScript(
-          env,
-          kind === "supervisor"
-            ? {
-                programArguments: ["C:\\Program Files\\nodejs\\node.exe", "gateway.js"],
-                environment: { OPENCLAW_SERVICE_KIND: "gateway" },
-              }
-            : undefined,
-        ),
+        launchFallbackTaskScript(env, kind === "supervisor" ? supervisor : undefined),
       ).resolves.toBeUndefined();
       expect(spawn.mock.calls.at(-1)).toEqual([
-        kind === "cmd" ? getWindowsCmdExePath() : "C:\\Program Files\\nodejs\\node.exe",
+        kind === "cmd" ? getWindowsCmdExePath() : node,
         kind === "cmd"
           ? ["/d", "/s", "/v:off", "/c", '""%OPENCLAW_TASK_SCRIPT%""']
           : ["gateway.js", "--task-supervisor"],
