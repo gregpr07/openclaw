@@ -5,6 +5,7 @@ import {
   controlUiRunInspectorLocator,
   withControlUiRunInspector,
 } from "../test-helpers/control-ui-run-inspector.ts";
+import { showHeading } from "./activity-assertions.test-support.ts";
 import { decisionDisplay, presentResult } from "./activity-run-inspector.test-fixtures.ts";
 import {
   createControlUiE2eContextOptions,
@@ -14,40 +15,37 @@ import {
 const suite = createControlUiE2eSuite({
   name: "Control UI Run Inspector evidence collection",
   startServerBeforeBrowser: true,
-  trackBrowserContexts: true,
 });
 
 suite.define(() => {
   it("binds rendered receipt evidence across reload and navigation without replacing Chat", async () => {
-    const context = await suite.newBrowserContext(createControlUiE2eContextOptions());
-    const chat = await context.newPage();
-    await installMockGateway(chat, {
-      historyMessages: [{ role: "assistant", content: [{ type: "text", text: "Ready." }] }],
-    });
-    const runId = "run:evidence/one";
-    const executionId = "execution:evidence/one";
-    const receiptId = "approval-decision:102";
-    const decisionCursor = "a:10:2";
-    const result = presentResult(runId, executionId);
-    result.decisionDisplays = [
-      decisionDisplay({
-        id: receiptId,
-        summary: "The requested action was denied.",
-        outcome: "denied",
-        reasonCode: "operator_approval_denied_by_reviewer",
-        coverageState: "enforced",
-        remediation: "Review the recorded denial.",
-      }),
-    ];
-    const assertReceipt = async (page: Page, inspector: Locator) => {
-      const detail = inspector.locator('[aria-labelledby="run-inspector-receipt-detail"]');
-      await page.getByRole("heading", { name: "Receipt detail" }).waitFor();
-      expect(await inspector.getAttribute("data-run-id")).toBe(runId);
-      expect(await inspector.getAttribute("data-execution-id")).toBe(executionId);
-      expect(await detail.getAttribute("data-receipt-selector-id")).toBe(receiptId);
-      expect(await detail.textContent()).toContain("operator_approval_denied_by_reviewer");
-    };
-    try {
+    await suite.withPage(createControlUiE2eContextOptions(), async ({ context, page: chat }) => {
+      await installMockGateway(chat, { historyMessages: [] });
+      const runId = "run:evidence/one";
+      const executionId = "execution:evidence/one";
+      const receiptId = "approval-decision:102";
+      const decisionCursor = "a:10:2";
+      const result = presentResult(runId, executionId);
+      result.decisionDisplays = [
+        decisionDisplay({
+          id: receiptId,
+          summary: "The requested action was denied.",
+          outcome: "denied",
+          reasonCode: "operator_approval_denied_by_reviewer",
+          coverageState: "enforced",
+          remediation: "Review the recorded denial.",
+        }),
+      ];
+      const assertReceipt = async (page: Page, inspector: Locator) => {
+        const detail = inspector.locator('[aria-labelledby="run-inspector-receipt-detail"]');
+        await showHeading(page, "Receipt detail");
+        expect(await inspector.evaluate((element) => ({ ...element.dataset }))).toMatchObject({
+          runId,
+          executionId,
+        });
+        expect(await detail.getAttribute("data-receipt-selector-id")).toBe(receiptId);
+        expect(await detail.textContent()).toContain("operator_approval_denied_by_reviewer");
+      };
       await chat.goto(controlUiSessionUrl(suite.server.baseUrl, "agent:main:main"));
       const composer = chat.getByRole("textbox", { name: "Chat composer", exact: true });
       await composer.fill("Unsent evidence collection draft");
@@ -96,15 +94,17 @@ suite.define(() => {
             const missing = new URL(selectedUrl);
             missing.searchParams.set("receipt", "missing-receipt");
             await page.goto(missing.href);
-            await page.getByRole("heading", { name: "Receipt not found on this page" }).waitFor();
+            await showHeading(page, "Receipt not found on this page");
             expect(await inspector.locator("[data-receipt-selector-id]").count()).toBe(0);
             return receiptId;
           },
         );
         expect(collected).toBe(receiptId);
-        expect(context.pages()).toEqual([chat]);
-        expect(chat.url()).toBe(chatUrl);
-        expect(await composer.inputValue()).toBe("Unsent evidence collection draft");
+        expect({
+          pages: context.pages(),
+          url: chat.url(),
+          draft: await composer.inputValue(),
+        }).toEqual({ pages: [chat], url: chatUrl, draft: "Unsent evidence collection draft" });
       }
       await expect(
         withControlUiRunInspector(
@@ -123,8 +123,6 @@ suite.define(() => {
       await chat.reload();
       await composer.waitFor();
       expect(chat.url()).toBe(chatUrl);
-    } finally {
-      await suite.closeBrowserContext(context);
-    }
+    });
   });
 });

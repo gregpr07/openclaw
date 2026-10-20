@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
+import { expectText } from "./activity-assertions.test-support.ts";
 import { captureUiProof } from "./chat-flow.test-support.ts";
 import {
   createControlUiE2eContextOptions,
@@ -10,7 +11,6 @@ import { configSnapshot } from "./model-setup-fixtures.test-support.ts";
 const suite = createControlUiE2eSuite({
   name: "Control UI agent model fallback ownership",
   startServerBeforeBrowser: true,
-  unavailableMessage: (executablePath) => `Playwright Chromium is unavailable at ${executablePath}`,
 });
 
 const primaryModel = "openai/gpt-5.4";
@@ -95,9 +95,7 @@ suite.define(() => {
         );
       }
 
-      await expect
-        .poll(() => page.locator(".workspace-link").textContent())
-        .toContain(writerWorkspace);
+      await expectText(page.locator(".workspace-link")).toContain(writerWorkspace);
       const modelDescription = page
         .locator(".settings-kv dt")
         .filter({ hasText: "Primary Model" })
@@ -105,7 +103,7 @@ suite.define(() => {
       const displayedModel = expectedFallbacks.length
         ? `${primaryModel} (+${expectedFallbacks.length} fallback)`
         : primaryModel;
-      await expect.poll(() => modelDescription.textContent()).toContain(displayedModel);
+      await expectText(modelDescription).toContain(displayedModel);
 
       const fallbacks = page.locator("openclaw-multi-select.agent-fallbacks");
       await fallbacks.waitFor({ timeout: 10_000 });

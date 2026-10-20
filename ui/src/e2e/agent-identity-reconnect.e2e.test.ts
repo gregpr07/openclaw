@@ -1,12 +1,13 @@
-import path from "node:path";
 import { expect, it } from "vitest";
+import { cronJobsListResponse } from "../lib/cron/cron.test-support.ts";
 import {
   defaultControlUiFeatureMethods,
   installMockGateway,
   pauseVirtualClock,
   reconnectMockGateway,
-  type MockGatewayWindow,
 } from "../test-helpers/control-ui-e2e.ts";
+import { expectText } from "./activity-assertions.test-support.ts";
+import { captureUiProof } from "./chat-flow.test-support.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 import { configSnapshot } from "./model-setup-fixtures.test-support.ts";
 
@@ -17,19 +18,10 @@ suite.define(() => {
     await suite.withPage({ locale: "en-US" }, async ({ page }) => {
       await page.clock.install();
       const gateway = await installMockGateway(page, {
-        assistantName: "Atlas",
         historyMessages: [],
         methodResponses: {
           "cron.status": { enabled: true, jobs: 0, nextWakeAtMs: null },
-          "cron.list": {
-            jobs: [],
-            snapshotRevision: "idle",
-            total: 0,
-            offset: 0,
-            limit: 50,
-            hasMore: false,
-            nextOffset: null,
-          },
+          "cron.list": cronJobsListResponse([], { snapshotRevision: "idle" }),
         },
       });
       await page.goto(`${suite.server.baseUrl}chat#token=test-token`);
@@ -52,19 +44,14 @@ suite.define(() => {
       }
       const idle = await counts();
 
-      await page.evaluate(() => {
-        const fixture = (window as MockGatewayWindow).openclawControlUiE2eGateway!;
-        fixture.setRequestHandler("agent.identity.get", ({ respond }) =>
-          respond({
-            __mockError: {
-              code: "UNAVAILABLE",
-              message: "agent.identity.get unavailable during gateway restart",
-              retryable: true,
-              retryAfterMs: 1_000,
-              details: { reason: "gateway-restarting" },
-            },
-          }),
-        );
+      await gateway.setMethodResponse("agent.identity.get", {
+        __mockError: {
+          code: "UNAVAILABLE",
+          message: "agent.identity.get unavailable during gateway restart",
+          retryable: true,
+          retryAfterMs: 1_000,
+          details: { reason: "gateway-restarting" },
+        },
       });
       await gateway.emitGatewayEvent("config.changed", { hash: "synthetic-restart" });
       await page.clock.runFor(1_000);
@@ -72,20 +59,14 @@ suite.define(() => {
       await gateway.emitGatewayEvent("shutdown", { restartExpectedMs: 1_500 });
       await page.clock.runFor(600_000);
       const afterDrain = await counts();
-      await page.evaluate(() => {
-        (window as MockGatewayWindow).openclawControlUiE2eGateway!.setRequestHandler(
-          "agent.identity.get",
-          ({ respond }) =>
-            respond({ agentId: "main", name: "Cedar", avatar: "🌻", nameSource: "agent" }),
-        );
+      await gateway.setMethodResponse("agent.identity.get", {
+        agentId: "main",
+        name: "Cedar",
       });
       await page.clock.resume();
       await reconnectMockGateway(page, gateway);
-      await expect
-        .poll(() => page.locator(".agent-chat__welcome-identity h2").textContent())
-        .toBe("Cedar");
-      expect(idle).toEqual(connected);
-      expect(afterDrain).toEqual(beforeDrain);
+      await expectText(page.locator(".agent-chat__welcome-identity h2")).toBe("Cedar");
+      expect({ idle, afterDrain }).toEqual({ idle: connected, afterDrain: beforeDrain });
     });
   });
 
@@ -122,10 +103,7 @@ suite.define(() => {
           await gateway.waitForRequest(heldMethod, { after: before });
           const beforeRetry = (await gateway.getRequests("agents.update")).length;
           await reconnectMockGateway(page, gateway);
-          await page.screenshot({
-            path: path.join(suite.artifactDir, "reconnected.png"),
-            animations: "disabled",
-          });
+          await captureUiProof(suite, page, "identity", "reconnected.png");
           const retried = await gateway.waitForRequest("agents.update", { after: beforeRetry });
           expect(retried.params).toMatchObject({ agentId: "main", name: "Lunar museum guide" });
           await expect.poll(() => name.isEnabled()).toBe(true);
