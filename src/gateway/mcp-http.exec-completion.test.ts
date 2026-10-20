@@ -36,14 +36,12 @@ import {
 } from "../test-utils/openclaw-test-state.js";
 import { closeMcpLoopbackServer, ensureMcpLoopbackServer } from "./mcp-http.js";
 import { getActiveMcpLoopbackRuntime } from "./mcp-http.loopback-runtime.js";
-
-type McpResponse = {
-  result?: {
-    tools?: Array<{ name: string }>;
-    content?: Array<{ type: string; text?: string }>;
-    isError?: boolean;
-  };
-};
+import {
+  jsonHeaders,
+  mcpToolCallMessage,
+  sendRaw,
+  type McpToolResultPayload,
+} from "./mcp-http.test-support.js";
 
 type ToolSurface = { native: string[] | undefined; mcp: string[] };
 let state: OpenClawTestState;
@@ -149,22 +147,18 @@ function connectPreparedTurn(context: PreparedCliRunContext, signal: AbortSignal
     args?: Record<string, unknown>,
     toolName = "exec",
   ) => {
-    const response = await fetch(`http://127.0.0.1:${runtime.port}/mcp`, {
-      method: "POST",
+    const response = await sendRaw({
+      port: runtime.port,
+      token,
       signal,
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
-        "x-openclaw-cli-capture-key": captureKey,
-      },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 1,
-        method,
-        ...(method === "tools/call" ? { params: { name: toolName, arguments: args } } : {}),
-      }),
+      headers: jsonHeaders({ "x-openclaw-cli-capture-key": captureKey }),
+      body: JSON.stringify(
+        method === "tools/call"
+          ? mcpToolCallMessage(toolName, args)
+          : { jsonrpc: "2.0", id: 1, method },
+      ),
     });
-    return { status: response.status, body: (await response.json()) as McpResponse };
+    return { status: response.status, body: (await response.json()) as McpToolResultPayload };
   };
 }
 
@@ -179,39 +173,14 @@ async function readToolSurface(context: PreparedCliRunContext, signal: AbortSign
   } satisfies ToolSurface;
 }
 
-it.for([
-  {
-    name: "no caller cap",
-    toolsAllow: undefined,
-    sessionId: "exec-full",
-    terminal: "text",
-    expectedStatus: "completed",
-  },
-  {
-    name: "a finite caller cap",
-    toolsAllow: ["exec", "process", "session_status"],
-    sessionId: "exec-capped",
-    terminal: "text",
-    expectedStatus: "failed",
-  },
-  {
-    name: "an empty CLI final",
-    toolsAllow: undefined,
-    sessionId: "exec-empty",
-    terminal: "empty",
-    expectedStatus: "failed",
-  },
-  {
-    name: "a failed CLI final",
-    toolsAllow: undefined,
-    sessionId: "exec-failed",
-    terminal: "failed",
-    expectedStatus: "failed",
-  },
+it.for<[string, string, string, string, string[] | undefined]>([
+  ["no caller cap", "exec-full", "text", "completed", undefined],
+  ["a finite caller cap", "exec-capped", "text", "failed", ["exec", "process", "session_status"]],
+  ["an empty CLI final", "exec-empty", "empty", "failed", undefined],
+  ["a failed CLI final", "exec-failed", "failed", "failed", undefined],
 ])(
-  "retains the CLI surface and enforces completion effects with $name",
-  async (source, { signal }) => {
-    const sessionId = source.sessionId;
+  "retains the CLI surface and enforces completion effects with %s",
+  async ([, sessionId, terminal, expectedStatus, toolsAllow], { signal }) => {
     const sessionKey = `agent:main:${sessionId}`;
     sessionKeys.push(sessionKey);
     const entry = {
@@ -247,7 +216,7 @@ it.for([
       prompt: "Run the background command and continue after completion.",
       skillsSnapshot: { prompt: "", skills: [] },
       senderIsOwner: true,
-      toolsAllow: source.toolsAllow,
+      toolsAllow,
       runId,
       timeoutMs: 60_000,
       abortSignal: signal,
@@ -258,7 +227,7 @@ it.for([
     expect(normalSurface.mcp).toContain("session_status");
     // Ordinary managed Claude turns already use the mediated surface completions require.
     expect(normalSurface.native).toEqual([]);
-    if (source.toolsAllow) {
+    if (toolsAllow) {
       expect(normalSurface.mcp).toEqual(["exec", "process", "session_status"]);
     }
 
@@ -286,7 +255,7 @@ it.for([
           );
           expect(launches).toHaveBeenCalledOnce();
           launches.mockClear();
-          if (source.toolsAllow) {
+          if (toolsAllow) {
             const forbidden = await call(
               "tools/call",
               { input: `*** Begin Patch\n*** Add File: ${deniedName}\n+forbidden\n*** End Patch` },
@@ -316,10 +285,10 @@ it.for([
         } finally {
           launches.mockRestore();
         }
-        if (source.terminal === "failed") {
+        if (terminal === "failed") {
           throw new Error("Synthetic CLI provider failure.");
         }
-        return { text: source.terminal === "empty" ? "" : "Completion observed." };
+        return { text: terminal === "empty" ? "" : "Completion observed." };
       });
     const receiptIndex = receipts.length;
     try {
@@ -339,14 +308,14 @@ it.for([
       await expect(withinTest(receipt.accepted, signal)).resolves.toEqual({ ok: true });
       const outcome = await withinTest(receipt.settled, signal);
       expect(outcome).toMatchObject({
-        status: source.expectedStatus,
+        status: expectedStatus,
         executionStarted: true,
       });
-      if (source.expectedStatus === "failed") {
+      if (expectedStatus === "failed") {
         expect(outcome.error).toBeTruthy();
         expect(outcome).toMatchObject({ delivered: false, deliveryAttempted: false });
       }
-      if (source.toolsAllow) {
+      if (toolsAllow) {
         expect(outcome.error).toContain("Session event permissions were restricted");
       }
       expect(completionSurfaces).toEqual([normalSurface]);

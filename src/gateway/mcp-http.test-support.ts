@@ -47,6 +47,7 @@ export async function sendRaw(params: {
   method?: "GET" | "POST" | "DELETE" | "PUT";
   headers?: Record<string, string>;
   body?: string;
+  signal?: AbortSignal;
 }) {
   return await fetch(`http://127.0.0.1:${params.port}/mcp`, {
     method: params.method ?? "POST",
@@ -55,6 +56,7 @@ export async function sendRaw(params: {
       ...params.headers,
     },
     body: params.body,
+    signal: params.signal,
   });
 }
 
@@ -137,9 +139,7 @@ export function makeMockTool(overrides: Partial<MockGatewayTool> = {}): MockGate
     label: "Mock tool",
     description: "mock tool",
     parameters: { type: "object", properties: {} },
-    execute: async () => ({
-      content: [{ type: "text", text: "ok" }],
-    }),
+    execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
     ...overrides,
   };
 }

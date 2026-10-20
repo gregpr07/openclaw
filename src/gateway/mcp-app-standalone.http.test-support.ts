@@ -33,7 +33,7 @@ const { executeMcpAppOperation, resolveMcpAppActiveView } = await import("./mcp-
 const { createMcpAppStandaloneTicket, handleMcpAppStandaloneHttpRequest } =
   await import("./mcp-app-standalone.js");
 
-function issueTicket(
+export function issueTicket(
   params: Omit<Parameters<typeof createMcpAppStandaloneTicket>[0], "toolOperationsAuthorized"> & {
     toolOperationsAuthorized?: boolean;
     nowMs?: number;
@@ -51,10 +51,10 @@ function issueTicket(
   return issued;
 }
 
-let nowMs = 1_800_000_000_000;
+export let nowMs = 1_800_000_000_000;
 afterEach(() => vi.restoreAllMocks());
-const releaseRuntimeLease = vi.fn();
-const runtime = {
+export const releaseRuntimeLease = vi.fn();
+export const runtime = {
   sessionId: "runtime-session",
   mcpAppsEnabled: true,
   markUsed: vi.fn(),
@@ -87,7 +87,7 @@ const runtime = {
     contents: [{ uri, text: `${serverName}:${uri}` }],
   })),
 };
-const view = {
+export const view = {
   viewId: "mcp-app-view",
   agentId: "main",
   sessionId: runtime.sessionId,
@@ -109,7 +109,7 @@ const view = {
   byteSize: 100,
 };
 
-async function request(params: {
+export async function request(params: {
   url: string;
   method?: "GET" | "HEAD" | "POST";
   authorization?: string;
@@ -192,7 +192,7 @@ export async function startStandaloneHttp(
   };
 }
 
-async function createSerializedHost(options: StandaloneHostBrowserOptions = {}) {
+export async function createSerializedHost(options: StandaloneHostBrowserOptions = {}) {
   const shell = await request({ url: "/__openclaw__/mcp-app" });
   const source = /<script>([\s\S]+)<\/script>/u.exec(String(shell.end.mock.calls[0]?.[0]))?.[1];
   if (!source) {
@@ -229,15 +229,8 @@ export function resetStandaloneMcpAppTestState() {
 
 export {
   createMcpAppStandaloneTicket,
-  createSerializedHost,
   executeMcpAppOperation,
   handleMcpAppStandaloneHttpRequest,
-  issueTicket,
   mocks,
-  nowMs,
-  releaseRuntimeLease,
-  request,
   resolveMcpAppActiveView,
-  runtime,
-  view,
 };

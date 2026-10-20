@@ -19,6 +19,12 @@ vi.mock("./tool-resolution.js", () => ({ resolveGatewayScopedTools: resolveTools
 import { mintAttachGrant, revokeAttachGrant } from "./mcp-grant-store.js";
 import { closeMcpLoopbackServer, ensureMcpLoopbackServer } from "./mcp-http.js";
 import { getActiveMcpLoopbackRuntime } from "./mcp-http.loopback-runtime.js";
+import {
+  jsonHeaders,
+  mcpToolCallBody,
+  mcpToolsListBody,
+  sendRaw,
+} from "./mcp-http.test-support.js";
 
 const completed = { content: [{ type: "text", text: "authority inspected" }] };
 let toolCallerIdentity: ReturnType<typeof getGatewayToolCallerIdentity>;
@@ -31,26 +37,15 @@ function activeRuntime() {
   return runtime;
 }
 
-async function sendRequest(
-  token: string,
-  method: "tools/list" | "tools/call",
-  headers: Record<string, string> = {},
-) {
-  const response = await fetch(`http://127.0.0.1:${activeRuntime().port}/mcp`, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${token}`,
-      "content-type": "application/json",
+async function sendRequest(token: string, method: "tools/list" | "tools/call") {
+  const response = await sendRaw({
+    port: activeRuntime().port,
+    token,
+    headers: jsonHeaders({
       "x-session-key": "agent:main:archive-authority-spoofed",
       "x-openclaw-sender-is-owner": "true",
-      ...headers,
-    },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method,
-      ...(method === "tools/call" ? { params: { name: "authority_probe", arguments: {} } } : {}),
     }),
+    body: method === "tools/call" ? mcpToolCallBody("authority_probe") : mcpToolsListBody(),
   });
   const body = await response.text();
   expect(response.status, body).toBe(200);
