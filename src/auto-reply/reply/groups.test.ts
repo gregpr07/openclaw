@@ -10,6 +10,25 @@ import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shar
 import * as groups from "./groups.js";
 import { prepareReplyConversation } from "./prompt-session-context.js";
 
+type MentionGroups = Record<string, { requireMention: boolean }>;
+const slackConfig = (slack: {
+  groups: MentionGroups;
+  accounts?: Record<string, { groups: MentionGroups }>;
+}) => ({ channels: { slack } }) as unknown as OpenClawConfig;
+
+function sourceContext(
+  Provider: string,
+  ChatType = "group",
+  sourceReplyDeliveryMode?: Parameters<
+    typeof groups.buildSourceConversationContext
+  >[0]["sourceReplyDeliveryMode"],
+) {
+  return groups.buildSourceConversationContext({
+    sessionCtx: { Provider, ChatType },
+    sourceReplyDeliveryMode,
+  });
+}
+
 async function requireMentionForConversation(
   params: Parameters<typeof prepareReplyConversation>[0] & { cfg: OpenClawConfig },
 ) {
@@ -107,18 +126,13 @@ describe("group runtime loading", () => {
   });
 
   it("keeps silent-token guidance out of direct chat context", () => {
-    const context = groups.buildSourceConversationContext({
-      sessionCtx: { ChatType: "direct", Provider: "telegram" },
-    });
+    const context = sourceContext("telegram", "direct");
     expect(context).toContain(
       "You are in a Telegram direct conversation. Your replies are automatically sent to this conversation unless the current-turn context says final replies stay private.",
     );
     expect(context).not.toContain("NO_REPLY");
 
-    const toolOnlyContext = groups.buildSourceConversationContext({
-      sessionCtx: { ChatType: "direct", Provider: "telegram" },
-      sourceReplyDeliveryMode: "message_tool_only",
-    });
+    const toolOnlyContext = sourceContext("telegram", "direct", "message_tool_only");
     expect(toolOnlyContext).toContain("Normal final replies are private");
     expect(toolOnlyContext).toContain("message tool with action=send");
     expect(toolOnlyContext).toContain("do not call message(action=send)");
@@ -148,50 +162,29 @@ describe("group runtime loading", () => {
       ]),
     );
 
-    expect(
-      groups.buildSourceConversationContext({
-        sessionCtx: { ChatType: "group", Provider: "table-chat" },
-      }),
-    ).not.toContain("Avoid Markdown tables");
-    expect(
-      groups.buildSourceConversationContext({
-        sessionCtx: { ChatType: "group", Provider: "telegram" },
-      }),
-    ).not.toContain("Avoid Markdown tables");
-    expect(
-      groups.buildSourceConversationContext({
-        sessionCtx: { ChatType: "group", Provider: "plain-chat" },
-      }),
-    ).toContain("Avoid Markdown tables");
+    expect(sourceContext("table-chat")).not.toContain("Avoid Markdown tables");
+    expect(sourceContext("telegram")).not.toContain("Avoid Markdown tables");
+    expect(sourceContext("plain-chat")).toContain("Avoid Markdown tables");
   });
 
   it("keeps per-message mention state out of stable group context", () => {
-    const mentioned = groups.buildSourceConversationContext({
-      sessionCtx: {
-        ChatType: "group",
-        Provider: "telegram",
-        BotUsername: "SirPinchALotBot",
-        ExplicitlyMentionedBot: true,
-      },
-    });
+    const context = (ExplicitlyMentionedBot: boolean) =>
+      groups.buildSourceConversationContext({
+        sessionCtx: {
+          ChatType: "group",
+          Provider: "telegram",
+          BotUsername: "SirPinchALotBot",
+          ExplicitlyMentionedBot,
+        },
+      });
 
-    const notExplicit = groups.buildSourceConversationContext({
-      sessionCtx: {
-        ChatType: "group",
-        Provider: "telegram",
-        BotUsername: "SirPinchALotBot",
-        ExplicitlyMentionedBot: false,
-      },
-    });
-
-    expect(mentioned).toBe(notExplicit);
+    const mentioned = context(true);
+    expect(mentioned).toBe(context(false));
     expect(mentioned).not.toContain("channel identity @SirPinchALotBot");
   });
 
   it("uses channel wording when the authoritative chat type is channel", () => {
-    const context = groups.buildSourceConversationContext({
-      sessionCtx: { ChatType: "channel", Provider: "mattermost" },
-    });
+    const context = sourceContext("mattermost", "channel");
 
     expect(context).toContain("You are in a Mattermost channel.");
     expect(context).toContain(
@@ -231,15 +224,7 @@ describe("group runtime loading", () => {
 
     await expect(
       requireMentionForConversation({
-        cfg: {
-          channels: {
-            slack: {
-              groups: {
-                C123: { requireMention: false },
-              },
-            },
-          },
-        } as unknown as OpenClawConfig,
+        cfg: slackConfig({ groups: { C123: { requireMention: false } } }),
         ctx: {
           Provider: "slack",
           From: "slack:channel:C123",
@@ -255,31 +240,16 @@ describe("group runtime loading", () => {
     ).resolves.toBe(false);
     await expect(
       requireMentionForConversation({
-        cfg: {
-          channels: {
-            slack: {
-              groups: {
-                C123: { requireMention: false },
-              },
-            },
-          },
-        } as unknown as OpenClawConfig,
+        cfg: slackConfig({ groups: { C123: { requireMention: false } } }),
         ctx: { InternalTurnSource: "heartbeat" },
         sessionEntry: persistedSessionEntry,
       }),
     ).resolves.toBe(false);
     await expect(
       requireMentionForConversation({
-        cfg: {
-          channels: {
-            slack: {
-              groups: {
-                C123: { requireMention: true },
-                C456: { requireMention: false },
-              },
-            },
-          },
-        } as unknown as OpenClawConfig,
+        cfg: slackConfig({
+          groups: { C123: { requireMention: true }, C456: { requireMention: false } },
+        }),
         ctx: {
           InternalTurnSource: "heartbeat",
           OriginatingChannel: "slack",
@@ -290,32 +260,19 @@ describe("group runtime loading", () => {
     ).resolves.toBe(false);
     await expect(
       requireMentionForConversation({
-        cfg: {
-          channels: {
-            slack: {
-              groups: { C123: { requireMention: true } },
-              accounts: {
-                work: { groups: { C123: { requireMention: false } } },
-              },
-            },
-          },
-        } as unknown as OpenClawConfig,
+        cfg: slackConfig({
+          groups: { C123: { requireMention: true } },
+          accounts: { work: { groups: { C123: { requireMention: false } } } },
+        }),
         ctx: { InternalTurnSource: "heartbeat" },
         sessionEntry: persistedSessionEntry,
       }),
     ).resolves.toBe(false);
     await expect(
       requireMentionForConversation({
-        cfg: {
-          channels: {
-            slack: {
-              groups: {
-                C123: { requireMention: true },
-                C456: { requireMention: false },
-              },
-            },
-          },
-        } as unknown as OpenClawConfig,
+        cfg: slackConfig({
+          groups: { C123: { requireMention: true }, C456: { requireMention: false } },
+        }),
         ctx: { Provider: "slack", From: "slack:channel:C456" },
         sessionEntry: persistedSessionEntry,
       }),

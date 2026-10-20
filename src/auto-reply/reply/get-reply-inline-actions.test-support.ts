@@ -17,9 +17,7 @@ vi.mock("../../agents/openclaw-tools.js", () => ({
   createOpenClawToolsAsync: async (...args: unknown[]) => createOpenClawToolsMock(...args),
 }));
 
-export type HandleInlineActionsInput = Parameters<
-  typeof import("./get-reply-inline-actions.js").handleInlineActions
->[0];
+export type HandleInlineActionsInput = Parameters<typeof handleInlineActions>[0];
 
 export const createTypingController = (): TypingController => ({
   onReplyStart: async () => {},
@@ -39,20 +37,6 @@ export const createHandleInlineActionsInput = (params: {
   command?: Partial<HandleInlineActionsInput["command"]>;
   overrides?: Partial<Omit<HandleInlineActionsInput, "ctx" | "sessionCtx" | "typing" | "command">>;
 }): HandleInlineActionsInput => {
-  const baseCommand: HandleInlineActionsInput["command"] = {
-    surface: "whatsapp",
-    channel: "whatsapp",
-    channelId: "whatsapp",
-    ownerList: [],
-    senderIsOwner: false,
-    isAuthorizedSender: false,
-    senderId: undefined,
-    abortKey: "whatsapp:+999",
-    rawBodyNormalized: params.cleanedBody,
-    commandBodyNormalized: params.cleanedBody,
-    from: "whatsapp:+999",
-    to: "whatsapp:+999",
-  };
   return {
     ctx: params.ctx,
     sessionCtx: params.ctx as unknown as TemplateContext,
@@ -65,7 +49,18 @@ export const createHandleInlineActionsInput = (params: {
     allowTextCommands: false,
     inlineStatusRequested: false,
     command: {
-      ...baseCommand,
+      surface: "whatsapp",
+      channel: "whatsapp",
+      channelId: "whatsapp",
+      ownerList: [],
+      senderIsOwner: false,
+      isAuthorizedSender: false,
+      senderId: undefined,
+      abortKey: "whatsapp:+999",
+      rawBodyNormalized: params.cleanedBody,
+      commandBodyNormalized: params.cleanedBody,
+      from: "whatsapp:+999",
+      to: "whatsapp:+999",
       ...params.command,
     },
     directives: clearInlineDirectives(params.cleanedBody),
