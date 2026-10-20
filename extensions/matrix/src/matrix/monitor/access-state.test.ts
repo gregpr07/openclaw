@@ -45,9 +45,11 @@ describe("resolveMatrixMonitorAccessState", () => {
       groupPolicy: "allowlist",
     });
 
-    expect(state.effectiveGroupAllowFrom).toEqual(["@Carol:Example.org"]);
-    expect(state.effectiveRoomUsers).toEqual(["user:@Dana:Example.org"]);
-    expect(state.messageIngress.ingress.decision).toBe("allow");
+    expect(state).toMatchObject({
+      effectiveGroupAllowFrom: ["@Carol:Example.org"],
+      effectiveRoomUsers: ["user:@Dana:Example.org"],
+      messageIngress: { ingress: { decision: "allow" } },
+    });
   });
 
   it.each([
@@ -65,15 +67,6 @@ describe("resolveMatrixMonitorAccessState", () => {
     await expectBlockedCommand(state);
   });
 
-  it("does not let DM pairing-store entries authorize room control commands", async () => {
-    const state = await resolveAccess({
-      storeAllowFrom: ["@attacker:example.org"],
-      senderId: "@attacker:example.org",
-    });
-
-    await expectBlockedCommand(state);
-  });
-
   it("does not let pairing-store entries authorize open DMs without wildcard", async () => {
     const state = await resolveAccess({
       storeAllowFrom: ["@alice:example.org"],
@@ -81,20 +74,25 @@ describe("resolveMatrixMonitorAccessState", () => {
       isRoom: false,
     });
 
-    expect(state.messageIngress.senderAccess.effectiveAllowFrom).toEqual([]);
-    expect(state.messageIngress.senderAccess.decision).toBe("block");
-    expect(state.messageIngress.ingress.reasonCode).toBe("dm_policy_not_allowlisted");
-  });
-
-  it("does not let configured DM allowFrom authorize room control commands", async () => {
-    const state = await resolveAccess({
-      allowFrom: ["@owner:example.org"],
-      groupAllowFrom: ["@admin:example.org"],
-      senderId: "@owner:example.org",
+    expect(state.messageIngress).toMatchObject({
+      senderAccess: { effectiveAllowFrom: [], decision: "block" },
+      ingress: { reasonCode: "dm_policy_not_allowlisted" },
     });
-
-    await expectBlockedCommand(state);
   });
+
+  it.each([
+    { source: "DM pairing store", storeAllowFrom: ["@alice:example.org"] },
+    {
+      source: "configured DM allowlist",
+      allowFrom: ["@alice:example.org"],
+      groupAllowFrom: ["@admin:example.org"],
+    },
+  ])(
+    "does not let $source authorize room control commands",
+    async ({ source: _source, ...entries }) => {
+      await expectBlockedCommand(await resolveAccess(entries));
+    },
+  );
 
   it("treats unresolved configured room allowlists as configured but nonmatching", async () => {
     const groupState = await resolveAccess({
@@ -108,13 +106,14 @@ describe("resolveMatrixMonitorAccessState", () => {
     });
 
     expect(groupState.effectiveGroupAllowFrom).toEqual(["alice"]);
-    expect(groupState.messageIngress.ingress.decision).toBe("block");
-    expect(groupState.messageIngress.ingress.reasonCode).toBe("group_policy_not_allowlisted");
     expect(roomState.effectiveRoomUsers).toEqual(["dana"]);
-    expect(roomState.messageIngress.ingress.decision).toBe("block");
-    expect(roomState.messageIngress.ingress.reasonCode).toBe("group_policy_not_allowlisted");
-    await expectBlockedCommand(groupState);
-    await expectBlockedCommand(roomState);
+    for (const state of [groupState, roomState]) {
+      expect(state.messageIngress.ingress).toMatchObject({
+        decision: "block",
+        reasonCode: "group_policy_not_allowlisted",
+      });
+      await expectBlockedCommand(state);
+    }
   });
 
   it("keeps room-user allowlists out of dm traffic", async () => {

@@ -1,18 +1,7 @@
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
-import {
-  createPluginRecord,
-  createPluginRegistry,
-  createPluginRuntimeMock,
-  disposePluginRegistryInstances,
-} from "openclaw/plugin-sdk/plugin-test-runtime";
-import {
-  clearRuntimeConfigSnapshot,
-  setRuntimeConfigSnapshot,
-} from "openclaw/plugin-sdk/runtime-config-snapshot";
-import {
-  registerSessionBindingAdapter,
-  testing as sessionBindingTesting,
-} from "openclaw/plugin-sdk/session-binding-runtime";
+import * as plugins from "openclaw/plugin-sdk/plugin-test-runtime";
+import * as configSnapshot from "openclaw/plugin-sdk/runtime-config-snapshot";
+import * as sessionBindings from "openclaw/plugin-sdk/session-binding-runtime";
 import {
   enqueueSystemEvent,
   peekSystemEventEntries,
@@ -21,24 +10,24 @@ import { resetSystemEventsForTest } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installMatrixMonitorTestRuntime } from "../../test-runtime.js";
 import {
-  createMatrixHandlerTestHarness,
-  createMatrixReactionEvent,
-  createMatrixReactionTestHarness,
-  createMatrixTextMessageEvent,
+  createMatrixHandlerTestHarness as createHarness,
+  createMatrixReactionEvent as makeReaction,
+  createMatrixReactionTestHarness as createReactionHarness,
+  createMatrixTextMessageEvent as textMessage,
 } from "./handler.test-helpers.js";
 
 const roomId = "!room:example.org";
 const reactionEvent = (eventId: string) =>
-  createMatrixReactionEvent({ eventId, targetEventId: "$msg1", key: "👍" });
+  makeReaction({ eventId, targetEventId: "$msg1", key: "👍" });
 beforeEach(() => {
   installMatrixMonitorTestRuntime();
   resetSystemEventsForTest();
-  sessionBindingTesting.resetSessionBindingAdaptersForTests();
+  sessionBindings.testing.resetSessionBindingAdaptersForTests();
 });
 afterEach(() => {
   resetSystemEventsForTest();
-  clearRuntimeConfigSnapshot();
-  sessionBindingTesting.resetSessionBindingAdaptersForTests();
+  configSnapshot.clearRuntimeConfigSnapshot();
+  sessionBindings.testing.resetSessionBindingAdaptersForTests();
 });
 
 describe("Matrix reaction ownership", () => {
@@ -48,7 +37,7 @@ describe("Matrix reaction ownership", () => {
       bindings: [{ agentId: "main", match: { channel: "matrix", accountId: "ops" } }],
       channels: { matrix: { dm: { allowFrom: ["*"] } } },
     };
-    setRuntimeConfigSnapshot(cfg);
+    configSnapshot.setRuntimeConfigSnapshot(cfg);
     const binding = {
       bindingId: "reaction-owner",
       targetSessionKey: "global",
@@ -58,15 +47,13 @@ describe("Matrix reaction ownership", () => {
       boundAt: 1,
       metadata: { agentId: "research" },
     };
-    registerSessionBindingAdapter({
+    sessionBindings.registerSessionBindingAdapter({
       ...binding.conversation,
       listBySession: () => [binding],
       resolveByConversation: () => binding,
     });
-    const { handler, recordInboundSession, runPrepared } = createMatrixReactionTestHarness({ cfg });
-
+    const { handler, recordInboundSession, runPrepared } = createReactionHarness({ cfg });
     await handler(roomId, reactionEvent("$owner-reaction"));
-
     expect(peekSystemEventEntries("agent:research:global")).toEqual([
       expect.objectContaining({ text: "Matrix reaction added: 👍 by sender on msg $msg1" }),
     ]);
@@ -78,24 +65,19 @@ describe("Matrix reaction ownership", () => {
 
   it("rejects an already-running reaction after its runtime is revoked", async () => {
     const cfg = { channels: { matrix: { dm: { allowFrom: ["*"] } } } };
-    const builder = createPluginRegistry({
+    const builder = plugins.createPluginRegistry({
       logger: { info() {}, warn() {}, error() {}, debug() {} },
-      runtime: createPluginRuntimeMock({ system: { enqueueSystemEvent } }),
+      runtime: plugins.createPluginRuntimeMock({ system: { enqueueSystemEvent } }),
       activateGlobalSideEffects: false,
     });
-    const record = createPluginRecord({ id: "matrix", origin: "bundled" });
+    const record = plugins.createPluginRecord({ id: "matrix", origin: "bundled" });
     const api = builder.createApi(record, { config: cfg });
     builder.registry.plugins.push(record);
     const targetLookup = createDeferred<void>();
-    const targetEvent = createMatrixTextMessageEvent({
-      eventId: "$msg1",
-      sender: "@bot:example.org",
-      body: "Bot response",
-      originServerTs: 0,
-    });
+    const targetEvent = textMessage({ eventId: "$msg1", sender: "@bot:example.org", body: "" });
     const target = createDeferred<typeof targetEvent>();
     const runtime = { error: vi.fn(), log: vi.fn(), exit: vi.fn() };
-    const { handler } = createMatrixHandlerTestHarness({
+    const { handler } = createHarness({
       cfg,
       runtime,
       system: api.runtime.system,
@@ -120,7 +102,7 @@ describe("Matrix reaction ownership", () => {
     } finally {
       target.resolve(targetEvent);
       await reaction.catch(() => undefined);
-      await disposePluginRegistryInstances(builder.registry);
+      await plugins.disposePluginRegistryInstances(builder.registry);
     }
   });
 });
