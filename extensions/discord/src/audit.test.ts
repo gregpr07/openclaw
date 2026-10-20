@@ -42,9 +42,6 @@ describe("discord audit", () => {
     const cfg = {
       channels: {
         discord: {
-          enabled: true,
-          token: "t",
-          groupPolicy: "allowlist",
           guilds,
         },
       },
@@ -106,30 +103,21 @@ describe("discord audit", () => {
     expect(collected.unresolvedChannels).toBe(1);
   });
 
-  it.each([ChannelType.GuildVoice, ChannelType.GuildStageVoice])(
-    "requires voice permissions for voice channel audit targets of type %s",
-    async (channelType) => {
-      fetchChannelPermissionsDiscordMock.mockResolvedValueOnce({
-        permissions: ["ViewChannel", "SendMessages"],
-        channelType,
-      });
-      const result = await audit(["222"]);
-      expect(result.ok).toBe(false);
-      expect(result.channels[0]?.missing).toEqual(["Connect", "Speak", "ReadMessageHistory"]);
-    },
-  );
-
+  const voiceMissing = ["Connect", "Speak", "ReadMessageHistory"];
+  const threadMissing = ["SendMessagesInThreads"];
   it.each([
-    ChannelType.GuildNewsThread,
-    ChannelType.GuildPublicThread,
-    ChannelType.GuildPrivateThread,
-  ])("requires thread send permission for thread audit targets of type %s", async (channelType) => {
+    [ChannelType.GuildVoice, "222", voiceMissing],
+    [ChannelType.GuildStageVoice, "222", voiceMissing],
+    [ChannelType.GuildNewsThread, "333", threadMissing],
+    [ChannelType.GuildPublicThread, "333", threadMissing],
+    [ChannelType.GuildPrivateThread, "333", threadMissing],
+  ] as const)("requires channel-type permissions for %s", async (channelType, id, missing) => {
     fetchChannelPermissionsDiscordMock.mockResolvedValueOnce({
       permissions: ["ViewChannel", "SendMessages"],
       channelType,
     });
-    const result = await audit(["333"]);
+    const result = await audit([id]);
     expect(result.ok).toBe(false);
-    expect(result.channels[0]?.missing).toEqual(["SendMessagesInThreads"]);
+    expect(result.channels[0]?.missing).toEqual(missing);
   });
 });

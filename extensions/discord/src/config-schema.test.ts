@@ -130,19 +130,10 @@ describe("discord config schema", () => {
   });
 
   it.each([
-    {
-      name: "streaming activity without url",
-      config: { activity: "Live", activityType: 1 },
-    },
-    {
-      name: "activityUrl without streaming type",
-      config: { activity: "Live", activityUrl: "https://twitch.tv/openclaw" },
-    },
-    {
-      name: "auto presence min update interval above check interval",
-      config: { autoPresence: { enabled: true, intervalMs: 5000, minUpdateIntervalMs: 6000 } },
-    },
-  ] as const)("rejects $name", ({ config }) => {
+    ["streaming without URL", { activity: "Live", activityType: 1 }],
+    ["URL without streaming", { activity: "Live", activityUrl: "https://twitch.tv/openclaw" }],
+    ["inverted intervals", { autoPresence: { intervalMs: 5000, minUpdateIntervalMs: 6000 } }],
+  ] as const)("rejects %s", (_name, config) => {
     expect(DiscordConfigSchema.safeParse(config).success).toBe(false);
   });
 });

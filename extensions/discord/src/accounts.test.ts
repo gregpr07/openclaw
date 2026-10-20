@@ -18,7 +18,7 @@ function config(discord: DiscordConfig): OpenClawConfig {
   return { channels: { discord } };
 }
 
-describe("Discord defaultAccount omission contract", () => {
+describe("Discord accounts", () => {
   it("createDiscordActionGate uses configured defaultAccount when accountId is omitted", () => {
     const gate = createDiscordActionGate({
       cfg: config({
@@ -43,9 +43,6 @@ describe("Discord defaultAccount omission contract", () => {
       "default",
     ]);
   });
-});
-
-describe("resolveDiscordAccount allowFrom precedence", () => {
   it("does not inherit default account allowFrom for named account when top-level is absent", () => {
     const resolved = resolveDiscordAccount({
       cfg: config({
@@ -59,13 +56,10 @@ describe("resolveDiscordAccount allowFrom precedence", () => {
 
     expect(resolved.config.allowFrom).toBeUndefined();
   });
-});
-
-describe("resolveDiscordMaxLinesPerMessage", () => {
   it.each([
     ["prefers explicit runtime over merged config", "default", { maxLinesPerMessage: 55 }, 55],
     ["uses per-account value over root when runtime omits it", "work", {}, 80],
-  ] as const)("%s", (_name, accountId, discordConfig, expected) => {
+  ] as const)("maxLinesPerMessage %s", (_name, accountId, discordConfig, expected) => {
     const resolved = resolveDiscordMaxLinesPerMessage({
       cfg: config({
         maxLinesPerMessage: 120,
@@ -77,9 +71,6 @@ describe("resolveDiscordMaxLinesPerMessage", () => {
 
     expect(resolved).toBe(expected);
   });
-});
-
-describe("Discord duplicate-token account filtering", () => {
   it("keeps the config-token account over default env fallback when tokens collide", () => {
     vi.stubEnv("DISCORD_BOT_TOKEN", "same-token");
     const accountId = "work";
