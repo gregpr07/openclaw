@@ -13,27 +13,11 @@ import {
 const telegramModelsTestPlugin: ChannelPlugin = {
   ...createChannelTestPluginBase({
     id: "telegram",
-    label: "Telegram",
-    docsPath: "/channels/telegram",
-    capabilities: {
-      chatTypes: ["direct", "group", "channel", "thread"],
-      reactions: true,
-      threads: true,
-      media: true,
-      polls: true,
-      nativeCommands: true,
-      blockStreaming: true,
-    },
   }),
   commands: {
     buildModelsProviderChannelData: ({ providers }) => ({
       telegram: {
-        buttons: providers.map((provider) => [
-          {
-            text: provider.id,
-            callback_data: `models:${provider.id}`,
-          },
-        ]),
+        buttons: providers.map(({ id }) => [{ text: id, callback_data: `models:${id}` }]),
       },
     }),
   },
@@ -42,11 +26,6 @@ const telegramModelsTestPlugin: ChannelPlugin = {
 const menuOnlyModelsTestPlugin: ChannelPlugin = {
   ...createChannelTestPluginBase({
     id: "menuonly",
-    label: "Menu Only",
-    capabilities: {
-      chatTypes: ["direct"],
-      nativeCommands: true,
-    },
   }),
   commands: {
     buildModelsMenuChannelData: ({ providers }) => ({

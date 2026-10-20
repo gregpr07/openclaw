@@ -1,10 +1,8 @@
-// Tests explicit continuation commands, target capture, and prepared-path handoff.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearTestEmbeddedRun as clearActiveEmbeddedRun,
   registerTestEmbeddedRun as setActiveEmbeddedRun,
 } from "../../agents/embedded-agent-runner/runs.test-support.js";
-import type { ChatType } from "../../channels/chat-type.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type {
   ReplyBackendQueueMessageOptions,
@@ -46,18 +44,12 @@ async function expectSteer(params: ReturnType<typeof buildParams>, message: stri
   expect(queueMessage).not.toHaveBeenCalled();
 }
 
-async function beginActiveOperation(
-  sessionKey: string,
-  sessionId = "session-active",
-  authorityRun = createMockFollowupRun({ run: { sessionId, sessionKey } }),
-) {
+async function beginActiveOperation(sessionKey: string, sessionId = "session-active") {
+  const authorityRun = createMockFollowupRun({ run: { sessionId, sessionKey } });
   const operation = createReplyOperation({ sessionKey, sessionId, resetTriggered: false });
-  const authorityRoute = {
-    provider: authorityRun.run.provider,
-    model: authorityRun.run.model,
-  };
+  const { provider, model } = authorityRun.run;
   await operation.bindToolAuthoritySnapshotAsync(prepareReplyToolAuthority(authorityRun));
-  const toolAuthorityFingerprint = await operation.bindToolAuthorityRouteAsync(authorityRoute);
+  const fingerprint = await operation.bindToolAuthorityRouteAsync({ provider, model });
   operation.setPhase("running");
   operation.attachBackend({
     kind: "embedded",
@@ -65,47 +57,7 @@ async function beginActiveOperation(
     messageInjection: { isAvailable: () => true, queueMessage },
   });
   operations.push(operation);
-  return { operation, toolAuthorityFingerprint };
-}
-
-function createCommandAuthorityRun(params: ReturnType<typeof buildParams>) {
-  return createMockFollowupRun({
-    originatingChannel: params.ctx.OriginatingChannel,
-    toolsAllow: params.opts?.toolsAllow,
-    disableTools: params.opts?.disableTools,
-    run: {
-      agentId: params.agentId ?? "main",
-      agentDir: params.agentDir ?? "/tmp/agent",
-      sessionId: "session-active",
-      sessionKey: params.sessionKey,
-      messageProvider: params.ctx.OriginatingChannel ?? params.ctx.Provider ?? params.ctx.Surface,
-      chatType: params.ctx.ChatType as ChatType | undefined,
-      agentAccountId: params.ctx.AccountId,
-      conversationToolPolicy: params.ctx.ConversationToolPolicy,
-      groupId: undefined,
-      groupChannel: undefined,
-      groupSpace: undefined,
-      memberRoleIds: params.ctx.MemberRoleIds,
-      spawnedBy: params.sessionEntry?.spawnedBy,
-      senderId: params.ctx.SenderId,
-      senderName: params.ctx.SenderName,
-      senderUsername: params.ctx.SenderUsername,
-      senderE164: params.ctx.SenderE164,
-      senderIsOwner: params.command.senderIsOwner,
-      traceAuthorized:
-        params.command.senderIsOwner ||
-        (params.ctx.GatewayClientScopes ?? []).includes("operator.admin"),
-      approvalReviewerDeviceId: params.ctx.ApprovalReviewerDeviceId,
-      clientCaps: params.ctx.GatewayClientCaps,
-      toolBindings: params.ctx.GatewayRunToolBindings,
-      inputProvenance: params.ctx.InputProvenance,
-      workspaceDir: params.workspaceDir,
-      config: params.cfg,
-      toolOverrides: params.sessionEntry?.toolOverrides,
-      provider: params.provider,
-      model: params.model,
-    },
-  });
+  return fingerprint;
 }
 
 describe("handleSteerCommand", () => {
@@ -121,13 +73,7 @@ describe("handleSteerCommand", () => {
     const message = "stop the deploy\nand revert the migration first";
     const params = buildParams(`/steer ${message}`);
     params.opts = { toolsAllow: ["read"] };
-    const { toolAuthorityFingerprint } = await beginActiveOperation(
-      "agent:main:main",
-      "session-active",
-      createCommandAuthorityRun(params),
-    );
-
-    expect(toolAuthorityFingerprint).toEqual(expect.any(String));
+    expect(await beginActiveOperation("agent:main:main")).toEqual(expect.any(String));
     await expectSteer(params, message);
     expectBody(params, message);
   });
@@ -165,9 +111,10 @@ describe("handleSteerCommand", () => {
       const params = buildParams("/steer use the active direct lane");
       params.sessionKey = "agent:main:telegram:slash:123";
 
-      const result = await handleSteerCommand(params, true);
-
-      expect(result).toEqual({ shouldContinue: true, queueModeOverride: "steer" });
+      expect(await handleSteerCommand(params, true)).toEqual({
+        shouldContinue: true,
+        queueModeOverride: "steer",
+      });
       expect(params.ctx.BodyForAgent).toBe("use the active direct lane");
     } finally {
       clearActiveEmbeddedRun(sessionId, handle, sessionKey);
@@ -175,9 +122,7 @@ describe("handleSteerCommand", () => {
   });
 
   it("returns usage for an empty steer command", async () => {
-    const result = await handleSteerCommand(buildParams("/steer"), true);
-
-    expect(result).toEqual({
+    expect(await handleSteerCommand(buildParams("/steer"), true)).toEqual({
       shouldContinue: false,
       reply: { text: "Usage: /steer <message>" },
     });
@@ -186,9 +131,7 @@ describe("handleSteerCommand", () => {
 
   it("continues visibly as a normal prompt when no direct owner is active", async () => {
     const params = buildParams("/steer keep going");
-    const result = await handleSteerCommand(params, true);
-
-    expect(result).toEqual({ shouldContinue: true });
+    expect(await handleSteerCommand(params, true)).toEqual({ shouldContinue: true });
     expectBody(params, "keep going");
     expect(queueMessage).not.toHaveBeenCalled();
   });

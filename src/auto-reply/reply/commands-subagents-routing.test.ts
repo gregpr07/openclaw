@@ -1,4 +1,3 @@
-// Tests subagent inspection command routing and authorization.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
 import {
@@ -6,7 +5,10 @@ import {
   resetPluginRuntimeStateForTest,
   setActivePluginRegistry,
 } from "../../plugins/runtime.js";
-import { createOutboundTestPlugin, createTestRegistry } from "../../test-utils/channel-plugins.js";
+import {
+  createChannelTestPluginBase,
+  createTestRegistry,
+} from "../../test-utils/channel-plugins.js";
 import { resolveCommandAuthorization } from "../command-auth.js";
 import type { MsgContext } from "../templating.js";
 import { handleAcpCommand } from "./commands-acp.js";
@@ -31,10 +33,7 @@ function registerOwnerEnforcingTelegramPlugin() {
       {
         pluginId: "telegram",
         plugin: {
-          ...createOutboundTestPlugin({
-            id: "telegram",
-            outbound: { deliveryMode: "direct" },
-          }),
+          ...createChannelTestPluginBase({ id: "telegram" }),
           commands: { enforceOwnerForCommands: true },
           config: {
             listAccountIds: () => ["default"],
@@ -51,7 +50,7 @@ function registerOwnerEnforcingTelegramPlugin() {
 
 function buildParams(
   commandBody: string,
-  ctxOverrides?: Record<string, unknown>,
+  ctxOverrides?: Partial<MsgContext>,
 ): HandleCommandsParams {
   const params = buildCommandTestParams(
     commandBody,
@@ -61,25 +60,12 @@ function buildParams(
       ...ctxOverrides,
     },
   );
-  const ctx = params.ctx;
-  const sessionKey = ctx.SessionKey ?? "agent:main:main";
-  const provider = ctx.Provider ?? "whatsapp";
-
   Object.assign(params.command, {
     isAuthorizedSender: true,
     senderIsOwner: true,
-    senderId: "owner",
-    ownerList: [],
-    from: "test-user",
-    to: "test-bot",
   });
-  return Object.assign(params, {
-    directives: {},
-    sessionKey,
-    workspaceDir: "/tmp/openclaw-commands-subagents",
-    provider,
-    model: "test-model",
-  });
+  params.sessionKey = params.ctx.SessionKey ?? "agent:main:main";
+  return params;
 }
 
 describe("subagents command dispatch", () => {
@@ -130,14 +116,13 @@ describe("subagents command dispatch", () => {
       CommandTargetSessionKey: "agent:main:telegram:target",
     } as MsgContext;
     const auth = resolveCommandAuthorization({ ctx, cfg, commandAuthorized: true });
-    const params = buildParams("/subagents list", ctx as unknown as Record<string, unknown>);
+    const params = buildParams("/subagents list", ctx);
     params.cfg = cfg;
     Object.assign(params.command, auth);
 
     const result = await handleSubagentsCommand(params, true);
 
-    expect(auth.senderIsOwner).toBe(false);
-    expect(auth.isAuthorizedSender).toBe(false);
+    expect(auth).toMatchObject({ senderIsOwner: false, isAuthorizedSender: false });
     expect(result).toEqual({ shouldContinue: false });
     expect(readContextMock).not.toHaveBeenCalled();
   });

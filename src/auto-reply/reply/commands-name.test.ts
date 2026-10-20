@@ -36,7 +36,7 @@ async function seed(entry = session(), key = sessionKey) {
 
 function buildNameParams(
   commandBodyNormalized: string,
-  overrides: { isAuthorizedSender?: boolean; commandSource?: string; sessionKey?: string } = {},
+  overrides: { isAuthorizedSender?: boolean; commandSource?: string } = {},
 ): HandleCommandsParams {
   const params = buildCommandTestParams(
     commandBodyNormalized,
@@ -49,17 +49,11 @@ function buildNameParams(
   );
   Object.assign(params.command, {
     isAuthorizedSender: overrides.isAuthorizedSender ?? true,
-    senderIsOwner: true,
-    senderId: "tester",
-    ownerList: [],
   });
   return Object.assign(params, {
-    directives: {},
     sessionStore: {},
-    sessionKey: overrides.sessionKey ?? sessionKey,
+    sessionKey,
     storePath,
-    provider: "openai",
-    model: "gpt-5.5",
   });
 }
 
@@ -73,13 +67,8 @@ describe("name command", () => {
       acceptsArgs: true,
       scope: "both",
       category: "session",
+      args: [expect.objectContaining({ name: "title", captureRemaining: true })],
     });
-    expect(command?.args).toEqual([
-      expect.objectContaining({
-        name: "title",
-        captureRemaining: true,
-      }),
-    ]);
   });
 
   it("suggests a name without mutating when no argument is given", async () => {
@@ -87,10 +76,10 @@ describe("name command", () => {
 
     const params = buildNameParams("/name");
     params.sessionEntry = loadSessionEntry({ storePath, sessionKey });
-    const result = await handleNameCommand(params, true);
-
-    expect(result?.shouldContinue).toBe(false);
-    expect(result?.reply?.text).toContain("Use /name <title>");
+    expect(await handleNameCommand(params, true)).toMatchObject({
+      shouldContinue: false,
+      reply: { text: expect.stringContaining("Use /name <title>") },
+    });
     expect(loadSessionEntry({ storePath, sessionKey })?.label).toBeUndefined();
     expect(takeCommandSessionMetadataChanges(params.ctx)).toBeUndefined();
   });
@@ -104,9 +93,7 @@ describe("name command", () => {
     );
 
     const params = buildNameParams("/name Taken");
-    const result = await handleNameCommand(params, true);
-
-    expect(result?.reply?.text).toContain("label already in use");
+    expect((await handleNameCommand(params, true))?.reply?.text).toContain("label already in use");
     expect(loadSessionEntry({ storePath, sessionKey })?.label).toBeUndefined();
     expect(takeCommandSessionMetadataChanges(params.ctx)).toBeUndefined();
   });
@@ -125,10 +112,10 @@ describe("name command", () => {
     const params = buildNameParams("/name First native", { commandSource: "slash" });
     params.sessionEntry = session({ sessionId: "sess-native" });
 
-    const result = await handleNameCommand(params, true);
-
-    expect(result?.shouldContinue).toBe(false);
-    expect(result?.reply?.text).toContain("First native");
+    expect(await handleNameCommand(params, true)).toMatchObject({
+      shouldContinue: false,
+      reply: { text: expect.stringContaining("First native") },
+    });
     expect(loadSessionEntry({ storePath, sessionKey })?.label).toBe("First native");
     expect(params.sessionEntry?.label).toBe("First native");
     expect(takeCommandSessionMetadataChanges(params.ctx)).toEqual([
@@ -140,9 +127,7 @@ describe("name command", () => {
     await seed();
 
     const params = buildNameParams("/name Secret", { isAuthorizedSender: false });
-    const result = await handleNameCommand(params, true);
-
-    expect(result?.shouldContinue).toBe(false);
+    expect((await handleNameCommand(params, true))?.shouldContinue).toBe(false);
     expect(loadSessionEntry({ storePath, sessionKey })?.label).toBeUndefined();
     expect(takeCommandSessionMetadataChanges(params.ctx)).toBeUndefined();
   });
