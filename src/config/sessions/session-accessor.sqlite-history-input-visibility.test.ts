@@ -132,26 +132,24 @@ it.each([false, true])(
             transcript: { ...scope, sessionFile: scope.sessionKey },
             database: target,
           }).subagentCoordination;
-          const boundaryOffset = Number(compacted);
-          expect(resolver.isSubagentRunMessage("quiet-run", 2 + boundaryOffset)).toBe(true);
+          const classify = (seq: number, runId = "steered-run") =>
+            resolver.isSubagentRunMessage(runId, seq + Number(compacted));
+          expect(classify(2, "quiet-run")).toBe(true);
           expect(laterInputInspections).toBe(0);
           expect(hiddenSteerInspections).toBe(0);
-          expect(resolver.isSubagentRunMessage("steered-run", 4 + boundaryOffset)).toBe(true);
+          expect(classify(4)).toBe(true);
           expect(hiddenSteerInspections).toBe(0);
-          expect(resolver.isSubagentRunMessage("steered-run", 6 + boundaryOffset)).toBe(true);
+          expect(classify(6)).toBe(true);
           const inspectedHiddenSteer = hiddenSteerInspections;
           expect(inspectedHiddenSteer).toBeGreaterThan(0);
-          expect(resolver.isSubagentRunMessage("steered-run", 4 + boundaryOffset)).toBe(true);
-          expect(hiddenSteerInspections).toBe(inspectedHiddenSteer);
-          expect(resolver.isSubagentRunMessage("steered-run", 8 + boundaryOffset)).toBe(false);
-          expect(resolver.isSubagentRunMessage("steered-run", 4 + boundaryOffset)).toBe(true);
+          expect([classify(4), classify(8), classify(4)]).toEqual([true, false, true]);
           expect(hiddenSteerInspections).toBe(inspectedHiddenSteer);
           expect(laterInputInspections).toBe(0);
           const reads = trackSqliteStatementExecutions(nativeDb, ["selected"], (sql) =>
             /^select\b/i.test(sql.trimStart()) ? "selected" : null,
           );
           try {
-            expect(resolver.isSubagentRunMessage("visible-run", 10 + boundaryOffset)).toBe(false);
+            expect(classify(10, "visible-run")).toBe(false);
             // An ordinary input needs only its own facts, regardless of later display markers.
             expect(reads.rowCounts.selected).toBeLessThanOrEqual(8);
           } finally {

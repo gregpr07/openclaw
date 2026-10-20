@@ -18,12 +18,9 @@ import { resolveMaintenanceConfigFromInput } from "./store-maintenance.js";
 
 afterEach(() => vi.restoreAllMocks());
 
-it.for([
-  { owner: "canonical agent", alias: false },
-  { owner: "aliased shared store", alias: true },
-])(
-  "joins active maintenance finalization during physical close ($owner)",
-  async ({ alias }, test) => {
+it.for([false, true])(
+  "joins active maintenance finalization during physical close (alias=%s)",
+  async (alias, test) => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const options = {
         agentId: "main",

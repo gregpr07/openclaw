@@ -38,19 +38,12 @@ export function withRecentActiveTranscriptEvents<T>(
 
 export function useHistoryEventScope() {
   const env: NodeJS.ProcessEnv = {};
-  const scope = {
-    agentId: "main",
-    env,
-    sessionId: "history-events-test",
-    sessionKey: "agent:main:history-events-test",
-  };
+  const sessionId = "history-events-test";
+  const scope = { agentId: "main", env, sessionId, sessionKey: `agent:main:${sessionId}` };
   const sessionDirs = useSessionStoreTempDirs(afterAll, "openclaw-history-events-");
   afterEach(() => vi.restoreAllMocks());
   beforeEach(() => {
-    scope.env = {
-      ...process.env,
-      OPENCLAW_STATE_DIR: sessionDirs.make(),
-    };
+    scope.env = { ...process.env, OPENCLAW_STATE_DIR: sessionDirs.make() };
   });
   return scope;
 }
@@ -92,11 +85,7 @@ export function insertSyntheticHistory(
         ...(isBoundary
           ? boundaryType === "compaction"
             ? { summary: "synthetic" }
-            : {
-                customType: "synthetic-notice",
-                content: "synthetic",
-                display: seq % 4 === 0,
-              }
+            : { customType: "synthetic-notice", content: "synthetic", display: seq % 4 === 0 }
           : { message: { role: "user", content: "synthetic" } }),
       };
       insertEvent({ seq, eventJson: JSON.stringify(event), createdAt: seq });

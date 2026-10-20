@@ -6,7 +6,7 @@ import { expect, it, vi } from "vitest";
 import type { OpenClawAgentDatabaseWriteAdmission } from "../../state/openclaw-agent-db.js";
 import { runReclamationWorkerPort } from "./session-accessor.sqlite-mutation-worker.runtime.js";
 import type {
-  SqliteReclamationWorkerCloseRequest,
+  SqliteReclamationWorkerCloseRequest as CloseRequest,
   SqliteReclamationWorkerRequest,
 } from "./session-accessor.sqlite-reclamation-worker.types.js";
 
@@ -30,12 +30,7 @@ vi.mock("../../state/openclaw-agent-canonical-validation-receipt.js", () => ({})
 vi.mock("../../state/openclaw-agent-db-readonly-open.js", () => ({}));
 vi.mock("../../state/openclaw-state-db-cache.js", () => ({}));
 vi.mock("../../state/openclaw-agent-db-identity.js", () => ({
-  readOpenClawAgentDatabaseIdentity: () => ({
-    identity: "1:2",
-    birthtime: "1",
-    incarnation: "fixture-incarnation",
-    filename: "/fixture/agent.sqlite",
-  }),
+  readOpenClawAgentDatabaseIdentity: () => ({ identity: "1:2" }),
   createOpenClawAgentDatabaseClaim: () => ({ assertCurrent() {}, release() {} }),
 }));
 vi.mock("../../state/openclaw-agent-db-lease.js", () => ({
@@ -130,11 +125,7 @@ it("keeps idle collection after buffered admission replies and cancels it for th
     if (pendingAdmission) {
       admit(pendingAdmission);
     }
-    post({
-      type: "close",
-      operationId: ++operationId,
-      coordination,
-    } satisfies SqliteReclamationWorkerCloseRequest);
+    post({ type: "close", operationId: ++operationId, coordination } satisfies CloseRequest);
     try {
       await running;
     } finally {

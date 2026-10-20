@@ -16,7 +16,15 @@ import {
   upsertSessionEntryCore,
 } from "./session-accessor.js";
 import { waitForSessionTranscriptIndexReconcilesInStateDir } from "./session-transcript-reconcile.js";
+import { transcriptMessage as message } from "./transcript-message.test-support.js";
 import type { InternalSessionEntry } from "./types.js";
+
+const sessionHeader = (id: string, timestamp: string) => ({
+  type: "session",
+  version: 3,
+  id,
+  timestamp,
+});
 
 export const agentId = "main";
 export const sessionKey = "agent:main:message-cut";
@@ -46,12 +54,7 @@ export function useSessionMessageCutFixtures() {
   }) {
     const scope = { agentId, ...params };
     await upsertSessionEntryCore(scope, { sessionId: params.sessionId, updatedAt: Date.now() });
-    await appendTranscriptEvent(scope, {
-      type: "session",
-      id: params.sessionId,
-      version: 3,
-      timestamp: "2026-07-18T01:00:00.000Z",
-    });
+    await appendTranscriptEvent(scope, sessionHeader(params.sessionId, "2026-07-18T01:00:00.000Z"));
     await appendTranscriptMessage(scope, {
       eventId: `${params.sessionId}-user`,
       message: { role: "user", content: params.headline },
@@ -98,44 +101,28 @@ export function useSessionMessageCutFixtures() {
     };
     await upsertSessionEntryCore(scope, entry);
     const startedAt = Date.parse("2026-07-18T00:00:00.000Z");
-    await appendTranscriptEvent(scope, {
-      type: "session",
-      id: sessionId,
-      version: 3,
-      timestamp: new Date(startedAt).toISOString(),
-    });
-    const messages: Array<
-      [string, string | null, Parameters<typeof appendTranscriptMessage>[1]["message"]]
-    > = [
-      ["user-1", null, { role: "user", content: "first prompt" }],
-      ["assistant-1", "user-1", { role: "assistant", content: "first answer" }],
-      [
-        "user-2",
-        "assistant-1",
-        {
-          role: "user",
-          content: [
-            { type: "text", text: "second prompt" },
-            { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+    await appendTranscriptEvent(scope, sessionHeader(sessionId, new Date(startedAt).toISOString()));
+    const messages = [
+      message("user-1", null, { role: "user", content: "first prompt" }),
+      message("assistant-1", "user-1", { role: "assistant", content: "first answer" }),
+      message("user-2", "assistant-1", {
+        role: "user",
+        content: [
+          { type: "text", text: "second prompt" },
+          { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+        ],
+        __openclaw: {
+          media: [
+            { path: "/state/media/inbound/stored-image.png", contentType: "image/png" },
+            { path: "/state/media/inbound/notes.txt", contentType: "text/plain" },
           ],
-          __openclaw: {
-            media: [
-              { path: "/state/media/inbound/stored-image.png", contentType: "image/png" },
-              { path: "/state/media/inbound/notes.txt", contentType: "text/plain" },
-            ],
-          },
         },
-      ],
-      ["assistant-2", "user-2", { role: "assistant", content: "second answer" }],
-      ["off-path-user", "user-1", { role: "user", content: "inactive prompt" }],
+      }),
+      message("assistant-2", "user-2", { role: "assistant", content: "second answer" }),
+      message("off-path-user", "user-1", { role: "user", content: "inactive prompt" }),
     ];
-    for (const [index, [eventId, parentId, message]] of messages.entries()) {
-      await appendTranscriptMessage(scope, {
-        eventId,
-        parentId,
-        message,
-        now: startedAt + (index + 1) * 1_000,
-      });
+    for (const [index, event] of messages.entries()) {
+      await appendTranscriptMessage(scope, { ...event, now: startedAt + (index + 1) * 1_000 });
     }
     await appendTranscriptEvent(scope, {
       type: "leaf",

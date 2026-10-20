@@ -59,15 +59,10 @@ vi.mock("../paths.js", async () => ({
 }));
 vi.mock("./metadata.js", () => ({}));
 vi.mock("./session-accessor.sqlite-entry-cache.js", () => ({}));
-vi.mock("./session-accessor.sqlite-entry-store.js", () => ({
-  readSessionEntrySelectionSnapshot: () => [],
-  writeSessionEntry: (_database: unknown, _key: string, entry: InternalSessionEntry) => entry,
-}));
+vi.mock("./session-accessor.sqlite-entry-store.js", () => ({}));
 vi.mock("./session-accessor.sqlite-exact-read.js", () => ({}));
 vi.mock("./session-accessor.sqlite-history.js", () => ({}));
-vi.mock("./session-accessor.sqlite-identity.js", () => ({
-  prepareSessionIdentityPublication: () => () => {},
-}));
+vi.mock("./session-accessor.sqlite-identity.js", () => ({}));
 vi.mock("./session-accessor.sqlite-initial-entry.js", () => ({}));
 vi.mock("./session-accessor.sqlite-maintenance-kick.js", () => ({
   kickSessionEntryMaintenanceAfterWrite: boundary.maintain,
@@ -104,12 +99,7 @@ it.each([
     await withMockedPlatform(platform, async () => {
       const root = path.resolve("/synthetic/captured");
       const home = path.resolve("/synthetic/home");
-      const rawEnv = {
-        [key]: root,
-        [readonlyKey]: "1",
-        HOME: home,
-        OPENCLAW_TEST_FAST: "1",
-      };
+      const rawEnv = { [key]: root, [readonlyKey]: "1", HOME: home, OPENCLAW_TEST_FAST: "1" };
       const env = input === "precloned" ? cloneEnvWithPlatformSemantics(rawEnv) : rawEnv;
       const scope = { agentId: "main", sessionKey: "agent:main:capture", env };
       const caseSensitiveMiss = platform === "linux" && key !== "OPENCLAW_STATE_DIR";

@@ -19,12 +19,8 @@ import { runSqliteMutationWorkerRequest } from "./session-accessor.sqlite-worker
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
-function createCommitFixture(
-  options: {
-    holdAfterApproval?: boolean;
-    outcome?: "rollback" | "exit-before-commit";
-  } = {},
-) {
+type CommitOptions = { holdAfterApproval?: boolean; outcome?: "rollback" | "exit-before-commit" };
+function createCommitFixture(options: CommitOptions = {}) {
   const directory = fs.realpathSync(tempDirs.make("openclaw-reclamation-commit-"));
   const databasePath = path.join(directory, "proof.sqlite");
   const database = openNodeSqliteDatabase(databasePath);
