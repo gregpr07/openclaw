@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { vi } from "vitest";
+import { note } from "../../packages/terminal-core/src/note.js";
 import { readAgentRosterProperty } from "../agents/agent-roster.js";
 import type { OpenClawConfig } from "../config/config.js";
 import type { OpenClawConfigWithLegacyRoster } from "../config/legacy.roster.js";
@@ -11,7 +12,7 @@ import {
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { noteStateIntegrity as noteStateIntegrityRaw } from "./doctor-state-integrity.js";
 
-export const noteMock = vi.fn();
+export const noteMock = vi.mocked(note);
 
 export function withMainAgentRoster(
   cfg: OpenClawConfigWithLegacyRoster,
@@ -92,7 +93,6 @@ export function writeSessionStore(
 export async function runStateIntegrityText(cfg: OpenClawConfigWithLegacyRoster): Promise<string> {
   await noteStateIntegrity(withMainAgentRoster(cfg), {
     confirmRuntimeRepair: vi.fn(async () => false),
-    note: noteMock,
   });
   return stateIntegrityText();
 }

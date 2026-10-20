@@ -46,6 +46,11 @@ import {
   formatWindowsCloudSyncedStateDirWarning,
 } from "./doctor-state-storage-platform.js";
 
+vi.mock("../../packages/terminal-core/src/note.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../packages/terminal-core/src/note.js")>()),
+  note: vi.fn(),
+}));
+
 vi.mock("../channels/plugins/bundled-ids.js", async (importOriginal) => ({
   ...(await importOriginal<typeof BundledIds>()),
   listBundledChannelIds: () => ["matrix", "whatsapp"],
@@ -225,7 +230,7 @@ describe("doctor state integrity", () => {
       ),
     ).toEqual([]);
     const confirmRuntimeRepair = decline();
-    await noteStateIntegrity(cfg, { confirmRuntimeRepair, note: noteMock });
+    await noteStateIntegrity(cfg, { confirmRuntimeRepair });
     expect(hasRepairPromptMessage(confirmRuntimeRepair, "Create OAuth dir at")).toBe(false);
     const text = stateIntegrityText();
     expect(text).toContain("OAuth dir not present");
@@ -249,7 +254,7 @@ describe("doctor state integrity", () => {
       const cfg: OpenClawConfig =
         mode === "pairing" ? { channels: { telegram: { dmPolicy: "pairing" } } } : {};
       const confirmRuntimeRepair = decline();
-      await noteStateIntegrity(cfg, { confirmRuntimeRepair, note: noteMock });
+      await noteStateIntegrity(cfg, { confirmRuntimeRepair });
       expect(hasRepairPromptMessage(confirmRuntimeRepair, "Create OAuth dir at")).toBe(true);
       expect(stateIntegrityText()).toContain("CRITICAL: OAuth dir missing");
     },
@@ -300,7 +305,6 @@ describe("doctor state integrity", () => {
       {
         confirmRuntimeRepair: async ({ message }) =>
           message.includes("Clear stale aborted recovery flags"),
-        note: noteMock,
       },
     );
     const storePath = resolveSessionStorePathCore(undefined, { agentId: "main" });
@@ -410,7 +414,6 @@ describe("doctor retained session integrity", () => {
       await noteStateIntegrityRaw(cfg, {
         confirmRuntimeRepair: async ({ message }) =>
           message.startsWith("Clear stale aborted recovery flags"),
-        note: vi.fn(),
       });
 
       expect(loadSessionEntry({ ...scope, sessionKey: "agent:main:kept" })?.abortedLastRun).toBe(

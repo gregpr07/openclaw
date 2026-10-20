@@ -318,7 +318,7 @@ it.each(["missing", "old-schema", "removed"] as const)(
               repositoryPath,
               ...(agentId ? [agentId] : []),
             ],
-            { env: { OPENCLAW_TEST_RUNTIME_LOG: "1" }, timeout: 30_000 },
+            { timeout: 30_000 },
           );
         const resultSchema = z.object({
           commit: z.string(),

@@ -36,6 +36,11 @@ import {
   writeSessionStore,
 } from "./doctor-state-integrity.test-support.js";
 
+vi.mock("../../packages/terminal-core/src/note.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../packages/terminal-core/src/note.js")>()),
+  note: vi.fn(),
+}));
+
 vi.mock("../channels/plugins/bundled-ids.js", async (importOriginal) => ({
   ...(await importOriginal<typeof BundledIds>()),
   listBundledChannelIds: () => ["matrix", "whatsapp"],
@@ -78,7 +83,7 @@ describe("doctor transcript and heartbeat session repairs", () => {
     message.startsWith("Move heartbeat-owned main session"),
   );
   const run = (cfg: OpenClawConfig = {}) =>
-    noteStateIntegrity(cfg, { confirmRuntimeRepair: approveMove, note: noteMock });
+    noteStateIntegrity(cfg, { confirmRuntimeRepair: approveMove });
   const readLegacy = () =>
     JSON.parse(
       fs.readFileSync(resolveSessionStorePathCore(undefined, { agentId: "main" }), "utf8"),
@@ -182,7 +187,6 @@ describe("doctor transcript and heartbeat session repairs", () => {
         );
         return true;
       },
-      note: noteMock,
     });
     expect(await listSessionEntryKeysReadOnly(scope)).toEqual([key]);
     expect(loadSessionEntryReadOnly({ ...scope, sessionKey: key })?.lastInteractionAt).toBe(2);
@@ -219,7 +223,6 @@ describe("doctor transcript and heartbeat session repairs", () => {
       confirmRuntimeRepair: async ({ message }) =>
         message.startsWith("Clear stale Codex") ||
         message.startsWith("Move heartbeat-owned main session"),
-      note: noteMock,
     });
     const keys = await listSessionEntryKeysReadOnly(scope);
     expect(keys).not.toContain(key);

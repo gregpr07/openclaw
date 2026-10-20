@@ -31,7 +31,6 @@ const MODULE_IMPORT_ERROR_PATTERN =
 
 type StaleChunkReloadDeps = {
   buildId?: string;
-  storage?: Pick<Storage, "getItem" | "setItem"> | null;
   reload?: () => void;
   canReload?: () => boolean;
 };
@@ -163,7 +162,7 @@ export async function scheduleStaleChunkReload(deps: StaleChunkReloadDeps = {}):
   if (deps.canReload?.() === false || !canReloadControlUiDocument()) {
     return false;
   }
-  const storage = deps.storage === undefined ? getSafeSessionStorage() : deps.storage;
+  const storage = getSafeSessionStorage();
   const buildId = deps.buildId ?? CONTROL_UI_BUILD_INFO.buildId;
   // A recent automatic reload of this build defers the next one instead of refusing it:
   // a broken build reloads at most once per window, while a later network blip still
@@ -250,7 +249,7 @@ export async function scheduleStaleChunkReload(deps: StaleChunkReloadDeps = {}):
 export async function reloadAfterRenderErrorOnce(
   deps: Omit<StaleChunkReloadDeps, "buildId"> = {},
 ): Promise<boolean> {
-  const storage = deps.storage === undefined ? getSafeSessionStorage() : deps.storage;
+  const storage = getSafeSessionStorage();
   if (!storage || deps.canReload?.() === false || !canReloadControlUiDocument()) {
     return false;
   }
@@ -360,9 +359,8 @@ function waitForRecoverySignal(delayMs: number, signal?: AbortSignal): Promise<v
  * A dismissed failure surface retires pending recovery for the running build. Gateway
  * build targets keep theirs, and surfaces still showing a failure re-arm on render.
  */
-export function cancelStaleChunkRecovery(
-  storage: Pick<Storage, "getItem" | "setItem"> | null = getSafeSessionStorage(),
-): void {
+export function cancelStaleChunkRecovery(): void {
+  const storage = getSafeSessionStorage();
   const storageIdentity = storage ?? unavailableStorage;
   const recovery = recoveryByStorage.get(storageIdentity);
   if (recovery?.pending && recovery.buildId === CONTROL_UI_BUILD_INFO.buildId) {
@@ -378,7 +376,7 @@ export async function retryStaleChunkReloadWhenReachable(
 ): Promise<boolean> {
   // Automatic recovery keeps running: a manual retry during an outage may fail, and a
   // successful one retires the shared target before the automatic wait can reload.
-  const storage = deps.storage === undefined ? getSafeSessionStorage() : deps.storage;
+  const storage = getSafeSessionStorage();
   const storageIdentity = storage ?? unavailableStorage;
   if (
     !(await waitForReachableControlUiDocument(
