@@ -1,11 +1,11 @@
 import { DatabaseSync } from "node:sqlite";
 import { expect, it, vi } from "vitest";
 import {
-  validateUsersLinkChannelIdentityResult,
-  validateUsersLinkEmailResult,
-  validateUsersListChannelIdentitiesResult,
-  validateUsersUnlinkChannelIdentityResult,
-  validateUsersSetRoleResult,
+  validateUsersLinkChannelIdentityResult as validLink,
+  validateUsersLinkEmailResult as validEmail,
+  validateUsersListChannelIdentitiesResult as validList,
+  validateUsersUnlinkChannelIdentityResult as validUnlink,
+  validateUsersSetRoleResult as validRole,
 } from "../../packages/gateway-protocol/src/index.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveUserChannelIdentity } from "../state/user-channel-identities.js";
@@ -16,7 +16,9 @@ import {
 import { setUserProfileRole } from "../state/user-profile-writes.worker.js";
 import { ensureGatewayOwnerProfile, ensureProfileForEmail } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import { authorizationClient } from "./server-methods.authorization.test-support.js";
 import { handleGatewayRequest } from "./server-methods.js";
+import type { GatewayRequestContext } from "./server-methods/types.js";
 
 const identity = { channelId: "discord", accountId: "team-bot", senderId: "100000000000000001" };
 async function dispatch(
@@ -37,23 +39,15 @@ async function dispatch(
       ...(expectedProfileId ? { expectedProfileId } : {}),
     },
     respond,
-    client: {
-      connId: "channel-identity-test",
+    isWebchatConnect: () => false,
+    client: authorizationClient("channel-identity-test", scopes, {
       authenticatedUserId: "admin@example.test",
       authenticatedUserProfile: { profileId, displayName: "Admin", hasAvatar: false, updatedAt: 1 },
-      connect: {
-        role: "operator",
-        scopes,
-        client: { id: "test", version: "1", platform: "test", mode: "test" },
-        minProtocol: 1,
-        maxProtocol: 1,
-      },
-    } as Parameters<typeof handleGatewayRequest>[0]["client"],
-    isWebchatConnect: () => false,
+    }),
     context: {
       getRuntimeConfig: () => cfg,
       logGateway: { warn: vi.fn() },
-    } as unknown as Parameters<typeof handleGatewayRequest>[0]["context"],
+    } as unknown as GatewayRequestContext,
   });
   return respond.mock.calls[0];
 }
@@ -84,17 +78,21 @@ it.each(["person", "shared owner"] as const)(
         },
       };
       const link = { profileId: person.id, identity };
-      const roleAssignment = { profileId: person.id, role: "admin" };
-      const emailLink = { email: "secondary@example.test", targetProfileId: person.id };
       const request = (method: string, params: unknown, scopes = ["operator.admin"]) =>
-        dispatch(method, params, scopes, admin.id, admin.id, cfg);
-      for (const [method, params] of [
-        ["users.linkChannelIdentity", link],
-        ["users.listChannelIdentities", { profileId: person.id }],
-        ["users.unlinkChannelIdentity", link],
-        ["users.setRole", roleAssignment],
-        ["users.linkEmail", emailLink],
-      ] as const) {
+        dispatch(`users.${method}`, params, scopes, admin.id, admin.id, cfg);
+      const operations = [
+        ["linkChannelIdentity", link, validLink, link],
+        ["listChannelIdentities", { profileId: person.id }, validList, { links: [link] }],
+        ["unlinkChannelIdentity", link, validUnlink, { removed: true }],
+        ["setRole", { profileId: person.id, role: "admin" }, validRole, undefined],
+        [
+          "linkEmail",
+          { email: "secondary@example.test", targetProfileId: person.id },
+          validEmail,
+          undefined,
+        ],
+      ] as const;
+      for (const [method, params] of operations) {
         const denied = await request(method, params, ["operator.read", "operator.write"]);
         expect(denied).toEqual([false, undefined, expect.objectContaining({ code: "FORBIDDEN" })]);
       }
@@ -103,21 +101,14 @@ it.each(["person", "shared owner"] as const)(
       try {
         // Cover initial selected-account/role admission, worker grants and response guards
         // through the registered in-process route, which has no WS worker brand.
-        const linked = await request("users.linkChannelIdentity", link);
-        expect(linked).toEqual([true, link]);
-        expect(validateUsersLinkChannelIdentityResult(linked?.[1])).toBe(true);
-        const listed = await request("users.listChannelIdentities", { profileId: person.id });
-        expect(listed).toEqual([true, { links: [link] }]);
-        expect(validateUsersListChannelIdentitiesResult(listed?.[1])).toBe(true);
-        const removed = await request("users.unlinkChannelIdentity", link);
-        expect(removed).toEqual([true, { removed: true }]);
-        expect(validateUsersUnlinkChannelIdentityResult(removed?.[1])).toBe(true);
-        const assigned = await request("users.setRole", roleAssignment);
-        expect(assigned?.[0]).toBe(true);
-        expect(validateUsersSetRoleResult(assigned?.[1])).toBe(true);
-        const merged = await request("users.linkEmail", emailLink);
-        expect(merged?.[0]).toBe(true);
-        expect(validateUsersLinkEmailResult(merged?.[1])).toBe(true);
+        for (const [method, params, validate, expected] of operations) {
+          const result = await request(method, params);
+          expect(result?.[0]).toBe(true);
+          expect(validate(result?.[1])).toBe(true);
+          if (expected !== undefined) {
+            expect(result).toEqual([true, expected]);
+          }
+        }
         expect(queries).not.toHaveBeenCalled();
       } finally {
         queries.mockRestore();
@@ -146,8 +137,7 @@ it("rejects malformed or conflicting assignments without changing the saved bind
         ["operator.admin"],
         admin.id,
       );
-      expect(denied?.[0]).toBe(false);
-      expect(denied?.[2]).toMatchObject({ code: "INVALID_REQUEST" });
+      expect(denied).toMatchObject([false, undefined, { code: "INVALID_REQUEST" }]);
       expect(resolveUserChannelIdentity(identity)?.profileId).toBe(admin.id);
     }
   });
