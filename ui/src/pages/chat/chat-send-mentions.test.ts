@@ -16,20 +16,13 @@ it("offsets selected recipients past reply and annotation", async () => {
   const host = makeChatHost({
     chatMessage: "  🔎 @Alex please review  ",
     chatMentions: [recipient("profile-alex", 5)],
-    chatAttachments: [createBrowserAnnotationAttachment("mention", "Unselected @Other context")],
-    chatReplyTarget: {
-      messageId: "synthetic-reply",
-      text: "Unselected @Other quote",
-      senderLabel: "Reader",
-    },
-    getWorkContext: () => ({ page: "chat", title: "Unselected @Other work context" }),
+    chatAttachments: [createBrowserAnnotationAttachment("mention", "@Other context")],
+    chatReplyTarget: { messageId: "reply", text: "@Other quote", senderLabel: "Reader" },
+    getWorkContext: () => ({ page: "chat", title: "@Other work context" }),
     requestHandlers: { "chat.send": { status: "started" } },
   });
-
   await handleSendChat(host);
-
-  const expected =
-    "> **Reader:** Unselected @Other quote\n\nUnselected @Other context\n\n🔎 @Alex please review";
+  const expected = "> **Reader:** @Other quote\n\n@Other context\n\n🔎 @Alex please review";
   expect(findChatSendPayload(host)).toMatchObject({
     message: expected,
     mentions: [recipient("profile-alex", expected.indexOf("@Alex"))],
@@ -58,38 +51,32 @@ it("retains replacement recipients during history loading", async () => {
   expect(host.chatMessage).toBe("");
   host.chatMessage = "@Alex please review";
   host.chatMentions = [recipient("profile-second")];
+  const info: ChatHistoryResult["sessionInfo"] = {
+    key: "agent:main",
+    kind: "direct",
+    updatedAt: 1,
+  };
   history.resolve({
     messages: [],
-    sessionInfo: {
-      key: host.sessionKey,
-      kind: "direct",
-      updatedAt: 1,
-      status: "done",
-      hasActiveRun: false,
-    },
+    sessionInfo: { ...info, status: "done", hasActiveRun: false },
   });
   await sending;
-
   expect(findChatSendPayload(host).mentions).toEqual([recipient("profile-first")]);
   expect(host.chatMessage).toBe("@Alex please review");
   expect(host.chatMentions).toEqual([recipient("profile-second")]);
 });
 
-it.each(["/new @Alex", "/status @Alex", "/btw @Alex review"])(
-  "rejects unsupported mentions in %s",
-  async (message) => {
-    const mentions = [recipient("profile-alex", message.indexOf("@Alex"))];
-    const host = makeChatHost({
-      chatMessage: message,
-      chatMentions: mentions,
-      requestHandlers: {},
-    });
-
-    await handleSendChat(host);
-
-    expect(host.request).not.toHaveBeenCalled();
-    expect(host.chatMessage).toBe(message);
-    expect(host.chatMentions).toEqual(mentions);
-    expect(host.chatError).toBeTruthy();
-  },
-);
+const commands = ["/new @Alex", "/status @Alex", "/btw @Alex review"];
+it.each(commands)("rejects unsupported mentions in %s", async (message) => {
+  const mentions = [recipient("profile-alex", message.indexOf("@Alex"))];
+  const host = makeChatHost({
+    chatMessage: message,
+    chatMentions: mentions,
+    requestHandlers: {},
+  });
+  await handleSendChat(host);
+  expect(host.request).not.toHaveBeenCalled();
+  expect(host.chatMessage).toBe(message);
+  expect(host.chatMentions).toEqual(mentions);
+  expect(host.chatError).toBeTruthy();
+});

@@ -34,14 +34,9 @@ it.each(["send", "send-consumed", "receipt"] as const)(
   "bounds %s without a client deadline",
   async (kind) => {
     const { pending, wire, issued, host } = requestFixture("deadline");
-    host.chatMessage = "Keep this submission";
+    host.chatMessage = "submission";
     const retry = vi.fn();
-    const item = {
-      id: "queued",
-      sendRunId: "original-run",
-      text: "Keep this submission",
-      createdAt: 1,
-    };
+    const item = { id: "queued", sendRunId: "original-run", text: "submission", createdAt: 1 };
     const operation =
       kind !== "receipt"
         ? handleSendChat(host)
@@ -95,14 +90,7 @@ it("retains audio until its connection acknowledges", async () => {
   const send = requestChatSend(host, {
     message: "caption",
     runId: "audio-run",
-    attachments: [
-      {
-        id: "voice",
-        mimeType: "audio/wav",
-        fileName: "voice.wav",
-        dataUrl: "data:audio/wav;base64,YXVkaW8=",
-      },
-    ],
+    attachments: [{ id: "voice", mimeType: "audio/wav", dataUrl: "data:audio/wav;base64,YQ==" }],
   });
   const settled = vi.fn();
   void send.then(settled, settled);
@@ -114,13 +102,9 @@ it("retains audio until its connection acknowledges", async () => {
   if (typeof id !== "string") {
     throw new Error("Expected an issued chat.send request id");
   }
-  pending.handleResponse({
-    type: "res",
-    id,
-    ok: true,
-    payload: { runId: "audio-run", status: "started" },
-  });
-  expect(await send).toMatchObject({ runId: "audio-run", status: "started" });
+  const ack = { runId: "audio-run", status: "started" };
+  pending.handleResponse({ type: "res", id, ok: true, payload: { ...ack } });
+  expect(await send).toMatchObject(ack);
   expect(pending.hasPending).toBe(false);
   expect(wire.send).toHaveBeenCalledOnce();
 });
