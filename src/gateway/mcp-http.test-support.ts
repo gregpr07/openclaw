@@ -1,21 +1,15 @@
-import { expect } from "vitest";
+import { afterAll, beforeAll, expect, vi } from "vitest";
 import type { AnyAgentTool } from "../agents/tools/common.js";
-import { ensureMcpLoopbackServer } from "./mcp-http.js";
+import { closeMcpLoopbackServer, ensureMcpLoopbackServer } from "./mcp-http.js";
 import { getActiveMcpLoopbackRuntime } from "./mcp-http.loopback-runtime.js";
 import { McpLoopbackToolCache } from "./mcp-http.runtime.js";
 import { buildMcpToolSchema } from "./mcp-http.schema.js";
 
-export type MockGatewayTool = {
-  name: string;
-  label: string;
-  description: string;
+export type MockGatewayTool = Pick<AnyAgentTool, "name" | "label" | "description"> & {
   parameters: AnyAgentTool["parameters"] | Record<string, unknown>;
   prepareBeforeToolCallParams?: (...args: unknown[]) => unknown;
   finalizeBeforeToolCallParams?: (...args: unknown[]) => unknown;
-  execute: (...args: unknown[]) => Promise<{
-    content: unknown[];
-    details?: unknown;
-  }>;
+  execute: (...args: unknown[]) => Promise<{ content: unknown[]; details?: unknown }>;
 };
 
 export type MockGatewayScopedTools = {
@@ -41,6 +35,18 @@ export async function startLoopbackServerForTest() {
   return { port: runtime.port, runtime };
 }
 
+export function useLoopbackServerForTest() {
+  let runtime: Awaited<ReturnType<typeof startLoopbackServerForTest>>["runtime"];
+  beforeAll(async () => {
+    ({ runtime } = await startLoopbackServerForTest());
+  });
+  afterAll(async () => {
+    await closeMcpLoopbackServer();
+    vi.restoreAllMocks();
+  });
+  return () => runtime;
+}
+
 export async function sendRaw(params: {
   port: number;
   token?: string;
@@ -60,9 +66,8 @@ export async function sendRaw(params: {
   });
 }
 
-export async function readMcpPayload(response: Response): Promise<McpToolResultPayload> {
-  return (await response.json()) as McpToolResultPayload;
-}
+export const readMcpPayload = async (response: Response): Promise<McpToolResultPayload> =>
+  (await response.json()) as McpToolResultPayload;
 
 export async function readOkMcpPayload(response: Response) {
   const payload = await readMcpPayload(response);
@@ -88,24 +93,16 @@ export function jsonHeaders(headers: Record<string, string> = {}) {
   return { "content-type": "application/json", ...headers };
 }
 
-export function mcpToolCallBody(name: string, args: Record<string, unknown> = {}, id = 1) {
-  return JSON.stringify(mcpToolCallMessage(name, args, id));
-}
+export const mcpToolCallBody = (name: string, args: Record<string, unknown> = {}, id = 1) =>
+  JSON.stringify(mcpToolCallMessage(name, args, id));
 
 export function mcpToolCallMessage(name: string, args: Record<string, unknown> = {}, id = 1) {
-  return {
-    jsonrpc: "2.0",
-    id,
-    method: "tools/call",
-    params: { name, arguments: args },
-  } as const;
+  return { jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } } as const;
 }
 
 export function expectMcpToolNames(payload: McpToolResultPayload, expected: string[]) {
   const names = (payload.result?.tools ?? []).map((tool) => tool.name);
-  for (const name of expected) {
-    expect(names).toContain(name);
-  }
+  expect(names).toEqual(expect.arrayContaining(expected));
 }
 
 export function expectMcpResultText(
@@ -122,16 +119,11 @@ export function expectMcpResultText(
 }
 
 export function objectSchema(properties: Record<string, unknown>, required?: string[]) {
-  return {
-    type: "object",
-    properties,
-    ...(required ? { required } : {}),
-  };
+  return { type: "object", properties, ...(required ? { required } : {}) };
 }
 
-export function angleSchema(property: unknown, required: string[] = []) {
-  return objectSchema({ angle: property }, required);
-}
+export const angleSchema = (property: unknown, required: string[] = []) =>
+  objectSchema({ angle: property }, required);
 
 export function makeMockTool(overrides: Partial<MockGatewayTool> = {}): MockGatewayTool {
   return {
@@ -144,25 +136,14 @@ export function makeMockTool(overrides: Partial<MockGatewayTool> = {}): MockGate
   };
 }
 
-export function makeMessageTool(overrides: Partial<MockGatewayTool> = {}): MockGatewayTool {
-  return makeMockTool({
-    name: "message",
-    description: "send a message",
-    ...overrides,
-  });
-}
+export const makeMessageTool = (overrides: Partial<MockGatewayTool> = {}): MockGatewayTool =>
+  makeMockTool({ name: "message", description: "send a message", ...overrides });
 
-export function makeCronTool(overrides: Partial<MockGatewayTool> = {}): MockGatewayTool {
-  return makeMockTool({
-    name: "cron",
-    description: "manage schedules",
-    ...overrides,
-  });
-}
+export const makeCronTool = (overrides: Partial<MockGatewayTool> = {}): MockGatewayTool =>
+  makeMockTool({ name: "cron", description: "manage schedules", ...overrides });
 
-export function mcpToolsListBody(id = 1) {
-  return JSON.stringify({ jsonrpc: "2.0", id, method: "tools/list" });
-}
+export const mcpToolsListBody = (id = 1) =>
+  JSON.stringify({ jsonrpc: "2.0", id, method: "tools/list" });
 
 export function buildMockMcpToolSchema(tools: MockGatewayTool[]) {
   return buildMcpToolSchema(tools as unknown as Parameters<typeof buildMcpToolSchema>[0]);

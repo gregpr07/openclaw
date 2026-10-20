@@ -13,11 +13,9 @@ import { testing as cliBackendsTesting } from "../agents/cli-backends.test-suppo
 import { buildDefaultTestCliBackend } from "../agents/cli-runner.test-helpers.js";
 import * as cliExecution from "../agents/cli-runner/execute.js";
 import { createCliRunCurrentAssertion } from "../agents/cli-runner/execution-target.js";
+import { setRawCliBackendForPrepareTest } from "../agents/cli-runner/prepare-mcp.test-support.js";
 import { prepareCliRunContext } from "../agents/cli-runner/prepare.js";
-import {
-  resetCliRunnerPrepareTestDeps,
-  setCliRunnerPrepareTestDeps,
-} from "../agents/cli-runner/prepare.test-support.js";
+import * as preparation from "../agents/cli-runner/prepare.test-support.js";
 import type { PreparedCliRunContext } from "../agents/cli-runner/types.js";
 import "../auto-reply/dispatch.js";
 import { prewarmConfigDrivenReplyRuntime } from "../auto-reply/reply/get-reply-from-config.runtime.js";
@@ -30,21 +28,13 @@ import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { getProcessSupervisor } from "../process/supervisor/index.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
-import {
-  createOpenClawTestState,
-  type OpenClawTestState,
-} from "../test-utils/openclaw-test-state.js";
+import * as testState from "../test-utils/openclaw-test-state.js";
 import { closeMcpLoopbackServer, ensureMcpLoopbackServer } from "./mcp-http.js";
 import { getActiveMcpLoopbackRuntime } from "./mcp-http.loopback-runtime.js";
-import {
-  jsonHeaders,
-  mcpToolCallMessage,
-  sendRaw,
-  type McpToolResultPayload,
-} from "./mcp-http.test-support.js";
+import * as mcp from "./mcp-http.test-support.js";
 
 type ToolSurface = { native: string[] | undefined; mcp: string[] };
-let state: OpenClawTestState;
+let state: testState.OpenClawTestState;
 let config: OpenClawConfig;
 const contexts: PreparedCliRunContext[] = [];
 const admissions: PreparedAgentRunAdmission[] = [];
@@ -52,7 +42,7 @@ const receipts: sessionEvents.SessionEventReceipt[] = [];
 const sessionKeys: string[] = [];
 
 beforeAll(async () => {
-  state = await createOpenClawTestState({
+  state = await testState.createOpenClawTestState({
     prefix: "openclaw-mcp-exec-completion-",
     layout: "state-only",
     env: {
@@ -83,21 +73,16 @@ beforeAll(async () => {
   setRuntimeConfigSnapshot(config);
   openOpenClawStateDatabase();
   setActivePluginRegistry(createEmptyPluginRegistry());
-  cliBackendsTesting.setDepsForTest({
-    resolvePluginSetupCliBackend: () => undefined,
-    resolveRuntimeCliBackends: () => [
-      {
-        ...buildDefaultTestCliBackend({ bundleMcp: true }),
-        id: "claude-cli",
-        autoSelectAuthProfile: false,
-        nativeToolMode: "selectable",
-        toolAvailabilityEnforcement: "execution-args",
-        hostOwnedTools: ["exec", "process", "apply_patch"],
-        resolveExecutionArgs: ({ baseArgs }) => baseArgs,
-      },
-    ],
+  setRawCliBackendForPrepareTest({
+    ...buildDefaultTestCliBackend({ bundleMcp: true }),
+    id: "claude-cli",
+    autoSelectAuthProfile: false,
+    nativeToolMode: "selectable",
+    toolAvailabilityEnforcement: "execution-args",
+    hostOwnedTools: ["exec", "process", "apply_patch"],
+    resolveExecutionArgs: ({ baseArgs }) => baseArgs,
   });
-  setCliRunnerPrepareTestDeps({
+  preparation.setCliRunnerPrepareTestDeps({
     isWorkspaceBootstrapPending: async () => false,
     makeBootstrapWarn: () => () => {},
     resolveBootstrapContextForRun: async () => ({ bootstrapFiles: [], contextFiles: [] }),
@@ -116,19 +101,15 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  for (const receipt of receipts) {
-    receipt.cancel();
-  }
+  receipts.forEach((receipt) => receipt.cancel());
   await Promise.all(sessionKeys.map((sessionKey) => waitForExecScope(sessionKey)));
   await Promise.all(receipts.map((receipt) => receipt.settled));
   for (const context of contexts) {
     await context.preparedBackend.cleanup?.();
   }
-  for (const admission of admissions) {
-    admission.close();
-  }
+  admissions.forEach((admission) => admission.close());
   await closeMcpLoopbackServer();
-  resetCliRunnerPrepareTestDeps();
+  preparation.resetCliRunnerPrepareTestDeps();
   cliBackendsTesting.resetDepsForTest();
   vi.restoreAllMocks();
   await state?.cleanup();
@@ -147,18 +128,18 @@ function connectPreparedTurn(context: PreparedCliRunContext, signal: AbortSignal
     args?: Record<string, unknown>,
     toolName = "exec",
   ) => {
-    const response = await sendRaw({
+    const response = await mcp.sendRaw({
       port: runtime.port,
       token,
       signal,
-      headers: jsonHeaders({ "x-openclaw-cli-capture-key": captureKey }),
+      headers: mcp.jsonHeaders({ "x-openclaw-cli-capture-key": captureKey }),
       body: JSON.stringify(
         method === "tools/call"
-          ? mcpToolCallMessage(toolName, args)
+          ? mcp.mcpToolCallMessage(toolName, args)
           : { jsonrpc: "2.0", id: 1, method },
       ),
     });
-    return { status: response.status, body: (await response.json()) as McpToolResultPayload };
+    return { status: response.status, body: (await response.json()) as mcp.McpToolResultPayload };
   };
 }
 
@@ -182,6 +163,7 @@ it.for<[string, string, string, string, string[] | undefined]>([
   "retains the CLI surface and enforces completion effects with %s",
   async ([, sessionId, terminal, expectedStatus, toolsAllow], { signal }) => {
     const sessionKey = `agent:main:${sessionId}`;
+    const session = { agentId: "main", sessionKey, sessionId };
     sessionKeys.push(sessionKey);
     const entry = {
       sessionId,
@@ -197,14 +179,10 @@ it.for<[string, string, string, string, string[] | undefined]>([
     const original = await prepareCliRunContext({
       preparedRunAdmission: admission,
       config,
-      agentId: "main",
-      sessionKey,
-      sessionId,
+      ...session,
       sessionEntry: entry,
       sessionTarget: {
-        agentId: "main",
-        sessionKey,
-        sessionId,
+        ...session,
         storePath: resolveSessionStorePathCore(config.session?.store, { agentId: "main" }),
       },
       sessionFile: state.path(`${sessionId}.jsonl`),
@@ -223,10 +201,11 @@ it.for<[string, string, string, string, string[] | undefined]>([
     });
     contexts.push(original);
     const normalSurface = await readToolSurface(original, signal);
-    expect(normalSurface.mcp).toContain("exec");
-    expect(normalSurface.mcp).toContain("session_status");
     // Ordinary managed Claude turns already use the mediated surface completions require.
-    expect(normalSurface.native).toEqual([]);
+    expect(normalSurface).toMatchObject({
+      native: [],
+      mcp: expect.arrayContaining(["exec", "session_status"]),
+    });
     if (toolsAllow) {
       expect(normalSurface.mcp).toEqual(["exec", "process", "session_status"]);
     }
@@ -248,8 +227,7 @@ it.for<[string, string, string, string, string[] | undefined]>([
           const allowed = await call("tools/call", {
             command: `node -e "require('node:fs').writeFileSync('${allowedName}', 'allowed')"`,
           });
-          expect(allowed.status).toBe(200);
-          expect(allowed.body.result?.isError).toBe(false);
+          expect(allowed).toMatchObject({ status: 200, body: { result: { isError: false } } });
           expect(await fs.readFile(path.join(state.workspaceDir, allowedName), "utf8")).toBe(
             "allowed",
           );
@@ -275,8 +253,7 @@ it.for<[string, string, string, string, string[] | undefined]>([
             const revoked = await call("tools/call", {
               command: `node -e "require('node:fs').writeFileSync('${deniedName}', 'forbidden')"`,
             });
-            expect(revoked.status).toBe(401);
-            expect(revoked.body).toEqual({ error: "unauthorized" });
+            expect(revoked).toEqual({ status: 401, body: { error: "unauthorized" } });
             expect(launches).not.toHaveBeenCalled();
             await expect(fs.stat(path.join(state.workspaceDir, deniedName))).rejects.toMatchObject({
               code: "ENOENT",
@@ -307,10 +284,7 @@ it.for<[string, string, string, string, string[] | undefined]>([
       const receipt = expectDefined(receipts[receiptIndex], "background exec completion");
       await expect(withinTest(receipt.accepted, signal)).resolves.toEqual({ ok: true });
       const outcome = await withinTest(receipt.settled, signal);
-      expect(outcome).toMatchObject({
-        status: expectedStatus,
-        executionStarted: true,
-      });
+      expect(outcome).toMatchObject({ status: expectedStatus, executionStarted: true });
       if (expectedStatus === "failed") {
         expect(outcome.error).toBeTruthy();
         expect(outcome).toMatchObject({ delivered: false, deliveryAttempted: false });
@@ -320,9 +294,7 @@ it.for<[string, string, string, string, string[] | undefined]>([
       }
       expect(completionSurfaces).toEqual([normalSurface]);
     } finally {
-      for (const receipt of receipts.slice(receiptIndex)) {
-        receipt.cancel();
-      }
+      receipts.slice(receiptIndex).forEach((receipt) => receipt.cancel());
       await Promise.all(receipts.slice(receiptIndex).map((receipt) => receipt.settled));
       execute.mockRestore();
     }

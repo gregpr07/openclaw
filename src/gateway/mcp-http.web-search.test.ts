@@ -5,19 +5,9 @@ import { prepareSystemAgentRunAdmission } from "../agents/admitted-run-context.j
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
-import {
-  activateMcpLoopbackClientGrantCapture,
-  mintMcpLoopbackClientGrant,
-  revokeMcpLoopbackClientGrant,
-} from "./mcp-grant-store.js";
-import { closeMcpLoopbackServer, ensureMcpLoopbackServer } from "./mcp-http.js";
-import { getActiveMcpLoopbackRuntime } from "./mcp-http.loopback-runtime.js";
-import {
-  jsonHeaders,
-  mcpToolCallBody,
-  mcpToolsListBody,
-  sendRaw,
-} from "./mcp-http.test-support.js";
+import * as grants from "./mcp-grant-store.js";
+import { closeMcpLoopbackServer } from "./mcp-http.js";
+import * as mcp from "./mcp-http.test-support.js";
 
 const mocks = vi.hoisted(() => ({
   search: vi.fn(async () => ({ content: [{ type: "text", text: "search result" }] })),
@@ -39,18 +29,10 @@ vi.mock("../agents/agent-tools.before-tool-call.js", () => ({
   runBeforeToolCallHook: mocks.beforeTool,
 }));
 
-type RpcResult = {
-  result?: { tools?: Array<{ name: string }>; isError?: boolean };
-  error?: unknown;
-};
-
 it("keeps private search denial, callable sibling tools, and live grant revocation on the real HTTP boundary", async () => {
   await withOpenClawTestState({ layout: "split", prefix: "mcp-search-denial-" }, async (state) => {
     const cfg: OpenClawConfig = {
-      agents: {
-        defaults: { workspace: state.workspaceDir },
-        entries: { main: {} },
-      },
+      agents: { defaults: { workspace: state.workspaceDir }, entries: { main: {} } },
       plugins: { enabled: false },
       tools: { allow: ["web_search", "message"] },
     };
@@ -61,15 +43,14 @@ it("keeps private search denial, callable sibling tools, and live grant revocati
       "mcp-search-test",
     );
     const controller = new AbortController();
-    const requests: Promise<RpcResult>[] = [];
+    const requests: Promise<mcp.McpToolResultPayload>[] = [];
     await runQaGatewayFixture(
       async () => {
         setRuntimeConfigSnapshot(cfg);
-        await ensureMcpLoopbackServer();
-        const runtime = getActiveMcpLoopbackRuntime()!;
+        const { runtime } = await mcp.startLoopbackServerForTest();
         const admittedRunContext = await admission.admit("gateway");
         const makeGrant = (disabled: boolean) => {
-          const grant = mintMcpLoopbackClientGrant({
+          const grant = grants.mintMcpLoopbackClientGrant({
             context: {
               sessionKey: "agent:main:main",
               senderIsOwner: true,
@@ -83,20 +64,22 @@ it("keeps private search denial, callable sibling tools, and live grant revocati
             runtimeOwnerToken: runtime.ownerToken,
             captureKey: `search-${disabled}`,
           };
-          expect(activateMcpLoopbackClientGrantCapture(capture)).toBeTruthy();
+          expect(grants.activateMcpLoopbackClientGrantCapture(capture)).toBeTruthy();
           return { grant, capture };
         };
         const request = (active: ReturnType<typeof makeGrant>, name?: string) => {
-          const pending = sendRaw({
-            port: runtime.port,
-            token: active.grant.token,
-            signal: controller.signal,
-            headers: jsonHeaders({
-              "x-openclaw-cli-capture-key": active.capture.captureKey,
-              "x-openclaw-web-search-disabled": "false",
-            }),
-            body: name ? mcpToolCallBody(name) : mcpToolsListBody(),
-          }).then(async (response) => (await response.json()) as RpcResult);
+          const pending = mcp
+            .sendRaw({
+              port: runtime.port,
+              token: active.grant.token,
+              signal: controller.signal,
+              headers: mcp.jsonHeaders({
+                "x-openclaw-cli-capture-key": active.capture.captureKey,
+                "x-openclaw-web-search-disabled": "false",
+              }),
+              body: name ? mcp.mcpToolCallBody(name) : mcp.mcpToolsListBody(),
+            })
+            .then(mcp.readMcpPayload);
           requests.push(pending);
           return pending;
         };
@@ -108,9 +91,7 @@ it("keeps private search denial, callable sibling tools, and live grant revocati
         expect(mocks.search).not.toHaveBeenCalled();
         expect((await request(disabled, "message")).result?.isError).toBe(false);
         const enabled = makeGrant(false);
-        expect((await request(enabled)).result?.tools?.map(({ name }) => name)).toContain(
-          "web_search",
-        );
+        mcp.expectMcpToolNames(await request(enabled), ["web_search"]);
         expect((await request(enabled, "web_search")).result?.isError).toBe(false);
         expect(mocks.search).toHaveBeenCalledOnce();
         for (const change of ["revoke", "replace"] as const) {
@@ -126,9 +107,9 @@ it("keeps private search denial, callable sibling tools, and live grant revocati
           const pending = request(active, "message");
           await entered.promise;
           if (change === "revoke") {
-            expect(revokeMcpLoopbackClientGrant(active.grant.token)).toBe(true);
+            expect(grants.revokeMcpLoopbackClientGrant(active.grant.token)).toBe(true);
           } else {
-            expect(activateMcpLoopbackClientGrantCapture(active.capture)).toBeTruthy();
+            expect(grants.activateMcpLoopbackClientGrantCapture(active.capture)).toBeTruthy();
           }
           release.resolve();
           expect((await pending).result?.isError).toBe(true);
