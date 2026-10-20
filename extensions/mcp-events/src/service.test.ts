@@ -7,6 +7,14 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { createChannelIngressDrain } from "openclaw/plugin-sdk/channel-outbound";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import {
+  clearMcpOAuthStore,
+  mcpEnterpriseIdpStoreKey,
+  prepareMcpEventCredentialConnection,
+  seedMcpOAuthStoreForTest,
+  withMcpOAuthTestLease,
+  type McpEnterpriseConfig,
+} from "openclaw/plugin-sdk/mcp-enterprise-test-runtime";
 import type * as Plugin from "openclaw/plugin-sdk/plugin-entry";
 import type * as State from "openclaw/plugin-sdk/plugin-state-runtime";
 import * as state from "openclaw/plugin-sdk/plugin-state-test-runtime";
@@ -15,16 +23,6 @@ import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime
 import { resolvePinnedHostnameWithPolicy } from "openclaw/plugin-sdk/ssrf-runtime";
 import { asOptionalRecord as record } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  mcpEnterpriseIdpStoreKey,
-  type McpEnterpriseConfig,
-} from "../../../src/agents/mcp-enterprise.js";
-import { prepareMcpEventCredentialConnection } from "../../../src/agents/mcp-event-connection.js";
-import { clearMcpOAuthStore } from "../../../src/agents/mcp-oauth-store.js";
-import {
-  seedMcpOAuthStoreForTest,
-  withMcpOAuthTestLease,
-} from "../../../src/agents/mcp-oauth.test-support.js";
 import plugin, { getMcpEventsDiagnostics } from "../index.js";
 import { createCallbackHandler } from "./http.js";
 import { McpEventsService } from "./service.js";
