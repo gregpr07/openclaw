@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { handleActivationCommand } from "./commands-session.js";
 import type { HandleCommandsParams } from "./commands-types.js";
+import { buildCommandTestParams } from "./commands.test-harness.js";
 
 const persistSessionEntryMock = vi.hoisted(() => vi.fn(async () => true));
 const persistenceConflictReply = vi.hoisted(() => ({
@@ -14,57 +15,40 @@ vi.mock("./commands-session-store.js", () => ({
   sessionEntryPersistenceConflictReply: () => persistenceConflictReply,
 }));
 
-function buildActivationParams(
-  overrides: {
-    commandBody?: string;
-    isAuthorizedSender?: boolean;
-    senderIsOwner?: boolean;
-  } = {},
-): HandleCommandsParams {
-  const commandBody = overrides.commandBody ?? "/activation always";
-  return {
-    cfg: { commands: { text: true } },
-    ctx: {
-      CommandSource: "text",
-      CommandAuthorized: overrides.isAuthorizedSender ?? true,
-      CommandBody: commandBody,
+function buildActivationParams(senderIsOwner = true): HandleCommandsParams {
+  const commandBody = "/activation always";
+  const params = buildCommandTestParams(
+    commandBody,
+    { commands: { text: true } },
+    {
       Surface: "telegram",
       Provider: "telegram",
     },
-    command: {
-      commandBodyNormalized: commandBody,
-      rawBodyNormalized: commandBody,
-      isAuthorizedSender: overrides.isAuthorizedSender ?? true,
-      senderIsOwner: overrides.senderIsOwner ?? true,
-      senderId: "group-member",
-      channel: "telegram",
-      channelId: "telegram",
-      surface: "telegram",
-      ownerList: ["owner"],
-      from: "group-member",
-      to: "bot",
-    },
+  );
+  Object.assign(params.command, {
+    isAuthorizedSender: true,
+    senderIsOwner,
+    senderId: "group-member",
+    ownerList: ["owner"],
+    from: "group-member",
+    to: "bot",
+  });
+  return Object.assign(params, {
     directives: {},
-    elevated: { enabled: true, allowed: true, failures: [] },
     sessionKey: "telegram:group:main",
     sessionEntry: {
       sessionId: "session-1",
       updatedAt: 1,
       channel: "telegram",
-      chatType: "group",
-      groupActivation: "mention",
+      chatType: "group" as const,
+      groupActivation: "mention" as const,
     },
     sessionStore: {},
     workspaceDir: "/tmp/workspace",
-    defaultGroupActivation: () => "mention",
-    resolvedVerboseLevel: "off",
-    resolvedReasoningLevel: "off",
-    resolveDefaultThinkingLevel: async () => undefined,
     provider: "openai",
     model: "gpt-5.5",
-    contextTokens: 0,
     isGroup: true,
-  } as unknown as HandleCommandsParams;
+  });
 }
 
 describe("handleActivationCommand", () => {
@@ -74,7 +58,7 @@ describe("handleActivationCommand", () => {
   });
 
   it("rejects authorized non-owner senders without changing group activation", async () => {
-    const params = buildActivationParams({ senderIsOwner: false });
+    const params = buildActivationParams(false);
 
     const result = await handleActivationCommand(params, true);
 
@@ -96,8 +80,10 @@ describe("handleActivationCommand", () => {
       shouldContinue: false,
       reply: { text: "⚙️ Group activation set to always." },
     });
-    expect(params.sessionEntry?.groupActivation).toBe("always");
-    expect(params.sessionEntry?.groupActivationNeedsSystemIntro).toBe(true);
+    expect(params.sessionEntry).toMatchObject({
+      groupActivation: "always",
+      groupActivationNeedsSystemIntro: true,
+    });
     expect(persistSessionEntryMock).toHaveBeenCalledWith({
       ...params,
       touchedFields: ["groupActivation", "groupActivationNeedsSystemIntro"],

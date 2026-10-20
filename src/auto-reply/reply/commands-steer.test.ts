@@ -32,6 +32,20 @@ function buildParams(commandBody: string) {
   return buildCommandTestParams(commandBody, baseCfg);
 }
 
+function expectBody(params: ReturnType<typeof buildParams>, message: string) {
+  expect(params.ctx).toMatchObject({ Body: message, BodyForAgent: message });
+  expect(params.command.commandBodyNormalized).toBe(message);
+}
+
+async function expectSteer(params: ReturnType<typeof buildParams>, message: string) {
+  expect(await handleSteerCommand(params, true)).toEqual({
+    shouldContinue: true,
+    queueModeOverride: "steer",
+  });
+  expect(params.ctx.BodyForAgent).toBe(message);
+  expect(queueMessage).not.toHaveBeenCalled();
+}
+
 async function beginActiveOperation(
   sessionKey: string,
   sessionId = "session-active",
@@ -113,16 +127,9 @@ describe("handleSteerCommand", () => {
       createCommandAuthorityRun(params),
     );
 
-    const result = await handleSteerCommand(params, true);
-
     expect(toolAuthorityFingerprint).toEqual(expect.any(String));
-    expect(result).toEqual({ shouldContinue: true, queueModeOverride: "steer" });
-    expect(params.ctx.Body).toBe(message);
-    expect(params.ctx.BodyForAgent).toBe(message);
-    expect(params.command.commandBodyNormalized).toBe(message);
-    // Injection now happens only after the normal path has prepared durable
-    // transcript, identity, media, cancellation, and adoption ownership.
-    expect(queueMessage).not.toHaveBeenCalled();
+    await expectSteer(params, message);
+    expectBody(params, message);
   });
 
   it("prefers the native command target over the slash-command source", async () => {
@@ -132,11 +139,7 @@ describe("handleSteerCommand", () => {
     params.ctx.CommandTargetSessionKey = "agent:main:discord:direct:target";
     params.sessionKey = "agent:main:discord:slash:user";
 
-    const result = await handleSteerCommand(params, true);
-
-    expect(result).toEqual({ shouldContinue: true, queueModeOverride: "steer" });
-    expect(params.ctx.BodyForAgent).toBe("check the target");
-    expect(queueMessage).not.toHaveBeenCalled();
+    await expectSteer(params, "check the target");
   });
 
   it("maps a text slash source lane to its active direct conversation", async () => {
@@ -144,11 +147,7 @@ describe("handleSteerCommand", () => {
     const params = buildParams("/steer use the active direct lane");
     params.sessionKey = "agent:main:telegram:slash:123";
 
-    const result = await handleSteerCommand(params, true);
-
-    expect(result).toEqual({ shouldContinue: true, queueModeOverride: "steer" });
-    expect(params.ctx.BodyForAgent).toBe("use the active direct lane");
-    expect(queueMessage).not.toHaveBeenCalled();
+    await expectSteer(params, "use the active direct lane");
   });
 
   it("maps a text slash source lane after its active embedded owner's operation clears", async () => {
@@ -190,9 +189,7 @@ describe("handleSteerCommand", () => {
     const result = await handleSteerCommand(params, true);
 
     expect(result).toEqual({ shouldContinue: true });
-    expect(params.ctx.Body).toBe("keep going");
-    expect(params.ctx.BodyForAgent).toBe("keep going");
-    expect(params.command.commandBodyNormalized).toBe("keep going");
+    expectBody(params, "keep going");
     expect(queueMessage).not.toHaveBeenCalled();
   });
 });
@@ -212,8 +209,7 @@ describe("handleFollowupCommand", () => {
         queueModeOverride: "followup",
       });
       for (const ctx of [params.ctx, params.rootCtx]) {
-        expect(ctx.Body).toBe(message);
-        expect(ctx.BodyForAgent).toBe(message);
+        expect(ctx).toMatchObject({ Body: message, BodyForAgent: message });
         expect(isExplicitFollowupCommandTurn(ctx)).toBe(true);
         expect(ctx.CommandTurn).toMatchObject({
           source,

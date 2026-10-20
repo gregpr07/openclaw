@@ -1,63 +1,66 @@
 import path from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import {
   loadSessionEntry,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
-import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import type { SessionEntry } from "../../config/sessions/types.js";
 import { useSessionStoreTempDirs } from "../../test-utils/session-state-cleanup.js";
 import { buildBuiltinChatCommands } from "../commands-registry.shared.js";
 import { takeCommandSessionMetadataChanges } from "./command-session-metadata.js";
 import { handleNameCommand } from "./commands-name.js";
 import type { HandleCommandsParams } from "./commands-types.js";
+import { buildCommandTestParams } from "./commands.test-harness.js";
 
 const sessionKey = "agent:main:web:main";
 const sessionDirs = useSessionStoreTempDirs(afterAll, "openclaw-name-command-");
 
-async function createStorePath(): Promise<string> {
-  const root = sessionDirs.make();
-  return path.join(root, "sessions.json");
+let storePath: string;
+beforeEach(() => {
+  storePath = path.join(sessionDirs.make(), "sessions.json");
+});
+
+function session(overrides: Partial<SessionEntry> = {}): SessionEntry {
+  return {
+    sessionId: "sess-main",
+    updatedAt: 1,
+    totalTokens: 0,
+    totalTokensFresh: true,
+    ...overrides,
+  };
+}
+
+async function seed(entry = session(), key = sessionKey) {
+  await upsertSessionEntryCore({ storePath, sessionKey: key }, entry);
 }
 
 function buildNameParams(
   commandBodyNormalized: string,
-  storePath: string,
   overrides: { isAuthorizedSender?: boolean; commandSource?: string; sessionKey?: string } = {},
 ): HandleCommandsParams {
-  const activeSessionKey = overrides.sessionKey ?? sessionKey;
-  return {
-    cfg: {} as OpenClawConfig,
-    ctx: {
+  const params = buildCommandTestParams(
+    commandBodyNormalized,
+    {},
+    {
       Provider: "web",
       Surface: "web",
       CommandSource: overrides.commandSource ?? "text",
     },
-    command: {
-      commandBodyNormalized,
-      isAuthorizedSender: overrides.isAuthorizedSender ?? true,
-      senderIsOwner: true,
-      senderId: "tester",
-      channel: "web",
-      channelId: "web",
-      surface: "web",
-      ownerList: [],
-      rawBodyNormalized: commandBodyNormalized,
-    },
+  );
+  Object.assign(params.command, {
+    isAuthorizedSender: overrides.isAuthorizedSender ?? true,
+    senderIsOwner: true,
+    senderId: "tester",
+    ownerList: [],
+  });
+  return Object.assign(params, {
     directives: {},
     sessionStore: {},
-    elevated: { enabled: true, allowed: true, failures: [] },
-    sessionKey: activeSessionKey,
+    sessionKey: overrides.sessionKey ?? sessionKey,
     storePath,
-    workspaceDir: "/tmp",
     provider: "openai",
     model: "gpt-5.5",
-    contextTokens: 0,
-    defaultGroupActivation: () => "mention",
-    resolvedVerboseLevel: "off",
-    resolvedReasoningLevel: "off",
-    resolveDefaultThinkingLevel: async () => undefined,
-    isGroup: false,
-  } as unknown as HandleCommandsParams;
+  });
 }
 
 describe("name command", () => {
@@ -80,13 +83,9 @@ describe("name command", () => {
   });
 
   it("suggests a name without mutating when no argument is given", async () => {
-    const storePath = await createStorePath();
-    await upsertSessionEntryCore(
-      { storePath, sessionKey },
-      { sessionId: "sess-main", updatedAt: 1, totalTokens: 0, totalTokensFresh: true },
-    );
+    await seed();
 
-    const params = buildNameParams("/name", storePath);
+    const params = buildNameParams("/name");
     params.sessionEntry = loadSessionEntry({ storePath, sessionKey });
     const result = await handleNameCommand(params, true);
 
@@ -97,24 +96,14 @@ describe("name command", () => {
   });
 
   it("rejects a label already used by another session", async () => {
-    const storePath = await createStorePath();
     const now = Date.now();
-    await upsertSessionEntryCore(
-      { storePath, sessionKey },
-      { sessionId: "sess-main", updatedAt: now, totalTokens: 0, totalTokensFresh: true },
-    );
-    await upsertSessionEntryCore(
-      { storePath, sessionKey: "agent:main:web:other" },
-      {
-        sessionId: "sess-other",
-        updatedAt: now,
-        totalTokens: 0,
-        totalTokensFresh: true,
-        label: "Taken",
-      },
+    await seed(session({ updatedAt: now }));
+    await seed(
+      session({ sessionId: "sess-other", updatedAt: now, label: "Taken" }),
+      "agent:main:web:other",
     );
 
-    const params = buildNameParams("/name Taken", storePath);
+    const params = buildNameParams("/name Taken");
     const result = await handleNameCommand(params, true);
 
     expect(result?.reply?.text).toContain("label already in use");
@@ -123,20 +112,9 @@ describe("name command", () => {
   });
 
   it("reads the persisted name when params.sessionEntry is absent", async () => {
-    const storePath = await createStorePath();
-    await upsertSessionEntryCore(
-      { storePath, sessionKey },
-      {
-        sessionId: "sess-main",
-        updatedAt: 1,
-        totalTokens: 0,
-        totalTokensFresh: true,
-        label: "Billing rework",
-        displayName: "Dashboard session",
-      },
-    );
+    await seed(session({ label: "Billing rework", displayName: "Dashboard session" }));
 
-    const params = buildNameParams("/name", storePath);
+    const params = buildNameParams("/name");
     const result = await handleNameCommand(params, true);
 
     expect(result?.reply?.text).toContain("Current session name: Billing rework");
@@ -144,17 +122,8 @@ describe("name command", () => {
   });
 
   it("seeds a brand-new native session entry that is not yet persisted", async () => {
-    const storePath = await createStorePath();
-    const params = buildNameParams("/name First native", storePath, { commandSource: "slash" });
-    // Native slash sessions hand the handler an in-memory entry that the fast
-    // path has not written to the store yet. The rename must seed it instead of
-    // reporting "no active session to name".
-    params.sessionEntry = {
-      sessionId: "sess-native",
-      updatedAt: 1,
-      totalTokens: 0,
-      totalTokensFresh: true,
-    };
+    const params = buildNameParams("/name First native", { commandSource: "slash" });
+    params.sessionEntry = session({ sessionId: "sess-native" });
 
     const result = await handleNameCommand(params, true);
 
@@ -168,13 +137,9 @@ describe("name command", () => {
   });
 
   it("does not rename for an unauthorized sender", async () => {
-    const storePath = await createStorePath();
-    await upsertSessionEntryCore(
-      { storePath, sessionKey },
-      { sessionId: "sess-main", updatedAt: 1, totalTokens: 0, totalTokensFresh: true },
-    );
+    await seed();
 
-    const params = buildNameParams("/name Secret", storePath, { isAuthorizedSender: false });
+    const params = buildNameParams("/name Secret", { isAuthorizedSender: false });
     const result = await handleNameCommand(params, true);
 
     expect(result?.shouldContinue).toBe(false);
@@ -183,9 +148,8 @@ describe("name command", () => {
   });
 
   it("ignores other commands and disabled text commands", async () => {
-    const storePath = await createStorePath();
-    const params = buildNameParams("/name Anything", storePath);
+    const params = buildNameParams("/name Anything");
     expect(await handleNameCommand(params, false)).toBeNull();
-    expect(await handleNameCommand(buildNameParams("/goal status", storePath), true)).toBeNull();
+    expect(await handleNameCommand(buildNameParams("/goal status"), true)).toBeNull();
   });
 });

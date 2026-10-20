@@ -5,49 +5,39 @@ import { INTERNAL_MESSAGE_CHANNEL } from "../../utils/message-channel.js";
 import { normalizeCommandBody } from "../commands-registry-normalize.js";
 import { handleLoopCommand } from "./commands-loop.js";
 import type { HandleCommandsParams } from "./commands-types.js";
+import { buildCommandTestParams } from "./commands.test-harness.js";
 
 function buildLoopParams(commandBodyNormalized: string): HandleCommandsParams {
-  return {
-    cfg: {},
-    ctx: {
+  const params = buildCommandTestParams(
+    commandBodyNormalized,
+    {},
+    {
       Provider: INTERNAL_MESSAGE_CHANNEL,
       Surface: INTERNAL_MESSAGE_CHANNEL,
-      CommandSource: "text",
-      Body: commandBodyNormalized,
       RawBody: commandBodyNormalized,
-      CommandBody: commandBodyNormalized,
       BodyForCommands: commandBodyNormalized,
       BodyForAgent: commandBodyNormalized,
       BodyStripped: commandBodyNormalized,
     },
-    command: {
-      commandBodyNormalized,
-      isAuthorizedSender: true,
-      senderIsOwner: true,
-      senderId: "tester",
-      channel: INTERNAL_MESSAGE_CHANNEL,
-      channelId: INTERNAL_MESSAGE_CHANNEL,
-      surface: INTERNAL_MESSAGE_CHANNEL,
-      ownerList: [],
-      rawBodyNormalized: commandBodyNormalized,
-    },
+  );
+  Object.assign(params.command, {
+    isAuthorizedSender: true,
+    senderIsOwner: true,
+    senderId: "tester",
+    ownerList: [],
+  });
+  return Object.assign(params, {
     directives: {},
-    elevated: { enabled: true, allowed: true, failures: [] },
     sessionKey: "agent:main:webchat:test",
-    workspaceDir: "/tmp",
     provider: "openai",
     model: "gpt-5.6",
-    contextTokens: 0,
-    defaultGroupActivation: () => "mention",
-    resolvedVerboseLevel: "off",
-    resolvedReasoningLevel: "off",
-    resolveDefaultThinkingLevel: async () => undefined,
-    isGroup: false,
-  } as unknown as HandleCommandsParams;
+  });
 }
 
-function rewrittenBody(params: HandleCommandsParams): string {
-  return (params.ctx as { BodyForAgent?: string }).BodyForAgent ?? "";
+async function rewrite(body: string): Promise<string> {
+  const params = buildLoopParams(body);
+  expect(await handleLoopCommand(params, true)).toEqual({ shouldContinue: true });
+  return params.ctx.BodyForAgent ?? "";
 }
 
 // Mirrors the handler's conversation tag for the fixture sessionKey.
@@ -68,58 +58,46 @@ describe("loop command", () => {
   });
 
   it("rewrites a fixed interval loop as a current-session cron job", async () => {
-    const params = buildLoopParams("/loop 5m check ci");
-
-    expect(await handleLoopCommand(params, true)).toEqual({ shouldContinue: true });
-    expect(rewrittenBody(params)).toContain('schedule:{kind:"every",everyMs:300000}');
-    expect(rewrittenBody(params)).toContain('sessionTarget:"current"');
-    expect(rewrittenBody(params)).toContain(`"${LOOP_PREFIX} check ci"`);
-    expect(rewrittenBody(params)).toContain("do not use the message tool");
+    const body = await rewrite("/loop 5m check ci");
+    expect(body).toContain('schedule:{kind:"every",everyMs:300000}');
+    expect(body).toContain('sessionTarget:"current"');
+    expect(body).toContain(`"${LOOP_PREFIX} check ci"`);
+    expect(body).toContain("do not use the message tool");
     // Loop work orders are model-facing prompts: they must teach the canonical
     // automations tool, never the legacy cron alias (RFC 0026).
-    expect(rewrittenBody(params)).toContain("with the automations tool");
-    expect(rewrittenBody(params)).not.toMatch(/\bcron tool\b/);
+    expect(body).toContain("with the automations tool");
+    expect(body).not.toMatch(/\bcron tool\b/);
   });
 
   it("rewrites an interval-free loop with pacing and next_check guidance", async () => {
-    const params = buildLoopParams("/loop watch for new github issues");
-
-    expect(await handleLoopCommand(params, true)).toEqual({ shouldContinue: true });
-    expect(rewrittenBody(params)).toContain('pacing:{min:"1m",max:"1h"}');
-    expect(rewrittenBody(params)).toContain('action:\\"next_check\\"');
-    expect(rewrittenBody(params)).toContain('in:\\"<duration>\\"');
+    const body = await rewrite("/loop watch for new github issues");
+    expect(body).toContain('pacing:{min:"1m",max:"1h"}');
+    expect(body).toContain('action:\\"next_check\\"');
+    expect(body).toContain('in:\\"<duration>\\"');
   });
 
   it("keeps every line of a multi-line loop prompt and a single-line job name", async () => {
-    const params = buildLoopParams(normalizeCommandBody("/loop 10m check these:\n- CI\n- deploy"));
-
-    expect(await handleLoopCommand(params, true)).toEqual({ shouldContinue: true });
-    expect(rewrittenBody(params)).toContain(`name:"${LOOP_PREFIX} check these: - CI - deploy"`);
-    expect(rewrittenBody(params)).toContain(
+    const body = await rewrite(normalizeCommandBody("/loop 10m check these:\n- CI\n- deploy"));
+    expect(body).toContain(`name:"${LOOP_PREFIX} check these: - CI - deploy"`);
+    expect(body).toContain(
       'message:"[loop check these: - CI - deploy] check these:\\n- CI\\n- deploy\\nDo the task',
     );
   });
 
   it("rewrites /loop status as a conversation-scoped list work order", async () => {
-    const params = buildLoopParams("/loop status");
-
-    expect(await handleLoopCommand(params, true)).toEqual({ shouldContinue: true });
-    expect(rewrittenBody(params)).toContain('action:"list", includeDisabled:true');
-    expect(rewrittenBody(params)).toContain(`name starts with "${LOOP_PREFIX}"`);
-    expect(rewrittenBody(params)).toContain("Use the automations tool");
-    expect(rewrittenBody(params)).not.toMatch(/\bcron\b/i);
+    const body = await rewrite("/loop status");
+    expect(body).toContain('action:"list", includeDisabled:true');
+    expect(body).toContain(`name starts with "${LOOP_PREFIX}"`);
+    expect(body).toContain("Use the automations tool");
+    expect(body).not.toMatch(/\bcron\b/i);
   });
 
   it("rewrites /loop stop as a scoped cron removal work order", async () => {
-    const params = buildLoopParams("/loop stop");
-
-    expect(await handleLoopCommand(params, true)).toEqual({ shouldContinue: true });
-    expect(rewrittenBody(params)).toContain('action:"list", includeDisabled:true');
-    expect(rewrittenBody(params)).toContain(`name starts with "${LOOP_PREFIX}"`);
-    expect(rewrittenBody(params)).toContain('action:"remove"');
-    expect(rewrittenBody(params)).toContain(
-      `Never remove a job whose name does not start with "${LOOP_PREFIX}"`,
-    );
+    const body = await rewrite("/loop stop");
+    expect(body).toContain('action:"list", includeDisabled:true');
+    expect(body).toContain(`name starts with "${LOOP_PREFIX}"`);
+    expect(body).toContain('action:"remove"');
+    expect(body).toContain(`Never remove a job whose name does not start with "${LOOP_PREFIX}"`);
   });
 
   it("rejects unauthorized senders", async () => {
@@ -127,7 +105,7 @@ describe("loop command", () => {
     params.command.isAuthorizedSender = false;
 
     expect(await handleLoopCommand(params, true)).toEqual({ shouldContinue: false });
-    expect(rewrittenBody(params)).toBe("/loop 5m check ci");
+    expect(params.ctx.BodyForAgent).toBe("/loop 5m check ci");
   });
 
   it("rejects authorized non-owner senders before starting an agent turn", async () => {
@@ -138,7 +116,7 @@ describe("loop command", () => {
       shouldContinue: false,
       reply: { text: expect.stringContaining("operator.admin") },
     });
-    expect(rewrittenBody(params)).toBe("/loop 5m check ci");
+    expect(params.ctx.BodyForAgent).toBe("/loop 5m check ci");
   });
 
   it("rejects intervals below 30 seconds", async () => {
