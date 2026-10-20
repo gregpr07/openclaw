@@ -123,6 +123,7 @@ export async function createFullModelCatalogAccess(
   const attempt = createCatalogAttemptReporter(
     params.inventoryOwner,
     { key: inventoryKey, pluginFingerprint, credentials: params.agentFacts.credentials },
+    params.isCurrent,
     () => {
       if (published.inventory) {
         published = {

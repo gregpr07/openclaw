@@ -55,6 +55,7 @@ const publicationListeners = new Set<(event: PreparedModelRuntimePublicationEven
 export function createCatalogAttemptReporter(
   owner: Pick<PreparedModelRuntimeOwner, "catalogAttempt">,
   source: PreparedModelCatalogAttempt["source"],
+  isCurrent: () => boolean,
   beforeProviderFailure: () => void,
 ) {
   // Compatible reloads share live status; replacement sources start without the old error.
@@ -80,7 +81,7 @@ export function createCatalogAttemptReporter(
     providers?: readonly string[],
     kind: PreparedModelCatalogAcquisitionKind = "provider",
   ) => {
-    if (!(error instanceof PreparedModelRuntimePublicationSupersededError)) {
+    if (isCurrent() && !(error instanceof PreparedModelRuntimePublicationSupersededError)) {
       const pending = pendingProviders[kind];
       const scope = providers ?? pending ?? [];
       const failedScope = scope.length ? scope : [undefined];

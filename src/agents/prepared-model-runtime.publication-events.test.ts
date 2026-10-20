@@ -12,6 +12,7 @@ describe("catalog attempt status publication", () => {
       const reporter = createCatalogAttemptReporter(
         {},
         { key: "synthetic", pluginFingerprint: "synthetic", credentials: {} },
+        () => true,
         () => {},
       );
       const rejected = { provider: "signed-out", status: "auth-rejected" } as const;
@@ -44,6 +45,7 @@ describe("catalog attempt status publication", () => {
     const reporter = createCatalogAttemptReporter(
       {},
       { key: "synthetic", pluginFingerprint: "synthetic", credentials: {} },
+      () => true,
       () => {},
     );
     const catalog: ModelCatalogSnapshot = reporter.withRefreshStatus({
