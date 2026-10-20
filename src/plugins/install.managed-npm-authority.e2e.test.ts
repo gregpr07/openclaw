@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import type http from "node:http";
@@ -8,7 +9,6 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { normalizeComparablePath } from "../infra/install-package-dir.test-support.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { resolvePluginNpmProjectDir } from "./install-paths.js";
-import type { PluginInstallArtifactConsentHandler } from "./install-types.js";
 import { installPluginFromNpmPackArchive, installPluginFromNpmSpec } from "./install.js";
 import { packPlugins, startStaticRegistry } from "./test-helpers/npm-registry-fixtures.js";
 
@@ -74,9 +74,7 @@ it.each(["npm", "npm-pack"] as const)(
           });
     };
     const original = await install("1.0.0");
-    if (!original.ok) {
-      throw new Error(original.error);
-    }
+    assert(original.ok, JSON.stringify(original));
     expect(original.version).toBe("1.0.0");
     const projectRoot = resolvePluginNpmProjectDir({ npmDir, packageName });
     const identity = await fs.lstat(projectRoot, { bigint: true });
@@ -89,14 +87,6 @@ it.each(["npm", "npm-pack"] as const)(
     const readProtectedFiles = () => Promise.all(protectedFiles.map((file) => fs.readFile(file)));
     const before = await readProtectedFiles();
     const events: string[] = [];
-    const onBeforePluginArtifactCommit: PluginInstallArtifactConsentHandler = async ({
-      stagedArtifactDir,
-    }) => {
-      const manifest = JSON.parse(
-        await fs.readFile(path.join(stagedArtifactDir, "package.json"), "utf8"),
-      ) as { version: string };
-      events.push(`prepared:${manifest.version}`);
-    };
     const beforePersistentApply = vi.fn<() => unknown>(() => {
       events.push("asserted");
       return Promise.resolve();
@@ -105,7 +95,12 @@ it.each(["npm", "npm-pack"] as const)(
     const renameSync = vi.spyOn(fsSync, "renameSync");
     const result = await install("2.0.0", {
       beforePersistentApply,
-      onBeforePluginArtifactCommit,
+      onBeforePluginArtifactCommit: async ({ stagedArtifactDir }) => {
+        const manifest = JSON.parse(
+          await fs.readFile(path.join(stagedArtifactDir, "package.json"), "utf8"),
+        ) as { version: string };
+        events.push(`prepared:${manifest.version}`);
+      },
     });
 
     expect(result).toEqual({
