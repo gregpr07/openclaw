@@ -15,6 +15,7 @@ expect(setupParts).toHaveLength(2);
 const setupEndParts = setupParts[1]!.split(setupEnd);
 expect(setupEndParts).toHaveLength(2);
 const setup = setupEndParts[0]!;
+const writeExecutable = (file: string, text: string) => writeFileSync(file, text, { mode: 0o755 });
 
 it.each([
   ["claude", "9.1.0", "subscription", "unset", false],
@@ -39,34 +40,31 @@ it.each([
     }
     const manifest = (dir: string, data: object) =>
       writeFileSync(path.join(dir, "package.json"), `${JSON.stringify(data)}\n`);
-    manifest(acpxDir, { name: "@openclaw/acpx" });
-    manifest(adapterDir, { name: "@agentclientprotocol/claude-agent-acp" });
+    manifest(acpxDir, {});
+    manifest(adapterDir, {});
     manifest(sdkDir, {
-      name: "@anthropic-ai/claude-agent-sdk",
       exports: { ".": "./sdk.mjs" },
       claudeCodeVersion: "9.1.0",
     });
     writeFileSync(path.join(sdkDir, "sdk.mjs"), "export {};\n");
     const executable =
       '#!/bin/sh\nprintf "%s:%s\\n" "$*" "${ANTHROPIC_API_KEY-unset}" >> "$TEST_CALLS"\nprintf "9.1.0 (Claude Code)\\n"\n';
-    writeFileSync(fixture, executable, { mode: 0o755 });
+    writeExecutable(fixture, executable);
     if (existing) {
-      writeFileSync(path.join(installedBin, existing), executable, { mode: 0o755 });
+      writeExecutable(path.join(installedBin, existing), executable);
     }
     if (installedVersion) {
       const packageDir = path.join(prefix, "lib", "node_modules", "@anthropic-ai", "claude-code");
       mkdirSync(packageDir, { recursive: true });
       manifest(packageDir, { version: installedVersion });
     }
-    writeFileSync(
+    writeExecutable(
       path.join(bin, "npm"),
       '#!/bin/sh\nprintf "%s\\n" "$*" >> "$TEST_INSTALLS"\ncp "$TEST_CLAUDE_FIXTURE" "$NPM_CONFIG_PREFIX/bin/claude"\n',
-      { mode: 0o755 },
     );
-    writeFileSync(
+    writeExecutable(
       path.join(bin, "timeout"),
       '#!/bin/sh\ncase "$1" in --kill-after=*) shift;; esac\nshift\nexec "$@"\n',
-      { mode: 0o755 },
     );
     const result = spawnSync("bash", ["-c", setup], {
       cwd: home,

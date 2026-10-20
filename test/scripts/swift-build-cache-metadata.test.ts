@@ -1,17 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-  chmodSync,
-  linkSync,
-  lstatSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  statSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
+import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
@@ -23,27 +12,22 @@ const checkoutTime = originalTime + 10_000_000_123n;
 const sourcePath = "apps/macos/Sources/Feature.swift";
 const metadataPath = "apps/macos/.build/ci-input-metadata.json";
 const sourceDigest = createHash("sha256").update("source\n").digest("hex");
-
-function run(root: string, mode: "record" | "restore", profile?: "ios") {
-  const result = spawnSync("python3", ["-I", "-S", script, mode, ...(profile ? [profile] : [])], {
-    cwd: root,
-    encoding: "utf8",
-    timeout: 10_000,
+const invalidEntry = (entry: { sha256?: string; mtime_ns?: boolean }) =>
+  JSON.stringify({
+    version: 1,
+    files: { [sourcePath]: { sha256: sourceDigest, mode: 0o644, mtime_ns: 1, ...entry } },
   });
-  expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
-  return result.stdout;
-}
 
 function writeInput(root: string, relative: string, content = "source\n") {
   const file = path.join(root, relative);
-  mkdirSync(path.dirname(file), { recursive: true });
-  writeFileSync(file, content);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, content);
   return file;
 }
 
 function expectTimes(time: bigint, ...files: string[]) {
   for (const file of files) {
-    expect(statSync(file, { bigint: true }).mtimeNs, file).toBe(time);
+    expect(fs.statSync(file, { bigint: true }).mtimeNs, file).toBe(time);
   }
 }
 
@@ -63,19 +47,30 @@ function setTime(time: bigint, ...files: string[]) {
   expect(result.status, result.stderr).toBe(0);
 }
 
-function fixture() {
+function fixture(profile: "macos" | "ios" = "macos") {
   const root = tempDirs.make("openclaw-swift-cache-metadata-");
-  mkdirSync(path.join(root, "apps/macos/.build"), { recursive: true });
-  const source = writeInput(root, sourcePath);
-  chmodSync(source, 0o644);
+  const at = (relative: string) => path.join(root, relative);
+  const input = (relative: string, content?: string) => writeInput(root, relative, content);
+  const metadata = at(profile === "ios" ? "apps/ios/build/ci-input-metadata.json" : metadataPath);
+  fs.mkdirSync(path.dirname(metadata), { recursive: true });
+  const source = input(`apps/${profile}/Sources/Feature.swift`);
+  fs.chmodSync(source, 0o644);
   setTime(originalTime, source);
-  return { root, source, metadata: path.join(root, metadataPath) };
+  const run = (mode: "record" | "restore") => {
+    const result = spawnSync(
+      "python3",
+      ["-I", "-S", script, mode, ...(profile === "ios" ? [profile] : [])],
+      { cwd: root, encoding: "utf8", timeout: 10_000 },
+    );
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    return result.stdout;
+  };
+  return { root, at, input, source, metadata, run };
 }
 
 describe.skipIf(process.platform === "win32")("Swift build-cache input metadata", () => {
   it("reuses unchanged iOS and shared inputs while invalidating changed source and generated version settings", () => {
-    const root = tempDirs.make("openclaw-ios-cache-metadata-");
-    mkdirSync(path.join(root, "apps/ios/build"), { recursive: true });
+    const { input, run } = fixture("ios");
     const unchanged = [
       "apps/ios/Sources/Feature.swift",
       "apps/ios/Tests/FeatureTests.swift",
@@ -83,26 +78,22 @@ describe.skipIf(process.platform === "win32")("Swift build-cache input metadata"
       "apps/shared/OpenClawKit/Sources/Shared.swift",
       "apps/shared/OpenClawKit/Plugins/GenerateGatewayProtocol/plugin.swift",
       "apps/macos/Tests/OpenClawIPCTests/AsyncTestGate.swift",
-    ].map((relative) => writeInput(root, relative));
-    const changed = writeInput(root, "apps/ios/Sources/Changed.swift", "before\n");
-    const version = writeInput(
-      root,
-      "apps/ios/build/Version.xcconfig",
-      "CURRENT_PROJECT_VERSION = 1\n",
-    );
+    ].map((relative) => input(relative));
+    const changed = input("apps/ios/Sources/Changed.swift", "before\n");
+    const version = input("apps/ios/build/Version.xcconfig", "CURRENT_PROJECT_VERSION = 1\n");
     setTime(originalTime, ...unchanged, changed, version);
-    expect(run(root, "record", "ios")).toContain("7 verified input timestamps");
-    writeFileSync(changed, "after!\n");
-    writeFileSync(version, "CURRENT_PROJECT_VERSION = 2\n");
+    expect(run("record")).toContain("7 verified input timestamps");
+    fs.writeFileSync(changed, "after!\n");
+    fs.writeFileSync(version, "CURRENT_PROJECT_VERSION = 2\n");
     setTime(checkoutTime, ...unchanged, changed, version);
-    expect(run(root, "restore", "ios")).toContain("6 verified input timestamps");
+    expect(run("restore")).toContain("6 verified input timestamps");
     expectTimes(originalTime, ...unchanged);
     expectTimes(checkoutTime, changed, version);
-    expect(readFileSync(version, "utf8")).toContain("= 2");
+    expect(fs.readFileSync(version, "utf8")).toContain("= 2");
   });
 
   it("restores original nanoseconds only for byte-identical current inputs", () => {
-    const { root, source, metadata } = fixture();
+    const { at, input, source, run } = fixture();
     const sharedFixture =
       "apps/shared/OpenClawKit/Tests/OpenClawKitTests/GatewayTLSStoreFixture.swift";
     const unchanged = [
@@ -119,52 +110,41 @@ describe.skipIf(process.platform === "win32")("Swift build-cache input metadata"
       "apps/shared/OpenClawMLXTTSProtocol/Package.swift",
       "apps/swabble/Package.swift",
     ];
-    setTime(originalTime, ...unchanged.slice(1).map((relative) => writeInput(root, relative)));
-    const sharedFixtureLink = path.join(
-      root,
-      "apps/macos/Tests/OpenClawIPCTests/GatewayTLSStoreFixture.swift",
-    );
-    mkdirSync(path.dirname(sharedFixtureLink), { recursive: true });
-    symlinkSync(
-      path.relative(path.dirname(sharedFixtureLink), path.join(root, sharedFixture)),
+    setTime(originalTime, ...unchanged.slice(1).map((relative) => input(relative)));
+    const sharedFixtureLink = at("apps/macos/Tests/OpenClawIPCTests/GatewayTLSStoreFixture.swift");
+    fs.mkdirSync(path.dirname(sharedFixtureLink), { recursive: true });
+    fs.symlinkSync(
+      path.relative(path.dirname(sharedFixtureLink), at(sharedFixture)),
       sharedFixtureLink,
     );
-    const changed = writeInput(root, "apps/macos/Sources/Changed.swift", "before\n");
-    const modeChanged = writeInput(root, "apps/macos/Sources/ModeChanged.swift");
-    chmodSync(modeChanged, 0o644);
-    const removed = writeInput(root, "apps/macos/Sources/Removed.swift");
-    run(root, "record");
-    const archive = readFileSync(metadata);
-    const inode = statSync(source, { bigint: true }).ino;
+    const changed = input("apps/macos/Sources/Changed.swift", "before\n");
+    const modeChanged = input("apps/macos/Sources/ModeChanged.swift");
+    fs.chmodSync(modeChanged, 0o644);
+    const removed = input("apps/macos/Sources/Removed.swift");
+    run("record");
+    const inode = fs.statSync(source, { bigint: true }).ino;
     for (const relative of unchanged) {
-      const file = path.join(root, relative);
-      const mode = statSync(file).mode & 0o7777;
-      writeFileSync(`${file}.replacement`, readFileSync(file), { mode });
+      const file = at(relative);
+      const mode = fs.statSync(file).mode & 0o7777;
+      fs.writeFileSync(`${file}.replacement`, fs.readFileSync(file), { mode });
       // File creation applies umask even when mode is explicit.
-      chmodSync(`${file}.replacement`, mode);
-      renameSync(`${file}.replacement`, file);
+      fs.chmodSync(`${file}.replacement`, mode);
+      fs.renameSync(`${file}.replacement`, file);
     }
-    expect(statSync(source, { bigint: true }).ino).not.toBe(inode);
-    writeFileSync(changed, "after!\n");
-    chmodSync(modeChanged, 0o600);
-    rmSync(removed);
-    const added = writeInput(root, "apps/macos/Sources/Added.swift");
-    setTime(
-      checkoutTime,
-      ...unchanged.map((relative) => path.join(root, relative)),
-      changed,
-      modeChanged,
-      added,
-    );
-    writeFileSync(metadata, archive);
+    expect(fs.statSync(source, { bigint: true }).ino).not.toBe(inode);
+    fs.writeFileSync(changed, "after!\n");
+    fs.chmodSync(modeChanged, 0o600);
+    fs.rmSync(removed);
+    const added = input("apps/macos/Sources/Added.swift");
+    setTime(checkoutTime, ...unchanged.map(at), changed, modeChanged, added);
 
-    expect(run(root, "restore")).toContain("12 verified input timestamps");
-    expectTimes(originalTime, ...unchanged.map((relative) => path.join(root, relative)));
-    expect(lstatSync(sharedFixtureLink).isSymbolicLink()).toBe(true);
+    expect(run("restore")).toContain("12 verified input timestamps");
+    expectTimes(originalTime, ...unchanged.map(at));
+    expect(fs.lstatSync(sharedFixtureLink).isSymbolicLink()).toBe(true);
     expectTimes(originalTime, sharedFixtureLink);
     expectTimes(checkoutTime, changed, modeChanged, added);
-    expect(readFileSync(changed, "utf8")).toBe("after!\n");
-    expect(() => statSync(removed)).toThrow();
+    expect(fs.readFileSync(changed, "utf8")).toBe("after!\n");
+    expect(() => fs.statSync(removed)).toThrow();
   });
 
   it.each([
@@ -172,25 +152,19 @@ describe.skipIf(process.platform === "win32")("Swift build-cache input metadata"
     "null",
     '{"version":2,"files":{}}',
     '{"version":1,"files":[]}',
-    JSON.stringify({
-      version: 1,
-      files: { [sourcePath]: { sha256: "not-a-digest", mode: 0o644, mtime_ns: 1 } },
-    }),
-    JSON.stringify({
-      version: 1,
-      files: { [sourcePath]: { sha256: sourceDigest, mode: 0o644, mtime_ns: true } },
-    }),
+    invalidEntry({ sha256: "not-a-digest" }),
+    invalidEntry({ mtime_ns: true }),
   ])("leaves checkout metadata unchanged for unusable cache metadata: %s", (artifact) => {
-    const { root, source, metadata } = fixture();
-    writeFileSync(metadata, artifact);
-    run(root, "restore");
+    const { source, metadata, run } = fixture();
+    fs.writeFileSync(metadata, artifact);
+    run("restore");
     expectTimes(originalTime, source);
   });
 
   it("cannot replay arbitrary paths, source links, hardlinks, or a linked cache artifact", () => {
-    const { root, source, metadata } = fixture();
-    run(root, "record");
-    const artifact = JSON.parse(readFileSync(metadata, "utf8"));
+    const { at, input, source, metadata, run } = fixture();
+    run("record");
+    const artifact = JSON.parse(fs.readFileSync(metadata, "utf8"));
     const outside = tempDirs.make("openclaw-swift-cache-outside-");
     const external = writeInput(outside, "Feature.swift");
     for (const relative of [
@@ -200,40 +174,40 @@ describe.skipIf(process.platform === "win32")("Swift build-cache input metadata"
     ]) {
       artifact.files[relative] = artifact.files[sourcePath];
     }
-    setTime(checkoutTime, external, writeInput(root, "other.swift"));
-    rmSync(source);
-    symlinkSync(external, source);
-    symlinkSync(outside, path.join(root, "apps/macos/Sources/linked-directory"), "dir");
-    linkSync(external, path.join(root, "apps/macos/Sources/Hardlink.swift"));
+    setTime(checkoutTime, external, input("other.swift"));
+    fs.rmSync(source);
+    fs.symlinkSync(external, source);
+    fs.symlinkSync(outside, at("apps/macos/Sources/linked-directory"), "dir");
+    fs.linkSync(external, at("apps/macos/Sources/Hardlink.swift"));
     artifact.files["apps/macos/Sources/linked-directory/Feature.swift"] =
       artifact.files[sourcePath];
     artifact.files["apps/macos/Sources/Hardlink.swift"] = artifact.files[sourcePath];
-    writeFileSync(metadata, JSON.stringify(artifact));
-    run(root, "restore");
-    expectTimes(checkoutTime, external, path.join(root, "other.swift"));
+    fs.writeFileSync(metadata, JSON.stringify(artifact));
+    run("restore");
+    expectTimes(checkoutTime, external, at("other.swift"));
 
-    rmSync(source);
-    writeInput(root, sourcePath);
+    fs.rmSync(source);
+    input(sourcePath);
     setTime(checkoutTime, source);
     const linkedMetadata = writeInput(outside, "metadata.json", JSON.stringify(artifact));
-    rmSync(metadata);
-    symlinkSync(linkedMetadata, metadata);
-    run(root, "restore");
+    fs.rmSync(metadata);
+    fs.symlinkSync(linkedMetadata, metadata);
+    run("restore");
     expectTimes(checkoutTime, source);
-    run(root, "record");
-    expect(readFileSync(linkedMetadata, "utf8")).toBe(JSON.stringify(artifact));
-    expect(JSON.parse(readFileSync(metadata, "utf8")).files).toHaveProperty([sourcePath]);
-    rmSync(path.dirname(source), { recursive: true });
-    symlinkSync(outside, path.dirname(source), "dir");
-    run(root, "restore");
+    run("record");
+    expect(fs.readFileSync(linkedMetadata, "utf8")).toBe(JSON.stringify(artifact));
+    expect(JSON.parse(fs.readFileSync(metadata, "utf8")).files).toHaveProperty([sourcePath]);
+    fs.rmSync(path.dirname(source), { recursive: true });
+    fs.symlinkSync(outside, path.dirname(source), "dir");
+    run("restore");
     expectTimes(checkoutTime, external);
   });
 
   it("lets absent metadata or a reset build directory invalidate normally", () => {
-    const { root, source, metadata } = fixture();
-    run(root, "restore");
-    rmSync(path.dirname(metadata), { recursive: true });
-    run(root, "restore");
+    const { source, metadata, run } = fixture();
+    run("restore");
+    fs.rmSync(path.dirname(metadata), { recursive: true });
+    run("restore");
     expectTimes(originalTime, source);
   });
 });

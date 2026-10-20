@@ -10,6 +10,10 @@ type Step = { name?: string; uses?: string; run?: string; env?: Record<string, s
 const buildStep = (steps: Step[]) => steps.find((step) => step.run?.includes("@tauri-apps/cli"))!;
 const setupStep = (job: string) =>
   workflow.jobs[job].steps.find((step: Step) => step.uses === "./.github/actions/setup-node-env");
+const windowsJob = workflow.jobs["test-windows-power"];
+const windowsBuild = buildStep(windowsJob.steps);
+const override = (step: Step) =>
+  JSON.parse(step.run!.match(/--config (['"])(.+)\1/)![2]!.replaceAll('\\"', '"'));
 
 it("keeps Node without workspace dependencies for the macOS Cargo tests", () => {
   const job = workflow.jobs["test-macos"];
@@ -71,18 +75,11 @@ it.each(["build_linux", "build_windows", "build_macos"])(
 );
 
 it("uses fast NSIS compression only for Windows validation", () => {
-  const override = JSON.parse(
-    buildStep(workflow.jobs["test-windows-power"].steps).run!.match(/--config '([^']+)'/)![1]!,
-  );
-  expect(override).toEqual({
+  expect(override(windowsBuild)).toEqual({
     bundle: { createUpdaterArtifacts: false, windows: { nsis: { compression: "zlib" } } },
   });
 
-  const releaseOverride = JSON.parse(
-    buildStep(release.jobs.build_windows.steps)
-      .run!.match(/--config "(.+)"/)![1]!
-      .replaceAll('\\"', '"'),
-  );
+  const releaseOverride = override(buildStep(release.jobs.build_windows.steps));
   expect(releaseOverride.bundle.windows?.nsis?.compression).toBeUndefined();
   expect(config.bundle.windows?.nsis?.compression).toBeUndefined();
 });
@@ -93,18 +90,17 @@ it("uses runtime-only staging before the Linux fixture supplies its package", ()
   );
   expect(build.run).toContain("node ../scripts/stage-runtime.mjs --runtime-only");
   expect(build.env?.OPENCLAW_DOCKER_PACKAGE_BUILD_TIMEOUT_MS).toBeUndefined();
-  expect(config.build.beforeBuildCommand.script).toBe("node scripts/stage-runtime.mjs");
-  expect(config.build.beforeDevCommand.script).toBe("node scripts/stage-runtime.mjs");
+  expect(config.build).toMatchObject({
+    beforeBuildCommand: { script: "node scripts/stage-runtime.mjs" },
+    beforeDevCommand: { script: "node scripts/stage-runtime.mjs" },
+  });
 });
 
 it("budgets source packaging within the Windows installer job", () => {
-  const job = workflow.jobs["test-windows-power"];
-  const build = job.steps.find(
-    (step: { name: string }) => step.name === "Build Windows installer without publishing",
-  );
-  const packageMinutes = Number(build.env?.OPENCLAW_DOCKER_PACKAGE_BUILD_TIMEOUT_MS) / 60_000;
+  const packageMinutes =
+    Number(windowsBuild.env?.OPENCLAW_DOCKER_PACKAGE_BUILD_TIMEOUT_MS) / 60_000;
 
   expect(packageMinutes).toBeGreaterThanOrEqual(60);
-  expect(job["timeout-minutes"] - packageMinutes).toBeGreaterThanOrEqual(40);
+  expect(windowsJob["timeout-minutes"] - packageMinutes).toBeGreaterThanOrEqual(40);
   expect(workflow.env.OPENCLAW_DOCKER_PACKAGE_BUILD_TIMEOUT_MS).toBeUndefined();
 });

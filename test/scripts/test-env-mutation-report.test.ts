@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { expect, it } from "vitest";
 import {
   collectTestEnvMutationReport,
   main as runTestEnvMutationReport,
@@ -19,15 +19,18 @@ function runCli(args: string[]) {
   );
 }
 
-function writeRepoFile(repoRoot: string, relativePath: string, value: string): void {
-  const filePath = path.join(repoRoot, relativePath);
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, value, "utf8");
+function makeRepo(files: Record<string, string>) {
+  const repoRoot = createTempDir("openclaw-test-env-mutations-");
+  for (const [file, content] of Object.entries(files)) {
+    const target = path.join(repoRoot, file);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, content, "utf8");
+  }
+  return repoRoot;
 }
 
 function makeEnvMutationFixture(): string {
-  const repoRoot = createTempDir("openclaw-test-env-mutations-");
-  const files = {
+  return makeRepo({
     "src/runtime.ts":
       '\nprocess.env.OPENCLAW_STATE_DIR = "ignored because this is not a test file";\n',
     "src/example.test.ts": `
@@ -47,111 +50,86 @@ process.env.NOT_OPENCLAW = "ignored";
     "src/agents/auth-profiles/oauth-test-utils.ts": '\nprocess.env.OPENCLAW_AGENT_DIR = "agent";\n',
     "src/test-utils/openclaw-test-state.ts":
       '\nprocess.env.HOME = "allowed";\ndelete process.env.OPENCLAW_STATE_DIR;\n',
-  };
-  for (const [file, content] of Object.entries(files)) {
-    writeRepoFile(repoRoot, file, content);
-  }
-  return repoRoot;
+  });
 }
 
-describe("collectTestEnvMutationReport", () => {
-  it("renders a non-blocking text report for active findings", () => {
-    const report = collectTestEnvMutationReport({ repoRoot: makeEnvMutationFixture() });
+it("renders a non-blocking text report for active findings", () => {
+  const report = collectTestEnvMutationReport({ repoRoot: makeEnvMutationFixture() });
 
-    const rendered = renderTestEnvMutationReport(report, { includeAllowed: true });
+  const rendered = renderTestEnvMutationReport(report, { includeAllowed: true });
 
-    expect(rendered).toContain("OpenClaw test env mutation report");
-    expect(rendered).toContain("Findings: 9 active in 3 file(s), 2 allowed in 1 file(s)");
-    expect(rendered).toContain("- src/example.test.ts (7)");
-    expect(rendered).toContain("L2 OPENCLAW_STATE_DIR assign process.env");
-    expect(rendered).toContain("Allowed harness findings:");
-  });
+  expect(rendered).toContain("OpenClaw test env mutation report");
+  expect(rendered).toContain("Findings: 9 active in 3 file(s), 2 allowed in 1 file(s)");
+  expect(rendered).toContain("- src/example.test.ts (7)");
+  expect(rendered).toContain("L2 OPENCLAW_STATE_DIR assign process.env");
+  expect(rendered).toContain("Allowed harness findings:");
+});
 
-  it("rejects missing or flag-shaped CLI repo roots instead of scanning zero files", () => {
-    const result = runCli(["--", "--repo-root", "--json"]);
+it("rejects missing or flag-shaped CLI repo roots instead of scanning zero files", () => {
+  const result = runCli(["--", "--repo-root", "--json"]);
 
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("--repo-root expects a path");
-    expect(() => runTestEnvMutationReport(["--", "--repo-root", "-h"])).toThrow(
-      "--repo-root expects a path",
-    );
-  });
-
-  it("rejects loose CLI limits before scanning the repository", () => {
-    for (const limit of ["1e3", ""]) {
-      expect(() =>
-        runTestEnvMutationReport([
-          "--",
-          "--limit",
-          limit,
-          "--repo-root",
-          createTempDir("openclaw-env-limit-"),
-        ]),
-      ).toThrow("--limit expects a non-negative integer");
-    }
-  });
-
-  it.each([
-    { limit: 1, shown: 1, allowedShown: 1 },
-    { limit: 0, shown: 3, allowedShown: 2 },
-  ])(
-    "preserves grouped output and each section's cap with limit $limit",
-    ({ limit, shown, allowedShown }) => {
-      const repoRoot = createTempDir("openclaw-env-groups-");
-      writeRepoFile(repoRoot, "src/a.test.ts", 'process.env.HOME = "a";\n');
-      writeRepoFile(
-        repoRoot,
-        "src/z.test.ts",
-        'vi.stubEnv("HOME", "z");\ndelete process.env.HOME;\n',
-      );
-      writeRepoFile(
-        repoRoot,
-        "src/test-utils/openclaw-test-state.ts",
-        'process.env.HOME = "allowed";\ndelete process.env.HOME;\n',
-      );
-      const report = collectTestEnvMutationReport({ repoRoot });
-      const findings = report.activeFindings;
-      report.activeFindings = [findings[1]!, findings[0]!, ...findings.slice(2)];
-      const activeLines = [
-        "- src/z.test.ts (2)",
-        '  L1 HOME vi.stubEnv: vi.stubEnv("HOME", "z");',
-        ...(shown >= 2 ? ["  L2 HOME delete process.env: delete process.env.HOME;"] : []),
-        ...(shown === 3
-          ? ["- src/a.test.ts (1)", '  L1 HOME assign process.env: process.env.HOME = "a";']
-          : []),
-        ...(shown < 3
-          ? [`... ${3 - shown} more finding(s) not shown; pass --limit 0 to show all.`]
-          : []),
-      ];
-      const allowedLines = [
-        "- src/test-utils/openclaw-test-state.ts (2)",
-        '  L1 HOME assign process.env: process.env.HOME = "allowed";',
-        ...(allowedShown === 2
-          ? ["  L2 HOME delete process.env: delete process.env.HOME;"]
-          : ["... 1 more finding(s) not shown; pass --limit 0 to show all."]),
-      ];
-
-      expect(renderTestEnvMutationReport(report, { includeAllowed: true, limit })).toBe(
-        [
-          "OpenClaw test env mutation report",
-          "Scanned files: 3",
-          "Findings: 3 active in 2 file(s), 2 allowed in 1 file(s)",
-          "",
-          "Active findings:",
-          ...activeLines,
-          "",
-          "Allowed harness findings:",
-          ...allowedLines,
-          "",
-        ].join("\n"),
-      );
-    },
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain("--repo-root expects a path");
+  expect(() => runTestEnvMutationReport(["--", "--repo-root", "-h"])).toThrow(
+    "--repo-root expects a path",
   );
+});
 
-  it("keeps the empty report output unchanged", () => {
-    const report = collectTestEnvMutationReport({ repoRoot: createTempDir("openclaw-env-empty-") });
-    expect(renderTestEnvMutationReport(report, { includeAllowed: true })).toBe(
-      "OpenClaw test env mutation report\nScanned files: 0\nFindings: 0 active in 0 file(s), 0 allowed in 0 file(s)\n\nActive findings: none\n",
-    );
+it("rejects loose CLI limits before scanning the repository", () => {
+  for (const limit of ["1e3", ""]) {
+    expect(() =>
+      runTestEnvMutationReport([
+        "--",
+        "--limit",
+        limit,
+        "--repo-root",
+        createTempDir("openclaw-env-limit-"),
+      ]),
+    ).toThrow("--limit expects a non-negative integer");
+  }
+});
+
+it.each([1, 0])("preserves grouped output and each section's cap with limit %s", (limit) => {
+  const repoRoot = makeRepo({
+    "src/a.test.ts": 'process.env.HOME = "a";\n',
+    "src/z.test.ts": 'vi.stubEnv("HOME", "z");\ndelete process.env.HOME;\n',
+    "src/test-utils/openclaw-test-state.ts":
+      'process.env.HOME = "allowed";\ndelete process.env.HOME;\n',
   });
+  const report = collectTestEnvMutationReport({ repoRoot });
+  const findings = report.activeFindings;
+  report.activeFindings = [findings[1]!, findings[0]!, ...findings.slice(2)];
+  const remainder = (count: number) =>
+    `... ${count} more finding(s) not shown; pass --limit 0 to show all.`;
+  const activeTail = limit
+    ? remainder(2)
+    : `  L2 HOME delete process.env: delete process.env.HOME;
+- src/a.test.ts (1)
+  L1 HOME assign process.env: process.env.HOME = "a";`;
+  const allowedTail = limit
+    ? remainder(1)
+    : "  L2 HOME delete process.env: delete process.env.HOME;";
+  expect(renderTestEnvMutationReport(report, { includeAllowed: true, limit })).toBe(
+    `OpenClaw test env mutation report
+Scanned files: 3
+Findings: 3 active in 2 file(s), 2 allowed in 1 file(s)
+
+Active findings:
+- src/z.test.ts (2)
+  L1 HOME vi.stubEnv: vi.stubEnv("HOME", "z");
+${activeTail}
+
+Allowed harness findings:
+- src/test-utils/openclaw-test-state.ts (2)
+  L1 HOME assign process.env: process.env.HOME = "allowed";
+${allowedTail}
+`,
+  );
+});
+
+it("keeps the empty report output unchanged", () => {
+  const report = collectTestEnvMutationReport({ repoRoot: createTempDir("openclaw-env-empty-") });
+  expect(renderTestEnvMutationReport(report, { includeAllowed: true })).toBe(
+    "OpenClaw test env mutation report\nScanned files: 0\nFindings: 0 active in 0 file(s), 0 allowed in 0 file(s)\n\nActive findings: none\n",
+  );
 });
