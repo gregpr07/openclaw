@@ -13,9 +13,7 @@ import {
 // #172653: live partials doubled the next delta in replace/append consumers;
 // final snapshots healed it, so intermediate prefixes must be checked too.
 const model = makeProviderModel("openai-responses", "openai", "gpt-5.5", {
-  name: "GPT-5.5",
   baseUrl: "https://api.openai.com/v1",
-  contextWindow: 200000,
 });
 
 const WIRE_TEXT = "夜班巡检记录：雾笛、备用灯与无线电均正常。";

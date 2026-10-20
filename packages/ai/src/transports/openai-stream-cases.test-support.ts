@@ -60,11 +60,7 @@ export function wireUser(text: string) {
   return { type: "message", role: "user", content: [{ type: "input_text", text }] };
 }
 
-export type TextOrDelta = AssistantMessageEvent & {
-  partial?: AssistantMessage;
-  contentIndex?: number;
-  delta?: string;
-};
+export type TextOrDelta = AssistantMessageEvent & { partial?: AssistantMessage };
 
 // Mirror agent-core's replace/append contract without its replay guard.
 // Check every prefix: a final snapshot can heal an aliased/doubled delta.
@@ -77,22 +73,14 @@ export function expectReplaceAppendText(
   for (const event of events) {
     if (event.type === "text_delta") {
       expect(event.partial).toBeUndefined();
-    }
-    if ("partial" in event && event.partial) {
-      content = event.partial.content;
-      continue;
-    }
-    if (event.type === "text_delta") {
-      content = [...content];
-      const idx = event.contentIndex ?? 0;
-      const current = content[idx];
+      content = content.slice();
+      const current = content[event.contentIndex];
       const prev = current?.type === "text" ? current.text : "";
       expect(prev).toBe(accumulated);
       accumulated += event.delta;
-      content[idx] =
-        current?.type === "text"
-          ? { ...current, text: prev + event.delta }
-          : { type: "text", text: event.delta };
+      content[event.contentIndex] = { type: "text", text: prev + event.delta };
+    } else if ("partial" in event && event.partial) {
+      content = event.partial.content;
     }
   }
   expect(accumulated).toBe(wireText);

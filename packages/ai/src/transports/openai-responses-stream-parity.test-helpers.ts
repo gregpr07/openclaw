@@ -1,32 +1,11 @@
 import type { AssistantMessage, AssistantMessageEvent } from "@openclaw/llm-core";
 import { makeProviderModel } from "../providers/provider-model.test-support.js";
 import { createAssistantOutput } from "./assistant-output.js";
-import {
-  processResponsesStream as processTransportStream,
-  type OpenAIResponsesStreamEvent,
-} from "./openai-responses-stream-internal.js";
-
-type ProjectedEvent = {
-  type: string;
-  contentIndex?: number;
-  delta?: string;
-  content?: string;
-};
-
-type ProjectedBlock =
-  | { type: "thinking"; thinking: string; encrypted: boolean }
-  | { type: "text"; text: string }
-  | {
-      type: "toolCall";
-      id: string;
-      name: string;
-      arguments: unknown;
-      partialJson: boolean;
-    };
+import { processResponsesStream as processTransportStream } from "./openai-responses-stream-internal.js";
 
 type ProcessResult = {
-  events: ProjectedEvent[];
-  content: ProjectedBlock[];
+  events: { type: string; contentIndex?: number; delta?: string; content?: string }[];
+  content: ReturnType<typeof projectBlock>[];
   responseId: string | null;
   stopReason: string;
   error: string | null;
@@ -39,20 +18,14 @@ export type ParityFixture = {
 };
 
 const model = makeProviderModel("openai-responses", "openai", "gpt-5.6-luna", {
-  name: "GPT-5.6 Luna",
   baseUrl: "https://api.openai.com/v1",
-  contextWindow: 200_000,
 });
 
-async function* eventStream(
-  events: readonly Record<string, unknown>[],
-): AsyncGenerator<OpenAIResponsesStreamEvent> {
-  for (const event of events) {
-    yield event as OpenAIResponsesStreamEvent;
-  }
+async function* eventStream(events: readonly Record<string, unknown>[]) {
+  yield* events;
 }
 
-function projectEvent(event: AssistantMessageEvent): ProjectedEvent | undefined {
+function projectEvent(event: AssistantMessageEvent): ProcessResult["events"][number] | undefined {
   if (!("contentIndex" in event)) {
     return undefined;
   }
@@ -64,7 +37,7 @@ function projectEvent(event: AssistantMessageEvent): ProjectedEvent | undefined 
   };
 }
 
-function projectBlock(block: AssistantMessage["content"][number]): ProjectedBlock {
+function projectBlock(block: AssistantMessage["content"][number]) {
   if (block.type === "thinking") {
     let encrypted = false;
     if (block.thinkingSignature) {
@@ -75,13 +48,13 @@ function projectBlock(block: AssistantMessage["content"][number]): ProjectedBloc
         encrypted = false;
       }
     }
-    return { type: "thinking", thinking: block.thinking, encrypted };
+    return { type: "thinking" as const, thinking: block.thinking, encrypted };
   }
   if (block.type === "text") {
-    return { type: "text", text: block.text };
+    return { type: "text" as const, text: block.text };
   }
   return {
-    type: "toolCall",
+    type: "toolCall" as const,
     id: block.id.replace(/^call_[a-f0-9]{24}/, "call_<generated>"),
     name: block.name,
     arguments: block.arguments,
@@ -172,12 +145,8 @@ export function tool(
     ...(status === undefined ? {} : { status }),
   };
 }
-export function toolCall(
-  id: string,
-  name: string,
-  args: unknown,
-): ParityFixture["canonical"]["content"][number] {
-  return { type: "toolCall", id, name, arguments: args, partialJson: false };
+export function toolCall(id: string, name: string, args: unknown) {
+  return { type: "toolCall" as const, id, name, arguments: args, partialJson: false };
 }
 
 export function textEvents(text: string, contentIndex = 0) {
@@ -189,10 +158,10 @@ export function textEvents(text: string, contentIndex = 0) {
 
 export function expected(
   responseId: string | null,
-  events: ParityFixture["canonical"]["events"],
-  content: ParityFixture["canonical"]["content"],
-  outcome: Partial<Pick<ParityFixture["canonical"], "error" | "stopReason">> = {},
-): ParityFixture["canonical"] {
+  events: ProcessResult["events"],
+  content: ProcessResult["content"],
+  outcome: Partial<Pick<ProcessResult, "error" | "stopReason">> = {},
+): ProcessResult {
   return { responseId, events, content, error: null, stopReason: "stop", ...outcome };
 }
 

@@ -29,16 +29,8 @@ afterAll(() => {
   configureAiTransportHost(initialHost);
 });
 
-function buildModel<TApi extends Api>(
-  api: TApi,
-  id: string,
-  provider: string,
-  baseUrl: string,
-): Model<TApi> {
-  const model = makeProviderModel(api, provider, id, {
-    baseUrl,
-    contextWindow: 200_000,
-  });
+function buildModel<TApi extends Api>(api: TApi, id: string, provider: string) {
+  const model = makeProviderModel(api, provider, id);
   managedTransportModels.add(model);
   return model;
 }
@@ -46,48 +38,22 @@ function buildModel<TApi extends Api>(
 describe("provider transport stream contracts", () => {
   it("covers the supported transport api alias matrix", () => {
     const cases: [Model, string][] = [
+      [buildModel("openai-responses", "gpt-5.4", "openai"), "openclaw-openai-responses-transport"],
       [
-        buildModel("openai-responses", "gpt-5.4", "openai", "https://api.openai.com/v1"),
-        "openclaw-openai-responses-transport",
-      ],
-      [
-        buildModel(
-          "openai-chatgpt-responses",
-          "codex-mini-latest",
-          "openai",
-          "https://chatgpt.com/backend-api",
-        ),
+        buildModel("openai-chatgpt-responses", "codex-mini-latest", "openai"),
         "openclaw-openai-chatgpt-responses-transport",
       ],
+      [buildModel("openai-completions", "grok-4", "xai"), "openclaw-openai-completions-transport"],
       [
-        buildModel("openai-completions", "grok-4", "xai", "https://api.x.ai/v1"),
-        "openclaw-openai-completions-transport",
-      ],
-      [
-        buildModel(
-          "azure-openai-responses",
-          "gpt-5.4",
-          "azure-openai-responses",
-          "https://example.openai.azure.com/openai/v1",
-        ),
+        buildModel("azure-openai-responses", "gpt-5.4", "azure-openai-responses"),
         "openclaw-azure-openai-responses-transport",
       ],
       [
-        buildModel(
-          "anthropic-messages",
-          "claude-sonnet-4.6",
-          "anthropic",
-          "https://api.anthropic.com",
-        ),
+        buildModel("anthropic-messages", "claude-sonnet-4.6", "anthropic"),
         "openclaw-anthropic-messages-transport",
       ],
       [
-        buildModel(
-          "google-generative-ai",
-          "gemini-3.1-pro-preview",
-          "google",
-          "https://generativelanguage.googleapis.com/v1beta",
-        ),
+        buildModel("google-generative-ai", "gemini-3.1-pro-preview", "google"),
         "openclaw-google-generative-ai-transport",
       ],
     ];
@@ -108,12 +74,7 @@ describe("provider transport stream contracts", () => {
   });
 
   it("fails closed when a required Google transport is unavailable", () => {
-    const model = buildModel(
-      "google-generative-ai",
-      "gemini-3.1-pro-preview",
-      "google",
-      "https://generativelanguage.googleapis.com/v1beta",
-    );
+    const model = buildModel("google-generative-ai", "gemini-3.1-pro-preview", "google");
 
     expect(() => createTransportAwareStreamFnForModel(model)).toThrow(
       'Managed transport stream is unavailable for api "google-generative-ai"',
@@ -121,7 +82,7 @@ describe("provider transport stream contracts", () => {
   });
 
   it("fails closed when unsupported apis carry transport overrides", () => {
-    const model = buildModel("ollama", "qwen3:32b", "ollama", "http://localhost:11434");
+    const model = buildModel("ollama", "qwen3:32b", "ollama");
 
     expect(resolveTransportAwareSimpleApi(model.api)).toBeUndefined();
     expect(createBoundaryAwareStreamFnForModel(model)).toBeUndefined();
