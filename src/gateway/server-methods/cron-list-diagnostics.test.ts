@@ -1,6 +1,5 @@
 import { performance } from "node:perf_hooks";
-import { expectDefined } from "@openclaw/normalization-core";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { beforeEach, expect, test, vi } from "vitest";
 import {
   areDiagnosticsEnabledForProcess,
   setDiagnosticsEnabledForProcess,
@@ -12,24 +11,21 @@ import {
 } from "../../infra/diagnostic-trace-context.js";
 import { startCronListDiagnostics } from "./cron-list-diagnostics.js";
 
-let previousDiagnostics: boolean;
 let clock = 0;
 const warn = vi.fn();
 beforeEach(() => {
-  previousDiagnostics = areDiagnosticsEnabledForProcess();
+  const previousDiagnostics = areDiagnosticsEnabledForProcess();
   clock = 0;
   warn.mockReset();
   setDiagnosticsEnabledForProcess(true);
   vi.spyOn(performance, "now").mockImplementation(() => clock);
+  return () => {
+    setDiagnosticsEnabledForProcess(previousDiagnostics);
+    vi.restoreAllMocks();
+  };
 });
 
-function start() {
-  return expectDefined(startCronListDiagnostics({ warn }, vi.fn()), "diagnostics");
-}
-afterEach(() => {
-  setDiagnosticsEnabledForProcess(previousDiagnostics);
-  vi.restoreAllMocks();
-});
+const start = () => startCronListDiagnostics({ warn }, vi.fn())!;
 
 test("disabled cron list diagnostics do not start clocks", () => {
   setDiagnosticsEnabledForProcess(false);

@@ -25,17 +25,17 @@ export function registerCronCreatorSessionTests(fixture: {
   resolveCronDeliveryPreview: Mock<() => Promise<CronDeliveryPreview>>;
 }) {
   const { invokeCron, loadGatewaySessionEntry, resolveCronDeliveryPreview } = fixture;
+  const expectCreator = (value: unknown) => {
+    expect(value).toEqual({ type: "human", source: "profile", id: "profile-ada" });
+  };
   it("stamps the authenticated profile as private cron creator provenance", async () => {
-    const client: GatewayClient = {
-      connect: {} as GatewayClient["connect"],
-      authenticatedUserProfile:
-        createSessionMutationTestClient("profile-ada").authenticatedUserProfile,
-    };
+    const { authenticatedUserProfile } = createSessionMutationTestClient("profile-ada");
+    const client = { connect: {} as GatewayClient["connect"], authenticatedUserProfile };
 
     const { context, respond } = await invokeCron("cron.add", agentTurnCronParams(), { client });
 
     const options = requireRecord(context.cron.add.mock.calls[0]?.[1], "cron.add options");
-    expect(options.createdActor).toEqual({ type: "human", source: "profile", id: "profile-ada" });
+    expectCreator(options.createdActor);
     expect(requireCronAddPayload(context)).not.toHaveProperty("createdActor");
     expectCronSuccess(respond);
   });

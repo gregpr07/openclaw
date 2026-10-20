@@ -14,27 +14,24 @@ import { createSessionMutationTestClient } from "./sessions-mutations.owner.test
 import type { GatewayClient, GatewayRequestContext } from "./types.js";
 
 type SessionRead = ReturnType<typeof sessionRead>;
+type WorkerRead = Parameters<
+  typeof import("../session-utils-store-worker.js").loadGatewaySessionEntryReadOnlyInWorker
+>[0];
 const mocks = vi.hoisted(() => ({
   loadSession:
     vi.fn<(key: string, options?: { agentId?: string }) => SessionRead | Promise<SessionRead>>(),
   roleScopes: undefined as string[] | undefined,
 }));
 
-// mock-isolation: Throw on legacy synchronous reads so publication tests enforce the async storage boundary.
+// mock-isolation: Supply selected rows and profile/sharing facts without opening stores;
+// retain live grant checks and reject legacy sync reads or source preparation.
 vi.mock("../session-utils.js", () => ({
   loadIncognitoGatewaySessionEntryReadOnly: () => {
     throw new Error("Synchronous publication read");
   },
 }));
-// mock-isolation: Publication fixtures supply selected rows and source identity without starting storage.
 vi.mock("../session-utils-store-worker.js", () => ({
-  loadGatewaySessionEntryReadOnlyInWorker: async ({
-    key,
-    agentId,
-    onSelected,
-  }: Parameters<
-    typeof import("../session-utils-store-worker.js").loadGatewaySessionEntryReadOnlyInWorker
-  >[0]) => {
+  loadGatewaySessionEntryReadOnlyInWorker: async ({ key, agentId, onSelected }: WorkerRead) => {
     const loaded = await mocks.loadSession(key, { agentId });
     onSelected?.({
       ...loaded,
@@ -49,13 +46,12 @@ vi.mock("../session-utils-store-worker.js", () => ({
     return loaded;
   },
 }));
-// mock-isolation: Publication requester admission does not open profile or session stores here.
 vi.mock("../github-publication-requester.js", () => ({
   prepareGitHubPublicationRequesterV2: async () => ({
     requester: {
       signal: new AbortController().signal,
       prepareSource: () => {
-        throw new Error("Publication source preparation is outside this authorization test.");
+        throw new Error("Unexpected publication source preparation");
       },
     },
     release: () => {},
@@ -64,14 +60,12 @@ vi.mock("../github-publication-requester.js", () => ({
 vi.mock("../../agents/tools/gateway-caller-context.js", () => ({
   getGatewayToolCallerIdentity: () => undefined,
 }));
-// mock-isolation: Options disclosure uses synthetic profile authority without opening the host profile store.
 vi.mock("../../state/user-channel-identity-operations.js", () => ({
   prepareUserProfileRolePolicyAuthority: async (profileId: string) => ({
     profileId,
     isCurrent: () => true,
   }),
 }));
-// mock-isolation: Authorization policy fixtures do not open or hydrate the profile database.
 vi.mock("../../state/user-profile-list.js", () => ({
   captureResidentUserProfileAccess: (profileId: string) => ({
     assertCurrent: () => ({ id: profileId, role: null }),
@@ -85,12 +79,10 @@ vi.mock("../operator-role-policy.js", () => {
     resolveOperatorRolePolicyForAssignment: resolve,
   };
 });
-// mock-isolation: Selected-session authorization is supplied directly, without initializing sharing storage.
 vi.mock("../session-sharing.js", () => ({
   createSessionListEntryFilter: () => undefined,
 }));
 
-// mock-isolation: Session sharing is admitted independently of the live personal grant checked here.
 vi.mock("../session-sharing-authorization-async.js", () => ({
   resolveSessionMutationAuthorizationAsync: async () => ({}),
 }));
@@ -114,14 +106,11 @@ function createRequest() {
 
 function sessionRead(agentId = "main", patch: Partial<SessionEntry> = {}) {
   return {
-    cfg: {},
     canonicalKey: `agent:${agentId}:main`,
     agentId,
     storePath: "/test/sessions.json",
-    store: {},
     storeKeys: [`agent:${agentId}:main`],
     entry: { sessionId: "session-cache-test", updatedAt: 1, ...patch },
-    legacyKey: undefined,
   };
 }
 
@@ -216,14 +205,11 @@ it("keeps origin-free personal reads and publication bound to the live ingress g
   using read = await prepare(request);
   expect(read.personal.kind).toBe("eligible");
   const publication = await preparePersonalGitHubSessionActionV2(request, { sessionKey: "main" });
-  try {
-    expect(() => publication.action.assertCurrent()).not.toThrow();
-    grant.abort();
-    expect(() => read.currentSession()).toThrow("connection is no longer current");
-    expect(() => publication.action.assertCurrent()).toThrow("current authenticated human");
-  } finally {
-    publication.release();
-  }
+  using _ = { [Symbol.dispose]: publication.release };
+  expect(() => publication.action.assertCurrent()).not.toThrow();
+  grant.abort();
+  expect(() => read.currentSession()).toThrow("connection is no longer current");
+  expect(() => publication.action.assertCurrent()).toThrow("current authenticated human");
 });
 
 it.each([

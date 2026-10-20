@@ -129,20 +129,17 @@ it("presents a single-owner environment only in that owner's connection", async 
 it.each(["ambiguity", "revocation"])("cancels before allocation: %s", async (change) => {
   const test = fixture();
   await withPersonalToolTurn({ owner, allowCollaborativeSteering: true }, async (turn) => {
-    const reserve = support.testState.store.createSessionAttachmentIntent.bind(
-      support.testState.store,
-    );
-    vi.spyOn(support.testState.store, "createSessionAttachmentIntent").mockImplementation(
-      async (...args) => {
-        const reservation = await reserve(...args);
-        if (change === "revocation") {
-          turn.revoke(owner.profileId);
-        } else {
-          expect(await turn.steer(steerer)).toMatchObject({ status: "accepted" });
-        }
-        return reservation;
-      },
-    );
+    const store = support.testState.store;
+    const reserve = store.createSessionAttachmentIntent.bind(store);
+    vi.spyOn(store, "createSessionAttachmentIntent").mockImplementation(async (...args) => {
+      const reservation = await reserve(...args);
+      if (change === "revocation") {
+        turn.revoke(owner.profileId);
+      } else {
+        expect(await turn.steer(steerer)).toMatchObject({ status: "accepted" });
+      }
+      return reservation;
+    });
     await test.call("portal");
     expect(test.create).toHaveBeenCalledOnce();
     test.expectRejected(
