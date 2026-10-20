@@ -79,9 +79,23 @@ function expectedCompletionEvidence(runtime: "embedded" | "cli") {
 }
 
 describe("ordinary session event execution", () => {
-  it.for([["openai/gpt-5.4"], []])(
-    "preserves the scheduled fallback cap %j despite the destination's model lock",
-    async (fallbacks, { onTestFinished }) => {
+  it.for([
+    {
+      label: "declared fallback",
+      fallbacks: ["openai/gpt-5.4"],
+      locked: false,
+      expected: ["openai/gpt-5.4"],
+    },
+    { label: "explicit empty fallback", fallbacks: [], locked: false, expected: [] },
+    {
+      label: "locked session",
+      fallbacks: ["openai/gpt-5.4"],
+      locked: true,
+      expected: [],
+    },
+  ])(
+    "preserves scheduled fallback policy: $label",
+    async ({ fallbacks, locked, expected }, { onTestFinished }) => {
       const { resolveModelFallbackOptions } = await import("./agent-runner-run-params.js");
       const utils = await import("./agent-runner-utils.js");
       const resolver = vi.mocked(utils.resolveModelFallbackOptions);
@@ -101,7 +115,7 @@ describe("ordinary session event execution", () => {
         fallbacks,
       };
       followupRun.run.scheduledAutomation = automation;
-      followupRun.run.modelSelectionLocked = true;
+      followupRun.run.modelSelectionLocked = locked;
       followupRun.run.config.agents = {
         defaults: { model: { primary: "anthropic/claude", fallbacks: ["openai/gpt-4.1"] } },
       };
@@ -110,7 +124,7 @@ describe("ordinary session event execution", () => {
       expect(result.outcome).toMatchObject({ kind: "settled", status: "ok" });
       expect(
         state.runEmbeddedAgentEntryMock.mock.calls[0]?.[0].selection.fallbacksOverride,
-      ).toEqual(fallbacks);
+      ).toEqual(expected);
     },
   );
 
