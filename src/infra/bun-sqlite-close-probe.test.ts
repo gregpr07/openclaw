@@ -53,12 +53,37 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-async function start() {
+async function start(stuck = false) {
+  const join = createDeferredCore<number>();
+  if (stuck) {
+    state.join = join.promise;
+  }
   const result = probeSqliteNativeClose();
+  const settled = vi.fn();
+  void result.then(settled);
   await vi.advanceTimersByTimeAsync(0);
   const worker = state.workers[0];
   assert(worker);
-  return { worker, result };
+  return { worker, result, settled, join };
+}
+
+function expectConservative(settled: ReturnType<typeof vi.fn>, reason: string) {
+  expect(settled).toHaveBeenCalledExactlyOnceWith({
+    explicitSqliteCloseReleasesNativeResources: false,
+    reason: expect.stringContaining(reason),
+  });
+}
+function expectRetained() {
+  expect(state.warn).toHaveBeenCalledExactlyOnceWith(
+    expect.stringContaining("retained /private/close-probe"),
+    { code: "SQLITE_CLOSE_PROBE_CLEANUP" },
+  );
+  expect(state.remove).not.toHaveBeenCalled();
+}
+async function expectFinished() {
+  await vi.advanceTimersByTimeAsync(0);
+  expect(state.remove).not.toHaveBeenCalled();
+  expect(vi.getTimerCount()).toBe(0);
 }
 
 it.each([
@@ -72,13 +97,7 @@ it.each([
 ] as const)(
   "returns a conservative %s decision (%s / %s, stuck termination: %s)",
   async (event, value, reason, stuck) => {
-    const join = createDeferredCore<number>();
-    if (stuck) {
-      state.join = join.promise;
-    }
-    const { worker, result } = await start();
-    const settled = vi.fn();
-    void result.then(settled);
+    const { worker, settled, join } = await start(stuck);
     if (event === "timeout") {
       await vi.advanceTimersByTimeAsync(9_999);
       expect(settled).not.toHaveBeenCalled();
@@ -87,10 +106,7 @@ it.each([
       worker.emit(event, value);
       await vi.advanceTimersByTimeAsync(0);
     }
-    expect(settled).toHaveBeenCalledExactlyOnceWith({
-      explicitSqliteCloseReleasesNativeResources: false,
-      reason: expect.stringContaining(reason),
-    });
+    expectConservative(settled, reason);
     expect(worker.terminate).toHaveBeenCalledOnce();
     if (!stuck) {
       expect(state.remove).toHaveBeenCalledOnce();
@@ -100,30 +116,20 @@ it.each([
     expect(state.remove).not.toHaveBeenCalled();
     expect(state.warn).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(5_000);
-    expect(state.warn).toHaveBeenCalledExactlyOnceWith(
-      expect.stringContaining("retained /private/close-probe"),
-      { code: "SQLITE_CLOSE_PROBE_CLEANUP" },
-    );
-    expect(state.remove).not.toHaveBeenCalled();
+    expectRetained();
     if (event === "error") {
       join.reject(new Error("late termination failure"));
     } else {
       join.resolve(1);
     }
-    await vi.advanceTimersByTimeAsync(0);
-    expect(state.remove).not.toHaveBeenCalled();
-    expect(vi.getTimerCount()).toBe(0);
+    await expectFinished();
   },
 );
 
 it.each(["joined", "timeout", "rejection"] as const)(
   "accepts a successful reply only after native termination: %s",
   async (failure) => {
-    const join = createDeferredCore<number>();
-    state.join = join.promise;
-    const { worker, result } = await start();
-    const settled = vi.fn();
-    void result.then(settled);
+    const { worker, result, settled, join } = await start(true);
     worker.emit("message", "");
     await vi.advanceTimersByTimeAsync(0);
     expect(worker.terminate).toHaveBeenCalledOnce();
@@ -149,20 +155,13 @@ it.each(["joined", "timeout", "rejection"] as const)(
       join.reject(new Error("native join failed"));
       await vi.advanceTimersByTimeAsync(0);
     }
-    expect(settled).toHaveBeenCalledExactlyOnceWith({
-      explicitSqliteCloseReleasesNativeResources: false,
-      reason: expect.stringContaining(
-        failure === "timeout" ? "termination timed out" : "native join failed",
-      ),
-    });
-    expect(worker.unref).toHaveBeenCalledOnce();
-    expect(state.warn).toHaveBeenCalledExactlyOnceWith(
-      expect.stringContaining("retained /private/close-probe"),
-      { code: "SQLITE_CLOSE_PROBE_CLEANUP" },
+    expectConservative(
+      settled,
+      failure === "timeout" ? "termination timed out" : "native join failed",
     );
+    expect(worker.unref).toHaveBeenCalledOnce();
+    expectRetained();
     join.resolve(1);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(state.remove).not.toHaveBeenCalled();
-    expect(vi.getTimerCount()).toBe(0);
+    await expectFinished();
   },
 );

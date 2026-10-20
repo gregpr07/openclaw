@@ -62,29 +62,16 @@ describe("brew helpers", () => {
     });
   });
 
-  it("always includes the standard macOS brew dirs after linuxbrew candidates", () => {
-    const dirs = resolveBrewPathDirs({ homeDir: "/home/test" });
-
-    expect(dirs.slice(-2)).toEqual(["/opt/homebrew/bin", "/usr/local/bin"]);
-  });
-
-  it("includes Linuxbrew bin/sbin in path candidates without env prefixes", async () => {
-    await withEnvAsync(
-      {
-        HOMEBREW_PREFIX: "/custom/prefix",
-        HOMEBREW_BREW_FILE: undefined,
-        HOMEBREW_CURL_PATH: undefined,
-        HOMEBREW_GIT_PATH: undefined,
-      },
-      async () => {
-        const dirs = resolveBrewPathDirs({ homeDir: "/home/test" });
-        expect(dirs).not.toContain(path.join("/custom/prefix", "bin"));
-        expect(dirs).not.toContain(path.join("/custom/prefix", "sbin"));
-        expect(dirs).toContain("/home/linuxbrew/.linuxbrew/bin");
-        expect(dirs).toContain("/home/linuxbrew/.linuxbrew/sbin");
-        expect(dirs).toContain(path.join("/home/test", ".linuxbrew", "bin"));
-        expect(dirs).toContain(path.join("/home/test", ".linuxbrew", "sbin"));
-      },
-    );
+  it("keeps Linuxbrew candidates before standard macOS dirs, ignoring env prefixes", async () => {
+    await withEnvAsync({ HOMEBREW_PREFIX: "/custom/prefix" }, async () => {
+      const dirs = resolveBrewPathDirs({ homeDir: "/home/test" });
+      expect(dirs.slice(-2)).toEqual(["/opt/homebrew/bin", "/usr/local/bin"]);
+      expect(dirs).not.toContain(path.join("/custom/prefix", "bin"));
+      expect(dirs).not.toContain(path.join("/custom/prefix", "sbin"));
+      expect(dirs).toContain("/home/linuxbrew/.linuxbrew/bin");
+      expect(dirs).toContain("/home/linuxbrew/.linuxbrew/sbin");
+      expect(dirs).toContain(path.join("/home/test", ".linuxbrew", "bin"));
+      expect(dirs).toContain(path.join("/home/test", ".linuxbrew", "sbin"));
+    });
   });
 });

@@ -116,6 +116,14 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+function setValue(target: object, key: PropertyKey, value: unknown) {
+  if (value === undefined) {
+    Reflect.deleteProperty(target, key);
+  } else {
+    Object.defineProperty(target, key, { configurable: true, value });
+  }
+}
+
 export function mockBunSqliteNativeBoundary(
   options: {
     isBun?: boolean;
@@ -139,22 +147,12 @@ export function mockBunSqliteNativeBoundary(
   );
   native.select = vi.fn(options.select ?? (() => {}));
   Reflect.deleteProperty(globalThis, sqliteSelectionKey);
-  if (options.standaloneRootUrl === undefined) {
-    Reflect.deleteProperty(globalThis, "__openclawStandaloneRootUrl");
-  } else {
-    Object.defineProperty(globalThis, "__openclawStandaloneRootUrl", {
-      configurable: true,
-      value: options.standaloneRootUrl,
-    });
-  }
-  Object.defineProperty(process, "versions", {
-    configurable: true,
-    value: { ...process.versions, bun: (options.isBun ?? true) ? "fixture" : undefined },
+  setValue(globalThis, "__openclawStandaloneRootUrl", options.standaloneRootUrl);
+  setValue(process, "versions", {
+    ...process.versions,
+    bun: (options.isBun ?? true) ? "fixture" : undefined,
   });
-  Object.defineProperty(process, "platform", {
-    configurable: true,
-    value: options.platform ?? "darwin",
-  });
+  setValue(process, "platform", options.platform ?? "darwin");
   for (const key of ["OPENCLAW_SQLITE_LIBRARY", "HOMEBREW_PREFIX", "OPENCLAW_DIAGNOSTICS"]) {
     vi.stubEnv(key, options.env?.[key]);
   }
