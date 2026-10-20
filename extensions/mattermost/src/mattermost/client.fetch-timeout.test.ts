@@ -1,4 +1,3 @@
-// Mattermost tests cover real REST client timeout behavior.
 import { createRequire } from "node:module";
 import * as ssrfRuntime from "openclaw/plugin-sdk/ssrf-runtime";
 import { withServer } from "openclaw/plugin-sdk/test-env";
@@ -17,9 +16,7 @@ const undiciTimers: { reset: () => void } = createRequire(import.meta.url)(
 type OperationOutcome =
   | { status: "resolved" }
   | { status: "rejected"; error: unknown }
-  | {
-      status: "pending";
-    };
+  | { status: "pending" };
 
 async function settleWithin(
   promise: Promise<unknown>,
@@ -42,32 +39,37 @@ async function settleWithin(
 }
 
 function expectTimeoutOutcome(outcome: OperationOutcome): void {
-  expect(outcome.status).toBe("rejected");
-  if (outcome.status !== "rejected") {
-    throw new Error(`expected timeout rejection, got ${outcome.status}`);
+  expect(outcome).toEqual({ status: "rejected", error: expect.any(Error) });
+  if (outcome.status === "rejected") {
+    expect(outcome.error).toMatchObject({
+      name: expect.stringMatching(/^(AbortError|TimeoutError)$/),
+    });
   }
-  expect(outcome.error).toBeInstanceOf(Error);
-  expect(outcome.error instanceof Error ? outcome.error.name : "").toMatch(
-    /^(AbortError|TimeoutError)$/,
-  );
+}
+
+function clientAt(baseUrl: string, timeoutMs: number) {
+  return createMattermostClient({
+    baseUrl,
+    botToken: "bot-token",
+    allowPrivateNetwork: true,
+    timeoutMs,
+  });
 }
 
 async function withHangingMattermostServer(
   run: (server: {
-    baseUrl: string;
+    client: ReturnType<typeof createMattermostClient>;
     received: Promise<void>;
     requestCount: () => number;
   }) => Promise<void>,
+  timeoutMs = 50,
 ): Promise<void> {
   let requestCount = 0;
-  let notifyRequest: () => void = () => {};
-  const received = new Promise<void>((resolve) => {
-    notifyRequest = resolve;
-  });
+  const received = Promise.withResolvers<void>();
   await withServer(
     (request) => {
       requestCount += 1;
-      notifyRequest();
+      received.resolve();
       request.resume();
     },
     async (baseUrl) => {
@@ -75,7 +77,11 @@ async function withHangingMattermostServer(
       // A loaded worker can otherwise exhaust the 50ms deadline before connecting.
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
       try {
-        await run({ baseUrl, received, requestCount: () => requestCount });
+        await run({
+          client: clientAt(baseUrl, timeoutMs),
+          received: received.promise,
+          requestCount: () => requestCount,
+        });
       } finally {
         undiciTimers.reset();
         vi.useRealTimers();
@@ -84,49 +90,32 @@ async function withHangingMattermostServer(
   );
 }
 
+async function expire(request: Promise<unknown>, received: Promise<void>, cancel?: () => void) {
+  const outcome = settleWithin(request, 750);
+  await Promise.race([received, request]);
+  cancel?.();
+  await vi.advanceTimersByTimeAsync(750);
+  expectTimeoutOutcome(await outcome);
+}
+
 describe("Mattermost REST client fetch timeout", () => {
   it("rejects a hanging real loopback request at the configured client timeout", async () => {
     await withHangingMattermostServer(async (server) => {
-      const client = createMattermostClient({
-        baseUrl: server.baseUrl,
-        botToken: "bot-token",
-        allowPrivateNetwork: true,
-        timeoutMs: 50,
-      });
-      const request = fetchMattermostMe(client);
-      const outcome = settleWithin(request, 750);
-
-      await Promise.race([server.received, request]);
+      await expire(fetchMattermostMe(server.client), server.received);
       expect(server.requestCount()).toBe(1);
-      await vi.advanceTimersByTimeAsync(750);
-      expectTimeoutOutcome(await outcome);
     });
   });
 
   it("preserves a caller AbortSignal while applying the default request timeout", async () => {
     await withHangingMattermostServer(async (server) => {
-      const client = createMattermostClient({
-        baseUrl: server.baseUrl,
-        botToken: "bot-token",
-        allowPrivateNetwork: true,
-        timeoutMs: 30_000,
-      });
       const controller = new AbortController();
-      const request = client.request("/users/me", { signal: controller.signal });
-      const outcome = settleWithin(request, 750);
-
-      await Promise.race([server.received, request]);
-      controller.abort();
-      await vi.advanceTimersByTimeAsync(750);
-      expectTimeoutOutcome(await outcome);
-    });
+      const request = server.client.request("/users/me", { signal: controller.signal });
+      await expire(request, server.received, () => controller.abort());
+    }, 30_000);
   });
 
   it("preserves caller cancellation through a guarded response body", async () => {
-    let notifyFetchResolved: () => void = () => {};
-    const fetchResolved = new Promise<void>((resolve) => {
-      notifyFetchResolved = resolve;
-    });
+    const fetchResolved = Promise.withResolvers<void>();
     await withServer(
       (_request, response) => {
         response.writeHead(200, { "content-type": "application/json" });
@@ -138,21 +127,16 @@ describe("Mattermost REST client fetch timeout", () => {
           .spyOn(ssrfRuntime, "fetchWithSsrFGuard")
           .mockImplementation(async (params) => {
             const result = await guardedFetch(params);
-            notifyFetchResolved();
+            fetchResolved.resolve();
             return result;
           });
-        const client = createMattermostClient({
-          baseUrl,
-          botToken: "bot-token",
-          allowPrivateNetwork: true,
-          timeoutMs: 30_000,
-        });
+        const client = clientAt(baseUrl, 30_000);
         const controller = new AbortController();
         const reason = new Error("caller stopped after headers");
         const request = client.request("/users/me", { signal: controller.signal });
 
         try {
-          await fetchResolved;
+          await fetchResolved.promise;
           // Let the client's post-fetch cleanup run before cancellation so this
           // specifically covers the response-body phase.
           await new Promise<void>((resolve) => {
@@ -171,16 +155,14 @@ describe("Mattermost REST client fetch timeout", () => {
 
   it("preserves configured DM retry timeouts longer than the client default", async () => {
     await withHangingMattermostServer(async (server) => {
-      const client = createMattermostClient({
-        baseUrl: server.baseUrl,
-        botToken: "bot-token",
-        allowPrivateNetwork: true,
-        timeoutMs: 50,
-      });
-      const request = createMattermostDirectChannelWithRetry(client, ["bot-user", "dm-user"], {
-        maxRetries: 0,
-        timeoutMs: 250,
-      });
+      const request = createMattermostDirectChannelWithRetry(
+        server.client,
+        ["bot-user", "dm-user"],
+        {
+          maxRetries: 0,
+          timeoutMs: 250,
+        },
+      );
       const earlyOutcome = settleWithin(request, 120);
 
       await Promise.race([server.received, request]);

@@ -7,6 +7,10 @@ import { resolveMattermostOpaqueTarget } from "./target-resolution.js";
 
 const PUBLIC_CHANNEL_ID = "abcdefghijklmnopqrstuvwxyz";
 const PRIVATE_CHANNEL_ID = "bcdefghijklmnopqrstuvwxyza";
+const cases = [
+  { id: PUBLIC_CHANNEL_ID, kind: "channel", type: "O" },
+  { id: PRIVATE_CHANNEL_ID, kind: "group", type: "P" },
+] as const;
 
 describe("Mattermost opaque channel resolution over real HTTP", () => {
   it("preserves real public and private channel identities in outbound thread routes", async () => {
@@ -28,15 +32,10 @@ describe("Mattermost opaque channel resolution over real HTTP", () => {
           return;
         }
 
-        if (path === `/api/v4/channels/${PUBLIC_CHANNEL_ID}`) {
+        const channel = cases.find(({ id }) => path === `/api/v4/channels/${id}`);
+        if (channel) {
           response.writeHead(200);
-          response.end(JSON.stringify({ id: PUBLIC_CHANNEL_ID, type: "O" }));
-          return;
-        }
-
-        if (path === `/api/v4/channels/${PRIVATE_CHANNEL_ID}`) {
-          response.writeHead(200);
-          response.end(JSON.stringify({ id: PRIVATE_CHANNEL_ID, type: "P" }));
+          response.end(JSON.stringify({ id: channel.id, type: channel.type }));
           return;
         }
 
@@ -53,11 +52,6 @@ describe("Mattermost opaque channel resolution over real HTTP", () => {
             },
           },
         } as OpenClawConfig;
-
-        const cases = [
-          { id: PUBLIC_CHANNEL_ID, kind: "channel" },
-          { id: PRIVATE_CHANNEL_ID, kind: "group" },
-        ] as const;
 
         for (const testCase of cases) {
           const resolved = await resolveMattermostOpaqueTarget({
@@ -92,28 +86,15 @@ describe("Mattermost opaque channel resolution over real HTTP", () => {
           });
         }
 
-        expect(requests).toEqual([
-          {
-            method: "GET",
-            path: `/api/v4/users/${PUBLIC_CHANNEL_ID}`,
-            authorization: "Bearer mattermost-loopback-fixture",
-          },
-          {
-            method: "GET",
-            path: `/api/v4/channels/${PUBLIC_CHANNEL_ID}`,
-            authorization: "Bearer mattermost-loopback-fixture",
-          },
-          {
-            method: "GET",
-            path: `/api/v4/users/${PRIVATE_CHANNEL_ID}`,
-            authorization: "Bearer mattermost-loopback-fixture",
-          },
-          {
-            method: "GET",
-            path: `/api/v4/channels/${PRIVATE_CHANNEL_ID}`,
-            authorization: "Bearer mattermost-loopback-fixture",
-          },
-        ]);
+        expect(requests).toEqual(
+          cases.flatMap(({ id }) =>
+            ["users", "channels"].map((resource) => ({
+              method: "GET",
+              path: `/api/v4/${resource}/${id}`,
+              authorization: "Bearer mattermost-loopback-fixture",
+            })),
+          ),
+        );
       },
     );
   });

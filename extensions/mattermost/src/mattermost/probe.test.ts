@@ -1,4 +1,3 @@
-// Mattermost tests cover probe plugin behavior.
 import { MAX_TIMER_TIMEOUT_MS } from "openclaw/plugin-sdk/number-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { probeMattermost } from "./probe.js";
@@ -8,26 +7,20 @@ const { mockFetchGuard, mockRelease } = vi.hoisted(() => ({
   mockRelease: vi.fn(async () => {}),
 }));
 
-vi.mock("openclaw/plugin-sdk/ssrf-runtime", async () => {
-  const original = (await vi.importActual("openclaw/plugin-sdk/ssrf-runtime")) as Record<
-    string,
-    unknown
-  >;
+vi.mock("openclaw/plugin-sdk/ssrf-runtime", async (importOriginal) => {
+  const original = await importOriginal<typeof import("openclaw/plugin-sdk/ssrf-runtime")>();
   return { ...original, fetchWithSsrFGuard: mockFetchGuard };
 });
 
-function requireFirstFetchCall() {
-  const [call] = mockFetchGuard.mock.calls;
-  if (!call) {
-    throw new Error("expected Mattermost probe fetch call");
-  }
-  return call[0] as {
-    url?: string;
-    init?: { headers?: unknown; signal?: unknown };
-    auditContext?: string;
-    policy?: unknown;
-    timeoutMs?: number;
-  };
+function respond(response = Response.json({ id: "bot-1" })) {
+  mockFetchGuard.mockResolvedValueOnce({ response, release: mockRelease });
+}
+
+function expectResult(result: Awaited<ReturnType<typeof probeMattermost>>, expected: object) {
+  const { elapsedMs, ...stableResult } = result;
+  expect(stableResult).toStrictEqual(expected);
+  expect(elapsedMs).toBeGreaterThanOrEqual(0);
+  expect(mockRelease).toHaveBeenCalledTimes(1);
 }
 
 describe("probeMattermost", () => {
@@ -36,9 +29,7 @@ describe("probeMattermost", () => {
     mockRelease.mockClear();
   });
 
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
+  afterEach(() => vi.restoreAllMocks());
 
   it("returns baseUrl missing for empty base URL", async () => {
     await expect(probeMattermost(" ", "token")).resolves.toEqual({
@@ -49,28 +40,20 @@ describe("probeMattermost", () => {
   });
 
   it("normalizes base URL and returns bot info", async () => {
-    mockFetchGuard.mockResolvedValueOnce({
-      response: Response.json({ id: "bot-1", username: "clawbot" }),
-      release: mockRelease,
-    });
-
+    respond(Response.json({ id: "bot-1", username: "clawbot" }));
     const result = await probeMattermost("https://mm.example.com/api/v4/", "bot-token");
-
-    const fetchCall = requireFirstFetchCall();
-    expect(fetchCall?.url).toBe("https://mm.example.com/api/v4/users/me");
-    expect(fetchCall?.init?.headers).toStrictEqual({ Authorization: "Bearer bot-token" });
-    expect(fetchCall?.timeoutMs).toBe(2500);
-    expect(fetchCall?.init?.signal).toBeUndefined();
-    expect(fetchCall?.auditContext).toBe("mattermost-probe");
-    expect(fetchCall?.policy).toBeUndefined();
-    const { elapsedMs, ...stableResult } = result;
-    expect(stableResult).toStrictEqual({
+    expect(mockFetchGuard.mock.calls[0]?.[0]).toEqual({
+      url: "https://mm.example.com/api/v4/users/me",
+      init: { headers: { Authorization: "Bearer bot-token" } },
+      timeoutMs: 2500,
+      auditContext: "mattermost-probe",
+      policy: undefined,
+    });
+    expectResult(result, {
       ok: true,
       status: 200,
       bot: { id: "bot-1", username: "clawbot" },
     });
-    expect(elapsedMs).toBeGreaterThanOrEqual(0);
-    expect(mockRelease).toHaveBeenCalledTimes(1);
   });
 
   it("bounds and cancels oversized probe success JSON bodies", async () => {
@@ -86,18 +69,11 @@ describe("probeMattermost", () => {
         canceled = true;
       },
     });
-    mockFetchGuard.mockResolvedValueOnce({
-      response: new Response(stream, {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
-      release: mockRelease,
-    });
+    respond(new Response(stream, { status: 200, headers: { "content-type": "application/json" } }));
 
     const result = await probeMattermost("https://mm.example.com", "bot-token");
 
-    expect(result.ok).toBe(false);
-    expect(result.status).toBeNull();
+    expect(result).toMatchObject({ ok: false, status: null });
     expect(result.error).toContain("JSON response exceeds 16777216 bytes");
     expect(canceled).toBe(true);
     expect(pulled).toBeLessThanOrEqual(12);
@@ -105,26 +81,17 @@ describe("probeMattermost", () => {
   });
 
   it("forwards allowPrivateNetwork to the SSRF guard policy", async () => {
-    mockFetchGuard.mockResolvedValueOnce({
-      response: Response.json({ id: "bot-1" }),
-      release: mockRelease,
-    });
-
+    respond();
     await probeMattermost("https://mm.example.com", "bot-token", 2500, true);
 
-    const fetchCall = requireFirstFetchCall();
-    expect(fetchCall?.policy).toStrictEqual({ allowPrivateNetwork: true });
+    expect(mockFetchGuard.mock.calls[0]?.[0].policy).toStrictEqual({ allowPrivateNetwork: true });
   });
 
   it("clamps oversized probe timeouts before the guard-owned deadline", async () => {
-    mockFetchGuard.mockResolvedValueOnce({
-      response: Response.json({ id: "bot-1" }),
-      release: mockRelease,
-    });
-
+    respond();
     await probeMattermost("https://mm.example.com", "bot-token", Number.MAX_SAFE_INTEGER);
 
-    expect(requireFirstFetchCall().timeoutMs).toBe(MAX_TIMER_TIMEOUT_MS);
+    expect(mockFetchGuard.mock.calls[0]?.[0].timeoutMs).toBe(MAX_TIMER_TIMEOUT_MS);
   });
 
   it("returns a string diagnostic without a reflected active credential in an object message", async () => {
@@ -151,23 +118,18 @@ describe("probeMattermost", () => {
   });
 
   it("falls back to statusText when error body is empty", async () => {
-    mockFetchGuard.mockResolvedValueOnce({
-      response: new Response("", {
+    respond(
+      new Response("", {
         status: 403,
         statusText: "Forbidden",
         headers: { "content-type": "text/plain" },
       }),
-      release: mockRelease,
-    });
+    );
 
-    const result = await probeMattermost("https://mm.example.com", "token");
-    const { elapsedMs, ...stableResult } = result;
-    expect(stableResult).toStrictEqual({
+    expectResult(await probeMattermost("https://mm.example.com", "token"), {
       ok: false,
       status: 403,
       error: "Forbidden",
     });
-    expect(elapsedMs).toBeGreaterThanOrEqual(0);
-    expect(mockRelease).toHaveBeenCalledTimes(1);
   });
 });

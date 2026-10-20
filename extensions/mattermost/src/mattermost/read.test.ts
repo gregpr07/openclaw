@@ -1,5 +1,5 @@
 import { requestUrl } from "openclaw/plugin-sdk/test-env";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createMattermostTestConfig } from "./reactions.test-helpers.js";
 import { readMattermostMessages } from "./read.js";
 import type { OpenClawConfig } from "./runtime-api.js";
@@ -52,73 +52,68 @@ function createReadFetch(params?: { channelType?: string; postStatus?: number })
   });
 }
 
-function delegatedContext(currentChannelId = "channel:CURRENT") {
+function delegatedContext(currentChannelId = "channel:CURRENT", currentMessagingTarget?: string) {
   return {
     conversationReadOrigin: "delegated" as const,
     requesterAccountId: "default",
     toolContext: {
       currentChannelProvider: "mattermost",
       currentChannelId,
+      currentMessagingTarget,
     },
   };
 }
 
-describe("readMattermostMessages", () => {
-  it("allows a configured delegated cross-channel read", async () => {
-    const cfg = createMattermostTestConfig("read-configured") as OpenClawConfig;
-    cfg.channels!.mattermost!.groupPolicy = "allowlist";
-    cfg.channels!.mattermost!.groups = { OTHER: { requireMention: false } };
-    const fetchImpl = (fetchFixture.current = createReadFetch());
+function config(overrides: NonNullable<NonNullable<OpenClawConfig["channels"]>["mattermost"]>) {
+  const cfg = createMattermostTestConfig();
+  Object.assign(cfg.channels!.mattermost!, overrides);
+  return cfg;
+}
 
+function read(overrides: Partial<Parameters<typeof readMattermostMessages>[0]> = {}) {
+  return readMattermostMessages({
+    cfg: createMattermostTestConfig(),
+    channelId: "OTHER",
+    accountId: "default",
+    context: delegatedContext(),
+    ...overrides,
+  });
+}
+
+describe("readMattermostMessages", () => {
+  let fetchImpl: ReturnType<typeof createReadFetch>;
+  beforeEach(() => {
+    fetchFixture.current = fetchImpl = createReadFetch();
+  });
+
+  it("allows a configured delegated cross-channel read", async () => {
     await expect(
-      readMattermostMessages({
-        cfg,
-        channelId: "OTHER",
-        accountId: "default",
-        context: delegatedContext(),
+      read({
+        cfg: config({ groupPolicy: "allowlist", groups: { OTHER: { requireMention: false } } }),
       }),
-    ).resolves.toMatchObject({ messages: [{ id: "post-2" }, { id: "post-1" }] });
+    ).resolves.toMatchObject({
+      messages: [{ id: "post-2" }, { id: "post-1" }],
+    });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it("allows an unlisted member channel only when groupPolicy is open", async () => {
-    const cfg = createMattermostTestConfig("read-open") as OpenClawConfig;
-    cfg.channels!.mattermost!.groupPolicy = "open";
-    fetchFixture.current = createReadFetch();
-
-    await expect(
-      readMattermostMessages({
-        cfg,
-        channelId: "OTHER",
-        accountId: "default",
-        context: delegatedContext(),
-      }),
-    ).resolves.toMatchObject({ messages: [{ id: "post-2" }, { id: "post-1" }] });
+    await expect(read({ cfg: config({ groupPolicy: "open" }) })).resolves.toMatchObject({
+      messages: [{ id: "post-2" }, { id: "post-1" }],
+    });
   });
 
   it("denies unconfigured and direct-message cross-channel targets before reading posts", async () => {
     for (const channelType of ["O", "D"]) {
-      const fetchImpl = (fetchFixture.current = createReadFetch({ channelType }));
-      await expect(
-        readMattermostMessages({
-          cfg: createMattermostTestConfig(`read-denied-${channelType}`),
-          channelId: "OTHER",
-          accountId: "default",
-          context: delegatedContext(),
-        }),
-      ).rejects.toThrow("Mattermost read target channel is not allowed");
+      fetchFixture.current = fetchImpl = createReadFetch({ channelType });
+      await expect(read()).rejects.toThrow("Mattermost read target channel is not allowed");
       expect(fetchImpl).toHaveBeenCalledTimes(1);
     }
   });
 
   it("rejects delegated account switching before provider access", async () => {
-    const fetchImpl = (fetchFixture.current = createReadFetch());
-
     await expect(
-      readMattermostMessages({
-        cfg: createMattermostTestConfig("read-account-switch"),
-        channelId: "OTHER",
-        accountId: "default",
+      read({
         context: {
           ...delegatedContext(),
           requesterAccountId: "other-account",
@@ -129,21 +124,10 @@ describe("readMattermostMessages", () => {
   });
 
   it("uses the trusted native channel ID for the current DM", async () => {
-    const fetchImpl = (fetchFixture.current = createReadFetch());
-
-    const result = await readMattermostMessages({
-      cfg: createMattermostTestConfig("read-current-dm"),
+    const result = await read({
       channelId: "CURRENT",
       limit: 2,
-      accountId: "default",
-      context: {
-        ...delegatedContext(),
-        toolContext: {
-          currentChannelProvider: "mattermost",
-          currentChannelId: "channel:CURRENT",
-          currentMessagingTarget: "user:PEER",
-        },
-      },
+      context: delegatedContext("channel:CURRENT", "user:PEER"),
     });
 
     expect(result.messages.map((message) => message.id)).toEqual(["post-2", "post-1"]);
@@ -152,21 +136,10 @@ describe("readMattermostMessages", () => {
   });
 
   it("fails closed when the trusted native channel ID names another conversation", async () => {
-    const fetchImpl = (fetchFixture.current = createReadFetch());
-
     await expect(
-      readMattermostMessages({
-        cfg: createMattermostTestConfig("read-conflicting-current"),
+      read({
         channelId: "CURRENT",
-        accountId: "default",
-        context: {
-          ...delegatedContext(),
-          toolContext: {
-            currentChannelProvider: "mattermost",
-            currentChannelId: "channel:OTHER",
-            currentMessagingTarget: "channel:CURRENT",
-          },
-        },
+        context: delegatedContext("channel:OTHER", "channel:CURRENT"),
       }),
     ).rejects.toThrow("Mattermost read target channel is not allowed");
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -176,26 +149,17 @@ describe("readMattermostMessages", () => {
     fetchFixture.current = createReadFetch({ postStatus: 403 });
 
     await expect(
-      readMattermostMessages({
-        cfg: createMattermostTestConfig("read-forbidden"),
-        channelId: "OTHER",
-        accountId: "default",
+      read({
         context: { conversationReadOrigin: "direct-operator" },
       }),
     ).rejects.toThrow("Mattermost API 403 Forbidden: You do not have the appropriate permissions.");
   });
 
   it("rejects disabled accounts before provider access", async () => {
-    const cfg = createMattermostTestConfig("read-disabled") as OpenClawConfig;
-    cfg.channels!.mattermost!.enabled = false;
-    const fetchImpl = (fetchFixture.current = createReadFetch());
-
     await expect(
-      readMattermostMessages({
-        cfg,
+      read({
+        cfg: config({ enabled: false }),
         channelId: "CURRENT",
-        accountId: "default",
-        context: delegatedContext(),
       }),
     ).rejects.toThrow('Mattermost account "default" is disabled');
     expect(fetchImpl).not.toHaveBeenCalled();

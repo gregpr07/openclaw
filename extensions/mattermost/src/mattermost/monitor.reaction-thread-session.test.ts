@@ -1,7 +1,5 @@
-// Mattermost tests cover reaction thread placement through the production REST lookup.
-import { once } from "node:events";
-import { createServer } from "node:http";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
+import { withServer } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMattermostClient } from "./client.js";
 import { createMattermostReactionHandler } from "./monitor-reactions.js";
@@ -24,95 +22,67 @@ vi.mock("../runtime.js", () => ({
   getOptionalMattermostRuntime: () => loopbackState.runtimeCore,
 }));
 
-const openServers: Array<{ close: () => void }> = [];
-
 afterEach(() => {
-  for (const server of openServers.splice(0)) {
-    server.close();
-  }
   loopbackState.enqueueSystemEvent.mockClear();
 });
 
 type LoopbackPost = { id: string; channel_id?: string; user_id?: string; root_id?: string };
 
-async function startLoopbackMattermost(post: LoopbackPost | null) {
+async function withLoopbackMattermost(
+  post: LoopbackPost | null,
+  run: (baseUrl: string, requests: string[]) => Promise<void>,
+) {
   const requests: string[] = [];
-  const server = createServer((request, response) => {
-    const url = request.url ?? "";
-    requests.push(`${request.method ?? "GET"} ${url}`);
-    response.setHeader("content-type", "application/json");
-    if (request.headers.authorization !== `Bearer ${LOOPBACK_TOKEN}`) {
-      response.writeHead(401);
-      response.end(JSON.stringify({ message: "unauthorized" }));
-      return;
-    }
-    if (url === `/api/v4/channels/${CHANNEL_ID}`) {
-      response.end(
-        JSON.stringify({
-          id: CHANNEL_ID,
-          name: "town-square",
-          display_name: "Town Square",
-          team_id: "team-1",
-          type: "O",
-        }),
-      );
-      return;
-    }
-    if (url === "/api/v4/users/user-1") {
-      response.end(JSON.stringify({ id: "user-1", username: "alice", update_at: 1 }));
-      return;
-    }
-    if (post && url === `/api/v4/posts/${post.id}`) {
-      response.end(
-        JSON.stringify({
-          channel_id: CHANNEL_ID,
-          user_id: "user-1",
-          create_at: 1_714_000_000_000,
-          ...post,
-        }),
-      );
-      return;
-    }
-    response.writeHead(404);
-    response.end(JSON.stringify({ message: "unknown loopback endpoint" }));
-  });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const address = server.address();
-  if (!address || typeof address === "string") {
-    throw new Error("expected a Mattermost loopback TCP address");
+  const payloads: Record<string, unknown> = {
+    [`/api/v4/channels/${CHANNEL_ID}`]: {
+      id: CHANNEL_ID,
+      name: "town-square",
+      display_name: "Town Square",
+      team_id: "team-1",
+      type: "O",
+    },
+    "/api/v4/users/user-1": { id: "user-1", username: "alice", update_at: 1 },
+  };
+  if (post) {
+    payloads[`/api/v4/posts/${post.id}`] = {
+      channel_id: CHANNEL_ID,
+      user_id: "user-1",
+      create_at: 1_714_000_000_000,
+      ...post,
+    };
   }
-  const entry = { close: () => server.close() };
-  openServers.push(entry);
-  return { baseUrl: `http://127.0.0.1:${address.port}`, requests };
+  await withServer(
+    (request, response) => {
+      const url = request.url ?? "";
+      requests.push(`${request.method ?? "GET"} ${url}`);
+      response.setHeader("content-type", "application/json");
+      if (request.headers.authorization !== `Bearer ${LOOPBACK_TOKEN}`) {
+        response.writeHead(401);
+        response.end(JSON.stringify({ message: "unauthorized" }));
+        return;
+      }
+      const payload = Object.hasOwn(payloads, url) ? payloads[url] : undefined;
+      response.writeHead(payload ? 200 : 404);
+      response.end(JSON.stringify(payload ?? { message: "unknown loopback endpoint" }));
+    },
+    (baseUrl) => run(baseUrl, requests),
+  );
 }
 
 async function runReactionThroughMonitor(params: { baseUrl: string; postId: string }) {
-  const pluginRuntime = createPluginRuntimeMock();
-  const runtimeCore = {
-    ...pluginRuntime,
-    channel: {
-      ...pluginRuntime.channel,
-      routing: {
-        ...pluginRuntime.channel.routing,
-        resolveAgentRoute: () => ({
-          accountId: "default",
-          agentId: "main",
-          lastRoutePolicy: "main" as const,
-          mainSessionKey: BASE_SESSION_KEY,
-          sessionKey: BASE_SESSION_KEY,
-        }),
-      },
-    },
-    system: {
-      ...pluginRuntime.system,
-      enqueueSystemEvent: loopbackState.enqueueSystemEvent,
-    },
-  };
+  const runtimeCore = createPluginRuntimeMock();
+  runtimeCore.channel.routing.resolveAgentRoute = () => ({
+    channel: "mattermost",
+    matchedBy: "default",
+    accountId: "default",
+    agentId: "main",
+    lastRoutePolicy: "main",
+    mainSessionKey: BASE_SESSION_KEY,
+    sessionKey: BASE_SESSION_KEY,
+  });
+  runtimeCore.system.enqueueSystemEvent = loopbackState.enqueueSystemEvent;
   loopbackState.runtimeCore = runtimeCore;
 
-  // The production REST client, resource cache, and reaction handler all run here; only
-  // the Mattermost transport and the agent runtime are replaced.
   const client = createMattermostClient({
     baseUrl: params.baseUrl,
     botToken: LOOPBACK_TOKEN,
@@ -127,15 +97,14 @@ async function runReactionThroughMonitor(params: { baseUrl: string; postId: stri
     saveRemoteMedia: async () => ({ path: "/tmp/mattermost-loopback-media" }),
     mediaKindFromMime: () => null,
   });
-  const cfg = {
-    channels: { mattermost: { enabled: true, dmPolicy: "open", groupPolicy: "open" } },
-  } as OpenClawConfig;
+  const config = { enabled: true, dmPolicy: "open", groupPolicy: "open" } as const;
+  const cfg: OpenClawConfig = { channels: { mattermost: config } };
   const monitor = {
     account: {
       accountId: "default",
       baseUrl: params.baseUrl,
       botToken: LOOPBACK_TOKEN,
-      config: { dmPolicy: "open", groupPolicy: "open" },
+      config,
     },
     botUserId: "bot-user",
     cfg,
@@ -171,16 +140,17 @@ describe("mattermost reaction thread placement", () => {
     { post: null, sessionKey: BASE_SESSION_KEY },
   ])("uses session $sessionKey after the production post lookup", async ({ post, sessionKey }) => {
     const postId = post?.id ?? "post-unknown";
-    const loopback = await startLoopbackMattermost(post);
-    await runReactionThroughMonitor({ baseUrl: loopback.baseUrl, postId });
-    expect(loopback.requests).toContain(`GET /api/v4/posts/${postId}`);
-    expect(loopbackState.enqueueSystemEvent).toHaveBeenCalledTimes(1);
-    expect(loopbackState.enqueueSystemEvent).toHaveBeenCalledWith(
-      expect.stringContaining("Mattermost reaction added"),
-      expect.objectContaining({
-        sessionKey,
-        contextKey: `mattermost:reaction:${postId}:thumbsup:user-1:added`,
-      }),
-    );
+    await withLoopbackMattermost(post, async (baseUrl, requests) => {
+      await runReactionThroughMonitor({ baseUrl, postId });
+      expect(requests).toContain(`GET /api/v4/posts/${postId}`);
+      expect(loopbackState.enqueueSystemEvent).toHaveBeenCalledTimes(1);
+      expect(loopbackState.enqueueSystemEvent).toHaveBeenCalledWith(
+        expect.stringContaining("Mattermost reaction added"),
+        expect.objectContaining({
+          sessionKey,
+          contextKey: `mattermost:reaction:${postId}:thumbsup:user-1:added`,
+        }),
+      );
+    });
   });
 });

@@ -191,16 +191,11 @@ describe("Mattermost bot-owned thread mention policy", () => {
     },
   );
 
-  it.each([
-    {
-      scope: "wildcard group",
-      config: {
-        requireMentionInBotThreads: true,
-        groups: { "*": { requireMentionInBotThreads: false } },
-      },
-    },
-  ])("admits an unmentioned bot-thread reply configured at $scope scope", async ({ config }) => {
-    const f = setup(config);
+  it("admits an unmentioned bot-thread reply configured at wildcard group scope", async () => {
+    const f = setup({
+      requireMentionInBotThreads: true,
+      groups: { "*": { requireMentionInBotThreads: false } },
+    });
 
     await f.receive();
 
@@ -237,15 +232,13 @@ describe("Mattermost bot-owned thread mention policy", () => {
     expect(dispatch).toHaveBeenCalledOnce();
   });
 
-  it.each([
-    { name: "another author's thread", setting: true, owner: "someone-else", admitted: true },
-  ])("handles missing mention detectors for $name", async ({ setting, owner, admitted }) => {
-    const f = setup({ requireMentionInBotThreads: setting }, "");
-    f.root.user_id = owner;
+  it("handles missing mention detectors for another author's thread", async () => {
+    const f = setup({ requireMentionInBotThreads: true }, "");
+    f.root.user_id = "someone-else";
 
     await f.receive();
 
-    expect(dispatch).toHaveBeenCalledTimes(admitted ? 1 : 0);
+    expect(dispatch).toHaveBeenCalledTimes(1);
   });
 
   it("retains mention gating for an unreadable root", async () => {
