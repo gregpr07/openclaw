@@ -88,12 +88,10 @@ it("joins the same native close after transport loss instead of abandoning or du
     resource.receive({ type: "resource-close", id: 1, requestId: 1 });
     await entered.promise;
     resource.disconnect();
-    let settled = false;
-    const closing = resource.close().then(() => {
-      settled = true;
-    });
+    const settled = vi.fn();
+    const closing = resource.close().then(settled);
     await Promise.resolve();
-    expect(settled).toBe(false);
+    expect(settled).not.toHaveBeenCalled();
     expect(close).toHaveBeenCalledOnce();
     released.resolve();
     await closing;

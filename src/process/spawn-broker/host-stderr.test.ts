@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, expect, it } from "vitest";
@@ -9,22 +9,25 @@ import { createSpawnBrokerHost } from "./host.js";
 import { SpawnBrokerError } from "./protocol.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const executable = process.execPath;
+async function brokenRuntime(diagnostic: string, mode = 0o700, exit = 134) {
+  const runtime = path.join(tempDirs.make("openclaw-broker-runtime-"), "node");
+  await writeFile(runtime, `#!/bin/sh\necho "${diagnostic}" >&2\nexit ${exit}\n`, { mode });
+  return runtime;
+}
 
 it.skipIf(process.platform === "win32")(
   "classifies loader stderr transferred after a read-only session is constructed",
   async () => {
-    const executable = process.execPath;
     const host = createSpawnBrokerHost();
     let session: ReturnType<typeof createSqliteReadOnlyWorkerSession> | undefined;
     try {
       await host.ready();
-      const brokenRuntime = path.join(tempDirs.make("openclaw-broker-reader-runtime-"), "node");
-      await writeFile(
-        brokenRuntime,
-        '#!/bin/sh\necho "node: error while loading shared libraries: libfixture.so: cannot open shared object file" >&2\nexit 127\n',
-        { mode: 0o700 },
+      process.execPath = await brokenRuntime(
+        "node: error while loading shared libraries: libfixture.so: cannot open shared object file",
+        0o700,
+        127,
       );
-      process.execPath = brokenRuntime;
       session = createSqliteReadOnlyWorkerSession({
         env: {},
         cwd: process.cwd(),
@@ -96,9 +99,7 @@ it.each([undefined, true] as const)(
       expect(message).toContain("exited with code=1 signal=none");
       expect(message).toContain("🦞 Spawn broker cleanup failed: synthetic cleanup failure");
       expect(message).toContain("password=");
-      expect(message).not.toContain("synthetic-password-value");
-      expect(message).not.toContain("discarded-prefix");
-      expect(message).not.toContain("\uFFFD");
+      expect(message).not.toMatch(/synthetic-password-value|discarded-prefix|\uFFFD/u);
       const tail = message.split("\nstderr:\n")[1];
       expect(tail).toBeDefined();
       expect(Buffer.byteLength(tail ?? "")).toBeLessThanOrEqual(2048);
@@ -111,22 +112,16 @@ it.each([undefined, true] as const)(
 it.skipIf(process.platform === "win32").each(["loader", "permission"])(
   "reports runtime %s failure before broker readiness and does not restart it",
   async (kind) => {
-    const executable = process.execPath;
-    const brokenRuntime = path.join(tempDirs.make("openclaw-broker-runtime-"), "node");
-    await writeFile(
-      brokenRuntime,
-      '#!/bin/sh\necho "dyld[123]: Library not loaded: /fixture/libsimdutf.dylib" >&2\nexit 134\n',
-      { mode: 0o700 },
+    const runtime = await brokenRuntime(
+      "dyld[123]: Library not loaded: /fixture/libsimdutf.dylib",
+      kind === "permission" ? 0o600 : 0o700,
     );
-    if (kind === "permission") {
-      await chmod(brokenRuntime, 0o600);
-    }
     let host: ReturnType<typeof createSpawnBrokerHost> | undefined;
     try {
-      process.execPath = brokenRuntime;
+      process.execPath = runtime;
       host = createSpawnBrokerHost();
       await expect(host.ready()).rejects.toThrow(
-        `The Node.js runtime this Gateway started with (${brokenRuntime}) can no longer start worker processes`,
+        `The Node.js runtime this Gateway started with (${runtime}) can no longer start worker processes`,
       );
       await expect(host.ready()).rejects.toThrow("Restart the Gateway.");
     } finally {
@@ -143,7 +138,7 @@ it.skipIf(process.platform === "win32").each(["loader", "permission"])(
               message: "Spawn broker shutdown failed",
               cause: {
                 code: "NODE_RUNTIME_UNAVAILABLE",
-                message: `The Node.js runtime this Gateway started with (${brokenRuntime}) can no longer start worker processes, likely because it was upgraded or removed. Restart the Gateway.`,
+                message: `The Node.js runtime this Gateway started with (${runtime}) can no longer start worker processes, likely because it was upgraded or removed. Restart the Gateway.`,
               },
             },
           ],

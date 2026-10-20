@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, withinTest } from "../../../test/helpers/promise.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { runExec } from "../exec.js";
@@ -46,17 +46,12 @@ describe.skipIf(skipBrokerTests)("brokered process lifecycle owners", () => {
       });
       adapter.onStderr(() => {});
       const extinction = adapter.waitForExtinction();
-      let extinct = false;
-      void extinction.then(
-        () => {
-          extinct = true;
-        },
-        () => {},
-      );
+      const extinct = vi.fn();
+      void extinction.then(extinct, () => {});
       try {
         await ready;
         await expect(adapter.wait()).resolves.toEqual({ code: 0, signal: null });
-        expect(extinct).toBe(false);
+        expect(extinct).not.toHaveBeenCalled();
         const anchorPid = Number(output);
         expect(anchorPid).toBeGreaterThan(0);
         const parentOf = async (pid: number) =>
@@ -69,7 +64,7 @@ describe.skipIf(skipBrokerTests)("brokered process lifecycle owners", () => {
         expect(await parentOf(brokerChildPid)).toBe(broker.pid);
         adapter.kill("SIGTERM");
         await withinTest(extinction, signal);
-        expect(extinct).toBe(true);
+        expect(extinct).toHaveBeenCalled();
       } finally {
         adapter.kill("SIGKILL");
         await extinction.catch(() => {});

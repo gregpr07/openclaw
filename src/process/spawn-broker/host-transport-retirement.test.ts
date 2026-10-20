@@ -61,11 +61,8 @@ function brokerFixture(bootstrapFailure?: SendFailure) {
   const output = new PassThrough();
   const deliveries = new Map<string, ReturnType<typeof createDeferredCore<unknown>>>();
   const sent = (type: string) => {
-    let delivery = deliveries.get(type);
-    if (!delivery) {
-      delivery = createDeferredCore<unknown>();
-      deliveries.set(type, delivery);
-    }
+    const delivery = deliveries.get(type) ?? createDeferredCore<unknown>();
+    deliveries.set(type, delivery);
     return delivery;
   };
   let sendFailure = bootstrapFailure;
@@ -151,22 +148,15 @@ it.each(["before", "after disconnect", "during"] as const)(
       fixture.disconnect();
     }
     const closing = fixture.host.close();
-    let settled = false;
-    void closing.then(
-      () => {
-        settled = true;
-      },
-      () => {
-        settled = true;
-      },
-    );
+    const settled = vi.fn();
+    void closing.then(settled, settled);
     if (exitTiming === "during") {
       fixture.exit(1);
     } else if (exitTiming === "after disconnect") {
       fixture.exit(null, "SIGKILL");
     }
     await fixture.host.waitForCleanup();
-    expect(settled).toBe(false);
+    expect(settled).not.toHaveBeenCalled();
     fixture.stderr("late broker diagnostic\n");
     fixture.close();
     if (exitTiming !== "during") {
@@ -175,12 +165,12 @@ it.each(["before", "after disconnect", "during"] as const)(
       await expect(closing).rejects.toMatchObject({
         message: "Spawn broker cleanup did not complete",
         errors: [
-          expect.objectContaining({
+          {
             message: "Spawn broker shutdown failed",
-            cause: expect.objectContaining({
+            cause: {
               message: expect.stringContaining("late broker diagnostic"),
-            }),
-          }),
+            },
+          },
         ],
       });
     }
@@ -272,12 +262,10 @@ it.each([
     await fixture.sent("resource-owner");
 
     let launchSettlement: Promise<unknown> | undefined;
-    let launchSettled = false;
+    const launchSettled = vi.fn();
     const child = host.spawn("synthetic-command", [], { stdio: "ignore" }, (launch, settlement) => {
       launchSettlement = settlement;
-      void settlement?.then(() => {
-        launchSettled = true;
-      });
+      void settlement?.then(launchSettled);
       return launch();
     });
     await fixture.sent("prepare-spawn");
@@ -328,7 +316,7 @@ it.each([
     expect(fixture.kill).not.toHaveBeenCalled();
     expect(native.groupCleanup).not.toHaveBeenCalled();
     expect(native.childCleanup).not.toHaveBeenCalled();
-    expect(launchSettled).toBe(false);
+    expect(launchSettled).not.toHaveBeenCalled();
     expect(() => lease.release()).toThrow("Native resource must close before release");
     await expect(host.close()).rejects.toThrow(
       "Native resource claims must close before broker shutdown",
@@ -337,18 +325,16 @@ it.each([
     // Only an independently observed native close, not proxy failure, releases the claim.
     lease.receive({ type: "resource-closed", id, requestId: 0 });
     lease.release();
-    let hostClosed = false;
-    const closing = host.close().then(() => {
-      hostClosed = true;
-    });
+    const hostClosed = vi.fn();
+    const closing = host.close().then(hostClosed);
     fixture.exit();
     await host.waitForCleanup();
     expect(native.groupCleanup).toHaveBeenCalledTimes(process.platform === "win32" ? 0 : 1);
-    expect(launchSettled).toBe(false);
-    expect(hostClosed).toBe(false);
+    expect(launchSettled).not.toHaveBeenCalled();
+    expect(hostClosed).not.toHaveBeenCalled();
     fixture.close();
     await closing;
     await launchSettlement;
-    expect(launchSettled).toBe(true);
+    expect(launchSettled).toHaveBeenCalled();
   },
 );

@@ -74,15 +74,8 @@ describe.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
           throw new Error("Ready spawn broker has no process identifier");
         }
         const before = await openDescriptorCount(pid);
-        const limitArgs = [
-          "--pid",
-          String(pid),
-          "--nofile",
-          "--output",
-          "SOFT,HARD",
-          "--noheadings",
-          "--raw",
-        ];
+        const outputArgs = ["--nofile", "--output", "SOFT,HARD", "--noheadings", "--raw"];
+        const limitArgs = ["--pid", String(pid), ...outputArgs];
         const { stdout: limits } = await execFileAsync("prlimit", limitArgs);
         const [soft, hard] = limits.trim().split(/\s+/);
         if (soft === undefined || hard === undefined) {
