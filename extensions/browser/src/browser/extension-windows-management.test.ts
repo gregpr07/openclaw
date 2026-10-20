@@ -25,30 +25,22 @@ vi.mock("openclaw/plugin-sdk/process-runtime", async (importOriginal) => {
   const actual = await importOriginal<typeof import("openclaw/plugin-sdk/process-runtime")>();
   return { ...actual, runCommandBuffered: vi.fn(actual.runCommandBuffered) };
 });
-const actualProcess = await vi.importActual<typeof import("openclaw/plugin-sdk/process-runtime")>(
-  "openclaw/plugin-sdk/process-runtime",
-);
-const missing = {
-  v: 1,
-  ok: true,
-  code: "ok",
-  registration: "missing",
-  mode: null,
-  store: "missing",
-  installation: null,
-};
+const { runCommandBuffered: runProcess } = await vi.importActual<
+  typeof import("openclaw/plugin-sdk/process-runtime")
+>("openclaw/plugin-sdk/process-runtime");
+const { request, response: owned } = windowsFixture();
+const missing = { ...owned, registration: "missing", mode: null, installation: null };
 const framed = (value: unknown, suffix = "\n") => Buffer.from(JSON.stringify(value) + suffix);
 const responseScript = (value: unknown, exitCode = 0) =>
   `process.stdout.write(${JSON.stringify(framed(value).toString())}); process.exitCode=${exitCode};`;
+const runManagement = (signal?: AbortSignal) =>
+  runWindowsManagement("fixture.exe", request, { signal });
 describe("accepted Windows management ABI", () => {
-  it.each(['{"v":1,"\\u0076":1}', '{"v":1.0}', '{"v":1,"x":"\\ud800"}'])(
-    "rejects ambiguous JSON %s",
-    (json) => {
-      expect(() => parseWindowsJson(Buffer.from(json))).toThrow();
-    },
-  );
+  const invalidJson = ['{"v":1,"\\u0076":1}', '{"v":1.0}', '{"v":1,"x":"\\ud800"}'];
+  it.each(invalidJson)("rejects ambiguous JSON %s", (json) => {
+    expect(() => parseWindowsJson(Buffer.from(json))).toThrow();
+  });
   it("enforces exact byte bounds, UTF-8 and LF-inclusive response framing", () => {
-    const request = windowsFixture().request;
     const json = JSON.stringify(request);
     const padded = (size: number) => Buffer.from(json + " ".repeat(size - Buffer.byteLength(json)));
     expect(parseWindowsJson(padded(32768))).toEqual(request);
@@ -64,49 +56,41 @@ describe("accepted Windows management ABI", () => {
     }
     expect(() => parse("\n", 1)).toThrow();
   });
-  it("enforces action/Store and discriminated context rules", () => {
-    const { request } = windowsFixture();
-    const accepts = (overrides: Record<string, unknown>) =>
-      managementRequestSchema.safeParse({ ...request, ...overrides }).success;
-    for (const [action, store] of [
-      ["inspect", "request"],
-      ["inspect", "remove"],
-      ["install", "remove"],
-      ["uninstall", "request"],
-    ]) {
-      expect(accepts({ action, store })).toBe(false);
-    }
-    expect(accepts({ mode: "companion-managed-wsl", context: null })).toBe(true);
-    expect(accepts({ mode: "companion-managed-wsl" })).toBe(false);
-    expect(accepts({ expectedOrigins: [WINDOWS_OFFICIAL_ORIGIN, WINDOWS_OFFICIAL_ORIGIN] })).toBe(
-      false,
-    );
+  it.each([
+    [{ action: "inspect", store: "request" }, false],
+    [{ action: "inspect", store: "remove" }, false],
+    [{ action: "install", store: "remove" }, false],
+    [{ action: "install", store: "request" }, true],
+    [{ action: "uninstall", store: "request" }, false],
+    [{ mode: "companion-managed-wsl", context: null }, true],
+    [{ mode: "companion-managed-wsl" }, false],
+    [{ expectedOrigins: [WINDOWS_OFFICIAL_ORIGIN, WINDOWS_OFFICIAL_ORIGIN] }, false],
+  ] as const)("validates management request %j as %s", (overrides, success) => {
+    expect(managementRequestSchema.safeParse({ ...request, ...overrides }).success).toBe(success);
   });
   it("accepts truthful partial failures and rejects disabled/unknown invented inventory", () => {
-    const f = windowsFixture();
-    const request = managementRequestSchema.parse({
-      ...f.request,
-      action: "install",
-      store: "request",
-    });
-    const partial = { ...f.response, ok: false, code: "browser_control_disabled" };
+    const install: typeof request = { ...request, action: "install", store: "request" };
+    const partial = { ...owned, ok: false, code: "browser_control_disabled" };
     const parse = (response: unknown) =>
-      parseWindowsManagementResponse(framed(response), 1, request);
+      parseWindowsManagementResponse(framed(response), 1, install);
     expect(parse(partial)).toEqual(partial);
     for (const store of ["disabled", "unknown"]) {
       expect(() => parse({ ...partial, store })).toThrow();
     }
-    expect(() => parse({ ...f.response, code: "context_conflict", ok: false })).toThrow();
+    expect(() => parse({ ...owned, code: "context_conflict", ok: false })).toThrow();
   });
 });
 let receipts: FixtureReceiptChannel;
 beforeAll(async () => {
   receipts = await openFixtureReceiptChannel();
 });
-afterAll(async () => {
-  await receipts.close();
-});
+afterAll(() => receipts.close());
 const directories: string[] = [];
+async function makeDirectory() {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-manage-"));
+  directories.push(directory);
+  return directory;
+}
 afterEach(async () => {
   vi.mocked(runCommandBuffered).mockReset();
   for (const directory of directories.splice(0)) {
@@ -115,16 +99,11 @@ afterEach(async () => {
 });
 describe("real child-process management transport (not Windows PE proof)", () => {
   async function child(body: string) {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-manage-"));
-    directories.push(directory);
-    const script = path.join(directory, "helper.mjs");
+    const script = path.join(await makeDirectory(), "helper.mjs");
     await fs.writeFile(script, body);
     const runner: typeof runCommandBuffered = (argv, options) => {
       expect(argv.slice(1)).toEqual(["--manage"]);
-      return actualProcess.runCommandBuffered(
-        [process.execPath, script, ...argv.slice(1)],
-        options,
-      );
+      return runProcess([process.execPath, script, ...argv.slice(1)], options);
     };
     return vi.mocked(runCommandBuffered).mockImplementation(runner);
   }
@@ -134,37 +113,26 @@ describe("real child-process management transport (not Windows PE proof)", () =>
       'let input=""; for await (const chunk of process.stdin) input+=chunk; JSON.parse(input); if(process.argv[2]!=="--manage")process.exit(2);' +
         responseScript(response, 1),
     );
-    expect(await runWindowsManagement("fixture.exe", windowsFixture().request)).toEqual(response);
+    expect(await runManagement()).toEqual(response);
   });
-  it.each(["stderr", "overflow", "exit-mismatch"])("rejects %s without any retry", async (kind) => {
-    const body =
-      kind === "stderr"
-        ? 'process.stderr.write("private error");' + responseScript(missing)
-        : kind === "overflow"
-          ? 'process.stdout.write("x".repeat(32769));'
-          : responseScript(missing, 1);
+  it.each([
+    ["stderr", 'process.stderr.write("private error");' + responseScript(missing)],
+    ["overflow", 'process.stdout.write("x".repeat(32769));'],
+    ["exit-mismatch", responseScript(missing, 1)],
+  ])("rejects %s without any retry", async (_kind, body) => {
     const run = await child(body);
-    await expect(runWindowsManagement("fixture.exe", windowsFixture().request)).rejects.toThrow(
-      WindowsManagementTransportError,
-    );
+    await expect(runManagement()).rejects.toThrow(WindowsManagementTransportError);
     expect(run).toHaveBeenCalledTimes(1);
   });
   it("joins cancellation after the real child has consumed management EOF", async ({ signal }) => {
     const controller = new AbortController();
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-manage-ready-"));
-    directories.push(directory);
-    const ready = path.join(directory, "ready");
+    const ready = path.join(await makeDirectory(), "ready");
+    const encodedReady = JSON.stringify(ready);
     await child(
       fixtureReceiptClientSource(receipts.endpoint) +
-        '\nimport fs from "node:fs"; for await (const chunk of process.stdin) {} fs.writeFileSync(' +
-        JSON.stringify(ready) +
-        ', "ready"); sendReceipt(' +
-        JSON.stringify(ready) +
-        ', "ready"); setInterval(()=>{},1000);',
+        `\nimport fs from "node:fs"; for await (const chunk of process.stdin) {} fs.writeFileSync(${encodedReady}, "ready"); sendReceipt(${encodedReady}, "ready"); setInterval(()=>{},1000);`,
     );
-    const result = runWindowsManagement("fixture.exe", windowsFixture().request, {
-      signal: controller.signal,
-    });
+    const result = runManagement(controller.signal);
     const rejected = expect(result).rejects.toThrow("outcome is unknown");
     try {
       // The durable marker precedes the receipt; process settlement may overtake socket delivery.

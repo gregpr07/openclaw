@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import { DEFAULT_BROWSER_DOWNLOAD_TIMEOUT_MS } from "./constants.js";
 import {
   getPwToolsCoreSessionMocks,
@@ -34,10 +34,11 @@ const payload = {
   buffer: Buffer.from("upload contents"),
   lastModifiedMs: 1700000000000,
 };
-const nativeOptions = {
-  timeout: DEFAULT_BROWSER_DOWNLOAD_TIMEOUT_MS,
+const nativeOptions = (timeout = DEFAULT_BROWSER_DOWNLOAD_TIMEOUT_MS) => ({
+  timeout,
   signal: expect.any(AbortSignal),
-};
+});
+const fileStats = (size: number) => ({ size, mtimeMs: payload.lastModifiedMs });
 const setInputFiles = vi.fn(async () => {});
 const elementHandle = vi.fn(async () => {
   throw new Error("manual upload event dispatch is forbidden");
@@ -49,104 +50,96 @@ const page = {
 function upload(options: Partial<Parameters<typeof setInputFilesViaPlaywright>[0]> = {}) {
   return setInputFilesViaPlaywright({ ...target, inputRef: "e7", paths, ...options });
 }
+const expectUpload = (files: (string | typeof payload)[]) =>
+  expect(setInputFiles).toHaveBeenCalledExactlyOnceWith(files, nativeOptions());
 
 beforeEach(() => {
   vi.clearAllMocks();
   setPwToolsCoreCurrentPage(page);
   setPwToolsCoreCurrentRefLocator({ setInputFiles, elementHandle });
   readFile.mockResolvedValue(payload.buffer);
-  stat.mockResolvedValue({ size: payload.buffer.byteLength, mtimeMs: payload.lastModifiedMs });
+  stat.mockResolvedValue(fileStats(payload.buffer.byteLength));
   detectMime.mockResolvedValue(payload.mimeType);
   resolveStrictExistingUploadPaths.mockResolvedValue({ ok: true, paths: [canonical] });
 });
 
-describe("upload handoff", () => {
-  it("converts guarded chooser uploads to payloads", async () => {
-    const fileChooser = { setFiles: vi.fn(async () => {}) };
-    await setFileChooserFilesViaPlaywright({
-      ...target,
-      ...remote,
-      page: page as never,
-      fileChooser: fileChooser as never,
-      paths,
-      timeoutMs: 250,
-    });
-    expect(stat).toHaveBeenCalledWith(canonical);
-    expect(readFile).toHaveBeenCalledWith(canonical);
-    expect(fileChooser.setFiles).toHaveBeenCalledWith([payload], {
-      timeout: 250,
-      signal: expect.any(AbortSignal),
-    });
+it("converts guarded chooser uploads to payloads", async () => {
+  const fileChooser = { setFiles: vi.fn(async () => {}) };
+  await setFileChooserFilesViaPlaywright({
+    ...target,
+    ...remote,
+    page: page as never,
+    fileChooser: fileChooser as never,
+    paths,
+    timeoutMs: 250,
   });
+  expect(stat).toHaveBeenCalledWith(canonical);
+  expect(readFile).toHaveBeenCalledWith(canonical);
+  expect(fileChooser.setFiles).toHaveBeenCalledWith([payload], nativeOptions(250));
+});
 
-  it("uses an octet-stream payload when mime detection has no answer", async () => {
-    detectMime.mockResolvedValueOnce(undefined);
-    await upload(remote);
-    expect(setInputFiles).toHaveBeenCalledWith(
-      [{ ...payload, mimeType: "application/octet-stream" }],
-      nativeOptions,
-    );
+it("uses an octet-stream payload when mime detection has no answer", async () => {
+  detectMime.mockResolvedValueOnce(undefined);
+  await upload(remote);
+  expect(setInputFiles).toHaveBeenCalledWith(
+    [{ ...payload, mimeType: "application/octet-stream" }],
+    nativeOptions(),
+  );
+});
+
+it("checks aggregate payload size before reading any files", async () => {
+  stat
+    .mockResolvedValueOnce(fileStats(30 * 1024 * 1024))
+    .mockResolvedValueOnce(fileStats(30 * 1024 * 1024));
+  const requestedPaths = ["one.txt", "two.txt"].map((name) => `/tmp/openclaw/uploads/${name}`);
+  resolveStrictExistingUploadPaths.mockResolvedValueOnce({
+    ok: true,
+    paths: requestedPaths.map((file) => `/private${file}`),
   });
+  await expect(upload({ ...remote, paths: requestedPaths })).rejects.toThrow(
+    "Cannot set buffer larger than 50Mb",
+  );
+  expect(readFile).not.toHaveBeenCalled();
+  expect(setInputFiles).not.toHaveBeenCalled();
+});
 
-  it("checks aggregate payload size before reading any files", async () => {
-    stat
-      .mockResolvedValueOnce({ size: 30 * 1024 * 1024 })
-      .mockResolvedValueOnce({ size: 30 * 1024 * 1024 });
-    resolveStrictExistingUploadPaths.mockResolvedValueOnce({
-      ok: true,
-      paths: ["/private/tmp/openclaw/uploads/one.txt", "/private/tmp/openclaw/uploads/two.txt"],
-    });
-    await expect(
-      upload({
-        ...remote,
-        paths: ["/tmp/openclaw/uploads/one.txt", "/tmp/openclaw/uploads/two.txt"],
-      }),
-    ).rejects.toThrow("Cannot set buffer larger than 50Mb");
-    expect(readFile).not.toHaveBeenCalled();
-    expect(setInputFiles).not.toHaveBeenCalled();
-  });
-
-  it.each([47, 48, 50])("keeps extension path handoff for a %i MiB upload", async (mib) => {
-    stat.mockResolvedValueOnce({ size: mib * 1024 * 1024 });
+it.each([46, 47, 48, 50])(
+  "hands off %i MiB extension uploads within the relay bound",
+  async (mib) => {
+    stat.mockResolvedValueOnce(fileStats(mib * 1024 * 1024));
     await upload(extension);
-    expect(readFile).not.toHaveBeenCalled();
-    expect(setInputFiles).toHaveBeenCalledExactlyOnceWith([canonical], nativeOptions);
-  });
+    expect(readFile.mock.calls).toEqual(mib === 46 ? [[canonical]] : []);
+    expectUpload([mib === 46 ? payload : canonical]);
+  },
+);
 
-  it("sends extension uploads below the relay bound as bytes", async () => {
-    stat.mockResolvedValue({ size: 46 * 1024 * 1024, mtimeMs: payload.lastModifiedMs });
-    await upload(extension);
-    expect(readFile).toHaveBeenCalledWith(canonical);
-    expect(setInputFiles).toHaveBeenCalledExactlyOnceWith([payload], nativeOptions);
+it("keeps guarded local-filesystem uploads as paths inside the policy guard", async () => {
+  await upload({
+    browserFilesystemLocal: true,
+    ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
   });
+  for (const unused of [stat, readFile, detectMime, elementHandle]) {
+    expect(unused).not.toHaveBeenCalled();
+  }
+  expectUpload([canonical]);
+  expect(resolveStrictExistingUploadPaths).toHaveBeenCalledWith({ requestedPaths: paths });
+  expect(session.refLocator).toHaveBeenCalledWith(page, "e7");
+  expect(session.withPageNavigationRequestGuard).toHaveBeenCalledOnce();
+  expect(session.assertPageNavigationCompletedSafely).toHaveBeenCalledOnce();
+});
 
-  it("keeps guarded local-filesystem uploads as paths inside the policy guard", async () => {
-    await upload({
-      browserFilesystemLocal: true,
-      ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
-    });
-    for (const unused of [stat, readFile, detectMime, elementHandle]) {
-      expect(unused).not.toHaveBeenCalled();
-    }
-    expect(setInputFiles).toHaveBeenCalledExactlyOnceWith([canonical], nativeOptions);
-    expect(resolveStrictExistingUploadPaths).toHaveBeenCalledWith({ requestedPaths: paths });
-    expect(session.refLocator).toHaveBeenCalledWith(page, "e7");
-    expect(session.withPageNavigationRequestGuard).toHaveBeenCalledOnce();
-    expect(session.assertPageNavigationCompletedSafely).toHaveBeenCalledOnce();
+it("rejects paths outside the allowed directory before native upload", async () => {
+  const error = "Invalid path: must stay within inbound media directory";
+  resolveStrictExistingUploadPaths.mockResolvedValueOnce({
+    ok: false,
+    error,
   });
-
-  it("rejects paths outside the allowed directory before native upload", async () => {
-    resolveStrictExistingUploadPaths.mockResolvedValueOnce({
-      ok: false,
-      error: "Invalid path: must stay within inbound media directory",
-    });
-    await expect(
-      upload({
-        inputRef: undefined,
-        element: "input[type=file]",
-        paths: ["/tmp/openclaw/uploads/missing.txt"],
-      }),
-    ).rejects.toThrow("Invalid path: must stay within inbound media directory");
-    expect(setInputFiles).not.toHaveBeenCalled();
-  });
+  await expect(
+    upload({
+      inputRef: undefined,
+      element: "input[type=file]",
+      paths: ["/tmp/openclaw/uploads/missing.txt"],
+    }),
+  ).rejects.toThrow(error);
+  expect(setInputFiles).not.toHaveBeenCalled();
 });
