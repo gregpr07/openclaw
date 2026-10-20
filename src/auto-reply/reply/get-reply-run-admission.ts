@@ -452,7 +452,12 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
   }
   const visibleTurnPreemptsHeartbeat = heartbeatPreemption === "drained";
   const resolveRuntimeAuthProfile = async () => {
-    if (useFastReplyRuntime && !params.configuredProfileId && !modelState.operatorModelOverride) {
+    if (
+      useFastReplyRuntime &&
+      !params.configuredProfileId &&
+      !modelState.operatorModelOverride &&
+      !opts?.scheduledAutomation
+    ) {
       return {
         authProfileId: preparedSessionState.sessionEntry?.authProfileOverride,
         authProfileIdSource: resolveCollapsedSessionAuthPinSource(
@@ -463,6 +468,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
     const shouldUseEphemeralSession =
       params.autoFallbackPrimaryProbe !== undefined ||
       params.configuredProfileId !== undefined ||
+      opts?.scheduledAutomation !== undefined ||
       modelState.operatorModelOverride === true;
     const authSessionKey = shouldUseEphemeralSession ? (sessionKey ?? sessionIdFinal) : sessionKey;
     const authSessionEntry = preparedSessionState.sessionEntry

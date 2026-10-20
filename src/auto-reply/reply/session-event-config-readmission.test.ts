@@ -148,6 +148,8 @@ it.for([
   "scheduled-subagent-default",
   "scheduled-subagent-locked",
   "scheduled-gmail-default",
+  "scheduled-account-cross-provider",
+  "scheduled-account-same-provider",
 ] as const)(
   "re-admits accepted deferred work after a config publication: %s",
   async (scenario, { signal }) => {
@@ -155,19 +157,32 @@ it.for([
       { label: "session-event-config-readmission", env: { OPENCLAW_TEST_FAST: "0" } },
       async (state) => {
         const config = completionConfig(state.workspaceDir);
+        const scheduledAccount = scenario.startsWith("scheduled-account-");
+        const scheduledProvider =
+          scenario === "scheduled-account-cross-provider" ? "mock-other" : "mock-openai";
         const explicitScheduledModel =
-          scenario === "scheduled-control" || scenario.startsWith("scheduled-model-");
+          scenario === "scheduled-control" ||
+          scenario.startsWith("scheduled-model-") ||
+          scheduledAccount;
         const scheduledSubagent = scenario.startsWith("scheduled-subagent-");
         if (explicitScheduledModel || scheduledSubagent || scenario === "scheduled-gmail-default") {
           config.agents = {
             ...config.agents,
             defaults: {
               ...config.agents?.defaults,
-              modelPolicy: { allow: ["mock-openai/*"] },
+              modelPolicy: {
+                allow: [
+                  "mock-openai/*",
+                  ...(scheduledProvider === "mock-other" ? ["mock-other/*"] : []),
+                ],
+              },
               ...(scheduledSubagent ? { subagents: { model: "mock-openai/gpt-5.6-luna" } } : {}),
               models: {
                 ...config.agents?.defaults?.models,
                 "mock-openai/gpt-5.6-sol": { agentRuntime: { id: "openclaw" } },
+                ...(scheduledProvider === "mock-other"
+                  ? { [`${scheduledProvider}/gpt-5.6-sol`]: { agentRuntime: { id: "openclaw" } } }
+                  : {}),
               },
             },
           };
@@ -178,11 +193,35 @@ it.for([
         setRuntimeConfigSnapshot(config);
         await state.writeConfig(config);
         openOpenClawStateDatabase();
+        if (scheduledAccount) {
+          await state.writeAuthProfiles({
+            version: 1,
+            profiles: {
+              "mock-openai:conversation": {
+                type: "api_key",
+                provider: "mock-openai",
+                key: "synthetic-conversation-key",
+              },
+              "mock-other:automation": {
+                type: "api_key",
+                provider: "mock-other",
+                key: "synthetic-automation-key",
+              },
+            },
+          });
+        }
         const scope = { agentId: "main", sessionKey: "agent:main:config-readmission" };
         await replaceSessionEntry(scope, {
           sessionId: "config-readmission",
           lifecycleRevision: "original",
           permissionMode: "full",
+          ...(scheduledAccount
+            ? {
+                authProfileOverride: "mock-openai:conversation",
+                authProfileOverrideSource: "user" as const,
+                authProfileOverrideCompactionCount: 2,
+              }
+            : {}),
           ...(scenario === "scheduled-subagent-locked" ? { modelSelectionLocked: true } : {}),
           ...(scenario === "scheduled-gmail-default"
             ? {
@@ -261,6 +300,11 @@ it.for([
         try {
           await expect(first.accepted).resolves.toEqual({ ok: true });
           await withinTest(firstStarted.promise, signal);
+          if (scheduledAccount) {
+            expect(runEmbeddedAgentMock.mock.calls[0]?.[0].authProfileId).toBe(
+              "mock-openai:conversation",
+            );
+          }
           completion = enqueueSessionEventForHost("Background exec completed", {
             ...scope,
             source: "exec",
@@ -296,7 +340,7 @@ it.for([
                               model:
                                 scenario === "scheduled-model-malformed"
                                   ? "openai/"
-                                  : "mock-openai/gpt-5.6-sol",
+                                  : `${scheduledProvider}/gpt-5.6-sol`,
                             }
                           : {}),
                       },
@@ -431,13 +475,29 @@ it.for([
               modelSelectionLocked: true,
             });
           }
+          if (scheduledAccount) {
+            expect(runEmbeddedAgentMock.mock.calls[1]?.[0]).toMatchObject({
+              provider: scheduledProvider,
+              model: "gpt-5.6-sol",
+              authProfileId:
+                scheduledProvider === "mock-openai"
+                  ? "mock-openai:conversation"
+                  : "mock-other:automation",
+            });
+            expect(await readSessionEntryInWorker(scope)).toMatchObject({
+              authProfileOverride: "mock-openai:conversation",
+              authProfileOverrideSource: "user",
+              authProfileOverrideCompactionCount: 2,
+            });
+          }
           // Final effect: only the unrestricted control reaches the filesystem.
           const written = await fs.readFile(filePath, "utf8").catch(() => undefined);
           expect(written).toBe(
             scenario === "allow-control" ||
               scenario === "scheduled-control" ||
               scenario === "scheduled-subagent-default" ||
-              scenario === "scheduled-gmail-default"
+              scenario === "scheduled-gmail-default" ||
+              scheduledAccount
               ? "written\n"
               : undefined,
           );

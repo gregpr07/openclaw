@@ -435,10 +435,8 @@ export async function createModelSelectionState(params: {
   }
 
   const storedOverride = resolveStoredOverride();
-  // Skip stored session model override only when an explicit heartbeat.model
-  // was resolved. Heartbeats without heartbeat.model still inherit normal
-  // overrides unless a direct auto fallback override is stale for the current
-  // configured default.
+  // Resolved heartbeat and scheduled model choices stay turn-local. Ordinary
+  // turns retain stored choices except stale automatic fallback pins.
   const skipStoredOverride =
     params.skipStoredModelOverride === true ||
     params.hasResolvedHeartbeatModelOverride === true ||
@@ -522,6 +520,7 @@ export async function createModelSelectionState(params: {
 
   if (
     !params.skipStoredModelOverride &&
+    !params.hasResolvedTurnModelOverride &&
     !operatorModelOverride &&
     sessionEntry &&
     sessionStore &&
