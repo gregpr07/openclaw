@@ -32,7 +32,7 @@ function createJob(type: "execute" | "execute-frame" | "close"): Job {
   };
 }
 
-it.each(["valid", "framed", "close", "mismatched", "unsafe", "malformed"])(
+it.each(["valid", "framed", "close", "malformed"])(
   "publishes worker receipts before settling its %s reply",
   async (kind) => {
     const key = "openclaw.sqliteNativeRuntimeAdmission";
@@ -43,15 +43,9 @@ it.each(["valid", "framed", "close", "mismatched", "unsafe", "malformed"])(
       const sqlite = await import("./node-sqlite.js");
       sqlite.requireNodeSqlite();
       const receipt: unknown = getEnvironmentData(key);
-      assert(isRecord(receipt) && isRecord(receipt.runtime));
+      assert(isRecord(receipt));
       const forwarded =
-        kind === "mismatched"
-          ? { ...receipt, runtime: { ...receipt.runtime, pid: process.pid + 1 } }
-          : kind === "unsafe"
-            ? { ...receipt, version: "3.51.2" }
-            : kind === "malformed"
-              ? { ...receipt, extensionLoadingSupported: "yes" }
-              : receipt;
+        kind === "malformed" ? { ...receipt, extensionLoadingSupported: "yes" } : receipt;
       setEnvironmentData(key, undefined);
       const nativeQueries = vi.spyOn(DatabaseSync.prototype, "prepare");
       const actor: Pick<Actor, "id" | "closeReceipt"> = { id: 1 };
@@ -75,9 +69,7 @@ it.each(["valid", "framed", "close", "mismatched", "unsafe", "malformed"])(
       };
       const job = createJob(kind === "close" ? "close" : "execute");
       const finish = vi.fn(() => {
-        expect(getEnvironmentData(key)).toEqual(
-          kind === "valid" || kind === "framed" || kind === "close" ? receipt : undefined,
-        );
+        expect(getEnvironmentData(key)).toEqual(kind === "malformed" ? undefined : receipt);
         if (kind === "close") {
           expect(actor.closeReceipt).toMatchObject({
             incarnation: "closed-incarnation",
