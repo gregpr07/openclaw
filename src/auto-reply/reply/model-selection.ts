@@ -105,7 +105,7 @@ const sessionPersistenceRuntimeLoader = createLazyImportLoader(
 );
 
 /** Resolve a caller-owned model/profile choice without changing session preferences. */
-export function resolveTurnModelOverride(params: {
+export function resolveTurnModelSelection(params: {
   cfg: OpenClawConfig;
   agentId: string;
   defaultProvider: string;
@@ -330,6 +330,17 @@ export async function createModelSelectionState(params: {
       modelCatalog ? "allowlist-built" : "configured-allowlist-built",
       `allowed=${allowedModelCatalog.length} keys=${allowedModelKeys.size}`,
     );
+  }
+
+  if (params.hasResolvedTurnModelOverride && !params.hasResolvedHeartbeatModelOverride) {
+    // Scheduled payload choices are explicit, so re-admission must reject revoked models.
+    const selection = { provider, model };
+    if (!visibilityPolicy.allows(selection)) {
+      throw new Error(
+        `Scheduled model "${buildModelCatalogRef(provider, model)}" is not allowed by ${visibilityPolicy.allowRepairConfigPath}. Update the automation model or the agent's model policy.`,
+      );
+    }
+    assertOperatorModelAllowed(operatorAuthority, selection);
   }
 
   if (

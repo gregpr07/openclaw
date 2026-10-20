@@ -4,7 +4,10 @@ import type {
   AdmittedRunOperatorAuthority,
 } from "../../agents/admitted-run-context.js";
 import type { MessagingToolSend } from "../../agents/embedded-agent-messaging.types.js";
-import type { EmbeddedAgentRunResult } from "../../agents/embedded-agent-runner/types.js";
+import type {
+  EmbeddedAgentRunMeta,
+  EmbeddedAgentRunPayload,
+} from "../../agents/embedded-agent-runner/result.types.js";
 import type { SessionEntryCreationOperation } from "../../config/sessions/session-accessor.sqlite-entry-cache.types.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type {
@@ -17,7 +20,7 @@ import type { ExecRequestOwner } from "../../infra/exec-request-context.js";
 import type {
   SourceDeliveryOutcome,
   SourceDeliveryPlan,
-} from "../../infra/outbound/source-delivery-plan.js";
+} from "../../infra/outbound/source-delivery-plan.types.js";
 import type { SystemEvent } from "../../infra/system-events.js";
 import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.types.js";
 import type { DeliveryContext } from "../../utils/delivery-context.types.js";
@@ -163,8 +166,8 @@ export type SessionEventExecution = {
     deliveryEvidence?: {
       didSendViaMessagingTool?: boolean;
       messagingToolSentTargets?: MessagingToolSend[];
-      meta?: EmbeddedAgentRunResult["meta"];
-      payloads?: EmbeddedAgentRunResult["payloads"];
+      meta?: EmbeddedAgentRunMeta;
+      payloads?: EmbeddedAgentRunPayload[];
       resolved?: { provider: string; model: string };
     },
   ) => void | Promise<void>;

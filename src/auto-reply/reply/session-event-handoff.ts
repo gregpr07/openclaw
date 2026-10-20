@@ -8,7 +8,7 @@ import { SessionWorkStartError } from "../../config/sessions/session-work-start.
 import { runWithoutOwnedSessionTranscriptWrites } from "../../config/sessions/transcript-write-context.js";
 import { resolveCronRunToolsAllow } from "../../cron/tools-allow.js";
 import { execRequestAbortSignal, withExecRequestOwners } from "../../infra/exec-request-context.js";
-import type { SourceDeliveryOutcome } from "../../infra/outbound/source-delivery-plan.js";
+import type { SourceDeliveryOutcome } from "../../infra/outbound/source-delivery-plan.types.js";
 import {
   resolveSystemEventQueueKey,
   withSystemEventOwner,
@@ -574,7 +574,8 @@ export function enqueueSessionEventForHost(
             onStarted: start,
             onTerminal: async (runId, outcome, deliveryEvidence) => {
               if (outcome !== "completed") {
-                failure ??= `Session event execution ${outcome}`;
+                failure ??=
+                  deliveryEvidence?.meta?.error?.message || `Session event execution ${outcome}`;
               }
               await prepareCurrent();
               if (options.scheduledAutomation) {

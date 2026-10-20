@@ -142,6 +142,7 @@ it.for([
   "publication-storm",
   "scheduled-control",
   "scheduled-revoked",
+  "scheduled-model-revoked",
 ] as const)(
   "re-admits accepted deferred work after a config publication: %s",
   async (scenario, { signal }) => {
@@ -149,6 +150,21 @@ it.for([
       { label: "session-event-config-readmission", env: { OPENCLAW_TEST_FAST: "0" } },
       async (state) => {
         const config = completionConfig(state.workspaceDir);
+        const explicitScheduledModel =
+          scenario === "scheduled-control" || scenario === "scheduled-model-revoked";
+        if (explicitScheduledModel) {
+          config.agents = {
+            ...config.agents,
+            defaults: {
+              ...config.agents?.defaults,
+              modelPolicy: { allow: ["mock-openai/*"] },
+              models: {
+                ...config.agents?.defaults?.models,
+                "mock-openai/gpt-5.6-sol": { agentRuntime: { id: "openclaw" } },
+              },
+            },
+          };
+        }
         setRuntimeConfigSnapshot(config);
         await state.writeConfig(config);
         openOpenClawStateDatabase();
@@ -239,7 +255,11 @@ it.for([
                       schedule: { kind: "every" as const, everyMs: 60_000 },
                       sessionTarget: `session:${scope.sessionKey}` as const,
                       wakeMode: "now" as const,
-                      payload: { kind: "agentTurn" as const, message: "Background exec completed" },
+                      payload: {
+                        kind: "agentTurn" as const,
+                        message: "Background exec completed",
+                        ...(explicitScheduledModel ? { model: "mock-openai/gpt-5.6-sol" } : {}),
+                      },
                       state: {},
                     },
                     admissionSource: "operator-schedule" as const,
@@ -270,6 +290,17 @@ it.for([
           await expect(completion.accepted).resolves.toEqual({ ok: true });
           setRuntimeConfigSnapshot({
             ...config,
+            ...(scenario === "scheduled-model-revoked"
+              ? {
+                  agents: {
+                    ...config.agents,
+                    defaults: {
+                      ...config.agents?.defaults,
+                      modelPolicy: { allow: ["mock-openai/gpt-5.6-luna"] },
+                    },
+                  },
+                }
+              : {}),
             // Ceiling and control publish a change that still permits write.
             tools: { deny: scenario === "published-deny" ? ["write"] : ["exec"] },
           });
@@ -277,15 +308,27 @@ it.for([
           revoked = scenario === "revoked-producer" || scenario === "scheduled-revoked";
           releaseFirst.resolve();
           await expect(first.settled).resolves.toMatchObject({ status: "completed" });
-          const executes = scenario !== "publication-storm" && !revoked;
+          const executes =
+            scenario !== "publication-storm" && scenario !== "scheduled-model-revoked" && !revoked;
           const completedOutcome = await completion.settled;
           expect(completedOutcome, completedOutcome.error).toMatchObject({
             status: executes ? "completed" : "failed",
             executionStarted: executes,
           });
           expect(prompts).toHaveLength(executes ? 2 : 1);
+          if (scenario === "scheduled-model-revoked") {
+            expect(completedOutcome.error).toContain(
+              'Scheduled model "mock-openai/gpt-5.6-sol" is not allowed',
+            );
+          }
           if (executes) {
             expect(prompts[1]).toContain("Background exec completed");
+          }
+          if (scenario === "scheduled-control") {
+            expect(runEmbeddedAgentMock.mock.calls[1]?.[0]).toMatchObject({
+              provider: "mock-openai",
+              model: "gpt-5.6-sol",
+            });
           }
           // Final effect: only the unrestricted control reaches the filesystem.
           const written = await fs.readFile(filePath, "utf8").catch(() => undefined);
@@ -340,78 +383,98 @@ it.for([
   },
 );
 
-it("records a scheduled transport failure separately from settled execution and usage", async ({
-  signal,
-}) => {
-  await withOpenClawTestState(
-    { label: "session-event-delivery", env: { OPENCLAW_TEST_FAST: "0" } },
-    async (state) => {
-      const config = completionConfig(state.workspaceDir);
-      setRuntimeConfigSnapshot(config);
-      await state.writeConfig(config);
-      openOpenClawStateDatabase();
-      const scope = { agentId: "main", sessionKey: "agent:main:scheduled-delivery" };
-      const route = { channel: "telegram", to: "-100001", accountId: "scheduled" };
-      await replaceSessionEntry(scope, {
-        sessionId: "scheduled-delivery",
-        lifecycleRevision: "original",
-        permissionMode: "full",
-        delivery: normalizeSessionDeliveryState({ context: route }),
-        updatedAt: Date.now(),
-      });
-      // Inject only this transport failure; sibling cases retain normal silent delivery.
-      using routeReply = vi.spyOn(routedReplies, "routeReply").mockResolvedValue({
-        ok: false,
-        delivered: false,
-        error: "transport unavailable",
-      });
-      runEmbeddedAgentMock.mockReset().mockImplementation(async (params) => {
-        await startRun(params);
-        return {
-          payloads: [{ text: "The report is complete." }],
-          meta: {
-            durationMs: 1,
-            agentMeta: {
-              sessionId: params.sessionId,
-              provider: "openai",
-              model: "gpt-5.6-sol",
-              usage: { input: 20, output: 5, cacheRead: 10, total: 35 },
-            },
-          },
-        };
-      });
-      const receipt = enqueueSessionEventForHost("Write the report", {
-        ...scope,
-        source: "cron",
-        expectedTarget: await captureSessionEventTargetForHost(scope.agentId, scope.sessionKey),
-        deliveryContext: route,
-        abortSignal: signal,
-        scheduledAutomation: {
-          job: makeCronJob({ sessionTarget: `session:${scope.sessionKey}` }),
-          admissionSource: "operator-schedule",
-          assertCurrent() {},
-        },
-      });
-      try {
-        await expect(receipt.settled).resolves.toMatchObject({
-          status: "completed",
-          executionStarted: true,
+it.for(["transport", "agent"] as const)(
+  "records a scheduled %s failure with its cause and usage",
+  async (failureKind, { signal }) => {
+    await withOpenClawTestState(
+      { label: "session-event-delivery", env: { OPENCLAW_TEST_FAST: "0" } },
+      async (state) => {
+        const config = completionConfig(state.workspaceDir);
+        setRuntimeConfigSnapshot(config);
+        await state.writeConfig(config);
+        openOpenClawStateDatabase();
+        const scope = { agentId: "main", sessionKey: "agent:main:scheduled-delivery" };
+        const route = { channel: "telegram", to: "-100001", accountId: "scheduled" };
+        await replaceSessionEntry(scope, {
+          sessionId: "scheduled-delivery",
+          lifecycleRevision: "original",
+          permissionMode: "full",
+          delivery: normalizeSessionDeliveryState({ context: route }),
+          updatedAt: Date.now(),
+        });
+        // Inject only this transport failure; sibling cases retain normal silent delivery.
+        using routeReply = vi.spyOn(routedReplies, "routeReply").mockResolvedValue({
+          ok: false,
           delivered: false,
-          deliveryAttempted: true,
-          deliveryError: "transport unavailable",
-          automationResult: {
-            provider: "openai",
-            model: "gpt-5.6-sol",
-            usage: { input_tokens: 20, output_tokens: 5, cache_read_tokens: 10, total_tokens: 35 },
+          error: "transport unavailable",
+        });
+        runEmbeddedAgentMock.mockReset().mockImplementation(async (params) => {
+          await startRun(params);
+          return {
+            payloads: [{ text: "The report is complete." }],
+            meta: {
+              durationMs: 1,
+              ...(failureKind === "agent"
+                ? {
+                    error: {
+                      kind: "retry_limit" as const,
+                      message: "Provider retry limit reached",
+                    },
+                  }
+                : {}),
+              agentMeta: {
+                sessionId: params.sessionId,
+                provider: "openai",
+                model: "gpt-5.6-sol",
+                usage: { input: 20, output: 5, cacheRead: 10, total: 35 },
+              },
+            },
+          };
+        });
+        const receipt = enqueueSessionEventForHost("Write the report", {
+          ...scope,
+          source: "cron",
+          expectedTarget: await captureSessionEventTargetForHost(scope.agentId, scope.sessionKey),
+          deliveryContext: route,
+          abortSignal: signal,
+          deliver: failureKind === "transport",
+          scheduledAutomation: {
+            job: makeCronJob({ sessionTarget: `session:${scope.sessionKey}` }),
+            admissionSource: "operator-schedule",
+            assertCurrent() {},
           },
         });
-        expect(routeReply).toHaveBeenCalled();
-      } finally {
-        receipt.cancel();
-        await receipt.settled;
-        await drainGlobalSingletonLifecycleState("restart");
-        resetSystemEventsForTest();
-      }
-    },
-  );
-});
+        try {
+          await expect(receipt.settled).resolves.toMatchObject({
+            status: failureKind === "agent" ? "failed" : "completed",
+            executionStarted: true,
+            delivered: false,
+            ...(failureKind === "agent"
+              ? { error: "Provider retry limit reached", deliveryAttempted: false }
+              : { deliveryAttempted: true, deliveryError: "transport unavailable" }),
+            automationResult: {
+              provider: "openai",
+              model: "gpt-5.6-sol",
+              usage: {
+                input_tokens: 20,
+                output_tokens: 5,
+                cache_read_tokens: 10,
+                total_tokens: 35,
+              },
+            },
+          });
+          if (failureKind === "transport") {
+            expect(routeReply).toHaveBeenCalled();
+          } else {
+            expect(routeReply).not.toHaveBeenCalled();
+          }
+        } finally {
+          receipt.cancel();
+          await receipt.settled;
+          await drainGlobalSingletonLifecycleState("restart");
+          resetSystemEventsForTest();
+        }
+      },
+    );
+  },
+);

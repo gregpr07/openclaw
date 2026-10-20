@@ -82,7 +82,7 @@ import {
   hasInboundMediaForUnderstanding,
 } from "./inbound-media.js";
 import { emitPreAgentMessageHooks } from "./message-preprocess-hooks.js";
-import { createModelSelectionState, resolveTurnModelOverride } from "./model-selection.js";
+import { createModelSelectionState, resolveTurnModelSelection } from "./model-selection.js";
 import {
   classifyHeartbeatPendingFinalDelivery,
   PENDING_FINAL_DELIVERY_CLEAR_PATCH,
@@ -253,7 +253,7 @@ async function resolveReplyFromConfig(
           agentId,
         }),
     );
-    const turnModelOverride = resolveTurnModelOverride({
+    const turnModelOverride = resolveTurnModelSelection({
       cfg,
       agentId,
       defaultProvider,
