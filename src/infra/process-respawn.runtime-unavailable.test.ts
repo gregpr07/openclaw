@@ -121,19 +121,37 @@ function register(
     RecoveryOwner["registerGatewayRuntimeRecovery"]
   >[0]["decision"] = runningUnderService,
   ownsProcessLifecycle = true,
+  isCurrent = () => true,
 ) {
   release = recovery.registerGatewayRuntimeRecovery({
     decision,
     ownsProcessLifecycle,
-    isCurrent: () => true,
+    isCurrent,
   });
 }
 
-function expectReported(reason: RegExp) {
+function expectUnavailable() {
   expect(runtime.readChildRuntimeViability()).toEqual({
     execPath: process.execPath,
     available: false,
   });
+}
+
+async function recover(...args: Parameters<typeof register>) {
+  register(...args);
+  diagnose();
+  await finished.promise;
+}
+
+function expectReported(reason: RegExp, noService = false, noProbe = false) {
+  expectUnavailable();
+  expect(io.restart).not.toHaveBeenCalled();
+  if (noService) {
+    expect(io.service).not.toHaveBeenCalled();
+  }
+  if (noProbe) {
+    expect(io.probe).not.toHaveBeenCalled();
+  }
   expect(io.warn).toHaveBeenCalledWith(expect.stringMatching(/^report-only:/));
   expect(io.warn).toHaveBeenCalledWith(expect.stringMatching(reason));
 }
@@ -146,10 +164,7 @@ it("requests one graceful lifecycle restart after the service's Node proves it c
   const failure = diagnose();
   expect(failure).toMatchObject({ code: "NODE_RUNTIME_UNAVAILABLE" });
   expect(diagnose()).toBe(failure);
-  expect(runtime.readChildRuntimeViability()).toEqual({
-    execPath: process.execPath,
-    available: false,
-  });
+  expectUnavailable();
   expect(io.restart).not.toHaveBeenCalled();
   await finished.promise;
   expect(io.service).toHaveBeenCalledOnce();
@@ -167,10 +182,7 @@ it("requests one graceful lifecycle restart after the service's Node proves it c
     maxBuffer: 8_192,
   });
   expect(io.restart).toHaveBeenCalledExactlyOnceWith("gateway.runtime-unavailable");
-  expect(runtime.readChildRuntimeViability()).toEqual({
-    execPath: process.execPath,
-    available: false,
-  });
+  expectUnavailable();
   expect(io.warn).toHaveBeenCalledWith(expect.stringMatching(/^restart-requested: .*graceful/));
   expect(diagnose()).toBe(failure);
   await Promise.resolve();
@@ -187,10 +199,7 @@ it("stays up and reports the unusable service runtime without requesting restart
     status: 127,
     signal: null,
   });
-  register();
-  diagnose();
-  await finished.promise;
-  expect(io.restart).not.toHaveBeenCalled();
+  await recover();
   expectReported(/service Node cannot start/);
 });
 
@@ -208,13 +217,8 @@ it.each([
   },
   { name: "embedded lifecycle", decision: runningUnderService, owns: false },
 ] as const)("keeps $name report-only", async ({ decision, owns }) => {
-  register(decision, owns);
-  diagnose();
-  await finished.promise;
-  expect(io.service).not.toHaveBeenCalled();
-  expect(io.probe).not.toHaveBeenCalled();
-  expect(io.restart).not.toHaveBeenCalled();
-  expectReported(/no verified native service/);
+  await recover(decision, owns);
+  expectReported(/no verified native service/, true, true);
 });
 
 it("keeps a recently restarted successor up instead of repeating runtime recovery", async () => {
@@ -222,31 +226,20 @@ it("keeps a recently restarted successor up instead of repeating runtime recover
     reason: "restart (SIGUSR2: gateway.runtime-unavailable)",
     completedAtMs: Date.now() - 60_000,
   });
-  register();
-  diagnose();
-  await finished.promise;
-  expect(io.service).not.toHaveBeenCalled();
-  expect(io.restart).not.toHaveBeenCalled();
-  expectReported(/last five minutes/);
+  await recover();
+  expectReported(/last five minutes/, true);
 });
 
 it("stays report-only when restart history is unavailable", async () => {
   io.history.mockRejectedValueOnce(new Error("fixture history unavailable"));
-  register();
-  diagnose();
-  await finished.promise;
-  expect(io.service).not.toHaveBeenCalled();
-  expect(io.restart).not.toHaveBeenCalled();
-  expectReported(/history could not be read/);
+  await recover();
+  expectReported(/history could not be read/, true);
 });
 
 it("reports an earlier diagnosis once when its history reader can no longer start", async () => {
   diagnose();
   io.history.mockRejectedValue(new Error("fixture child runtime unavailable"));
-  expect(runtime.readChildRuntimeViability()).toEqual({
-    execPath: process.execPath,
-    available: false,
-  });
+  expectUnavailable();
   register();
   await finished.promise;
   expectReported(/history could not be read/);
@@ -264,34 +257,20 @@ it("does not request restart after its lifecycle retires during preflight", asyn
     current = false;
     return serviceState;
   });
-  release = recovery.registerGatewayRuntimeRecovery({
-    decision: runningUnderService,
-    ownsProcessLifecycle: true,
-    isCurrent: () => current,
-  });
-  diagnose();
-  await finished.promise;
-  expect(io.restart).not.toHaveBeenCalled();
+  await recover(runningUnderService, true, () => current);
   expectReported(/already stopping/);
 });
 
 it("keeps a rewritten launchd plist report-only when it does not match the loaded job", async () => {
   io.correspondingLaunchAgent.mockResolvedValueOnce(null);
-  register({ mode: "supervised", supervisor: "launchd" });
-  diagnose();
-  await finished.promise;
+  await recover({ mode: "supervised", supervisor: "launchd" });
   expect(io.loadedLaunchAgent).toHaveBeenCalledOnce();
   expect(io.correspondingLaunchAgent).toHaveBeenCalledOnce();
-  expect(io.service).not.toHaveBeenCalled();
-  expect(io.probe).not.toHaveBeenCalled();
-  expect(io.restart).not.toHaveBeenCalled();
-  expectReported(/no verified Node command/);
+  expectReported(/no verified Node command/, true, true);
 });
 
 it("requests restart after the loaded launchd job matches its viable on-disk command", async () => {
-  register({ mode: "supervised", supervisor: "launchd" });
-  diagnose();
-  await finished.promise;
+  await recover({ mode: "supervised", supervisor: "launchd" });
   expect(io.correspondingLaunchAgent).toHaveBeenCalledWith(
     process.env,
     loadedLaunchAgent.launchAgent,
@@ -308,8 +287,5 @@ it("requests restart after the loaded launchd job matches its viable on-disk com
   );
   expect(io.restart).toHaveBeenCalledExactlyOnceWith("gateway.runtime-unavailable");
   expect(io.warn).toHaveBeenCalledWith(expect.stringMatching(/^restart-requested:/));
-  expect(runtime.readChildRuntimeViability()).toEqual({
-    execPath: process.execPath,
-    available: false,
-  });
+  expectUnavailable();
 });

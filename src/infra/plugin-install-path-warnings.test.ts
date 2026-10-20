@@ -1,4 +1,3 @@
-// Covers plugin install path warning detection and copy.
 import fs from "node:fs/promises";
 import path from "node:path";
 import { withTempHome } from "openclaw/plugin-sdk/test-env";
@@ -9,26 +8,24 @@ import {
   formatPluginInstallPathIssue,
 } from "./plugin-install-path-warnings.js";
 
-async function detectMatrixCustomPathIssue(sourcePath: string | ((pluginPath: string) => string)) {
-  return withTempHome(async (home) => {
-    const pluginPath = path.join(home, "matrix-plugin");
-    await fs.mkdir(pluginPath, { recursive: true });
-    const resolvedSourcePath =
-      typeof sourcePath === "function" ? sourcePath(pluginPath) : sourcePath;
-    const issue = await detectPluginInstallPathIssue({
-      pluginId: "matrix",
-      install: {
-        source: "path",
-        sourcePath: resolvedSourcePath,
-        installPath: pluginPath,
-      },
-    });
-
-    return { issue, pluginPath };
-  });
-}
-
 const MATRIX_REPO_INSTALL_COMMAND = `openclaw plugins install ${repoInstallSpec("matrix")}`;
+const missingPath = "/tmp/openclaw-matrix-missing";
+const detect = (sourcePath: string, installPath = sourcePath) =>
+  detectPluginInstallPathIssue({
+    pluginId: "matrix",
+    install: { source: "path", sourcePath, installPath },
+  });
+const format = (
+  issue: Parameters<typeof formatPluginInstallPathIssue>[0]["issue"],
+  options: Partial<Parameters<typeof formatPluginInstallPathIssue>[0]> = {},
+) =>
+  formatPluginInstallPathIssue({
+    issue,
+    pluginLabel: "Matrix",
+    defaultInstallCommand: "openclaw plugins install @openclaw/matrix",
+    repoInstallCommand: MATRIX_REPO_INSTALL_COMMAND,
+    ...options,
+  });
 
 describe("plugin install path warnings", () => {
   it("ignores non-path installs and blank path candidates", async () => {
@@ -51,28 +48,13 @@ describe("plugin install path warnings", () => {
   });
 
   it("detects stale custom plugin install paths", async () => {
-    const issue = await detectPluginInstallPathIssue({
-      pluginId: "matrix",
-      install: {
-        source: "path",
-        sourcePath: "/tmp/openclaw-matrix-missing",
-        installPath: "/tmp/openclaw-matrix-missing",
-      },
-    });
-
+    const issue = await detect(missingPath);
     expect(issue).toEqual({
       kind: "missing-path",
       pluginId: "matrix",
       path: "/tmp/openclaw-matrix-missing",
     });
-    expect(
-      formatPluginInstallPathIssue({
-        issue: issue!,
-        pluginLabel: "Matrix",
-        defaultInstallCommand: "openclaw plugins install @openclaw/matrix",
-        repoInstallCommand: MATRIX_REPO_INSTALL_COMMAND,
-      }),
-    ).toEqual([
+    expect(format(issue!)).toEqual([
       "Matrix is installed from a custom path that no longer exists: /tmp/openclaw-matrix-missing",
       'Reinstall with "openclaw plugins install @openclaw/matrix".',
       `If you are running from a repo checkout, you can also use "${MATRIX_REPO_INSTALL_COMMAND}".`,
@@ -80,11 +62,14 @@ describe("plugin install path warnings", () => {
   });
 
   it("uses the second candidate path when the first one is stale", async () => {
-    const { issue, pluginPath } = await detectMatrixCustomPathIssue("/tmp/openclaw-matrix-missing");
-    expect(issue).toEqual({
-      kind: "custom-path",
-      pluginId: "matrix",
-      path: pluginPath,
+    await withTempHome(async (home) => {
+      const pluginPath = path.join(home, "matrix-plugin");
+      await fs.mkdir(pluginPath, { recursive: true });
+      expect(await detect(missingPath, pluginPath)).toEqual({
+        kind: "custom-path",
+        pluginId: "matrix",
+        path: pluginPath,
+      });
     });
   });
 
@@ -101,17 +86,10 @@ describe("plugin install path warnings", () => {
 
   it("applies custom command formatting in warning messages", () => {
     expect(
-      formatPluginInstallPathIssue({
-        issue: {
-          kind: "custom-path",
-          pluginId: "matrix",
-          path: "/tmp/matrix-plugin",
-        },
-        pluginLabel: "Matrix",
-        defaultInstallCommand: "openclaw plugins install @openclaw/matrix",
-        repoInstallCommand: MATRIX_REPO_INSTALL_COMMAND,
-        formatCommand: (command) => `<${command}>`,
-      }),
+      format(
+        { kind: "custom-path", pluginId: "matrix", path: "/tmp/matrix-plugin" },
+        { formatCommand: (command) => `<${command}>` },
+      ),
     ).toEqual([
       "Matrix is installed from a custom path: /tmp/matrix-plugin",
       "Main updates will not automatically replace that plugin with the repo's default Matrix package.",
@@ -122,16 +100,10 @@ describe("plugin install path warnings", () => {
 
   it("omits repo checkout guidance when no bundled source hint exists", () => {
     expect(
-      formatPluginInstallPathIssue({
-        issue: {
-          kind: "missing-path",
-          pluginId: "matrix",
-          path: "/tmp/openclaw-matrix-missing",
-        },
-        pluginLabel: "Matrix",
-        defaultInstallCommand: "openclaw plugins install @openclaw/matrix",
-        repoInstallCommand: null,
-      }),
+      format(
+        { kind: "missing-path", pluginId: "matrix", path: missingPath },
+        { repoInstallCommand: null },
+      ),
     ).toEqual([
       "Matrix is installed from a custom path that no longer exists: /tmp/openclaw-matrix-missing",
       'Reinstall with "openclaw plugins install @openclaw/matrix".',
