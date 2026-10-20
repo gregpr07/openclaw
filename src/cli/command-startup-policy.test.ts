@@ -90,9 +90,6 @@ describe("command-startup-policy", () => {
       originalEnv.restore();
     }
   });
-  it("suppresses startup stdout for the mcp serve protocol", () => {
-    expect(resolvePolicy({ commandPath: ["mcp", "serve"] }).suppressDoctorStdout).toBe(true);
-  });
 
   it("reserves stdout for the browser native-host protocol", () => {
     expect(resolvePolicy({ commandPath: ["browser", "extension", "native-host"] })).toMatchObject({
@@ -123,13 +120,15 @@ describe("command-startup-policy", () => {
     });
   });
 
-  it("suppresses startup stdout for the bare acp protocol", () => {
-    expect(resolvePolicy({ commandPath: ["acp"] }).suppressDoctorStdout).toBe(true);
-  });
-
-  it("keeps startup stdout for non-protocol commands", () => {
-    expect(resolvePolicy({ commandPath: ["mcp", "list"] }).suppressDoctorStdout).toBe(false);
-    expect(resolvePolicy({ commandPath: ["acp", "client"] }).suppressDoctorStdout).toBe(false);
-    expect(resolvePolicy({ commandPath: ["status"] }).suppressDoctorStdout).toBe(false);
+  it.each([
+    ["mcp serve", true],
+    ["acp", true],
+    ["mcp list", false],
+    ["acp client", false],
+    ["status", false],
+  ] as const)("reserves stdout only for protocol command %s: %s", (command, suppressed) => {
+    expect(resolvePolicy({ commandPath: command.split(" ") }).suppressDoctorStdout).toBe(
+      suppressed,
+    );
   });
 });

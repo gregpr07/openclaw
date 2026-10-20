@@ -7,6 +7,8 @@ import {
   parseBatchSource,
   parseConfigSetCurrentExpectation,
   readConfigMutationFileSync,
+  type ConfigSetCurrentExpectation,
+  type ConfigSetOptions,
 } from "./config-set-input.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -18,15 +20,10 @@ function writeInput(contents: string | Buffer) {
 }
 
 describe("config set input parsing", () => {
-  it.each(["--file"] as const)(
-    "rejects malformed UTF-8 in %s before parsing a mutation",
-    (sourceLabel) => {
-      const file = writeInput(Buffer.from([0x22, 0xff, 0x22]));
-      expect(() => readConfigMutationFileSync(file, sourceLabel)).toThrow(
-        `${sourceLabel} must be valid UTF-8`,
-      );
-    },
-  );
+  it("rejects malformed UTF-8 before parsing a mutation", () => {
+    const file = writeInput(Buffer.from([0x22, 0xff, 0x22]));
+    expect(() => readConfigMutationFileSync(file, "--file")).toThrow("--file must be valid UTF-8");
+  });
 
   it("preserves valid Unicode, a literal replacement character and a BOM", () => {
     const contents = '\uFEFF[{path:"agents.entries.main.name",value:"中文 😀 \uFFFD"}]';
@@ -38,21 +35,19 @@ describe("config set input parsing", () => {
     ]);
   });
 
-  it("parses absent and strict JSON current-value expectations", () => {
-    expect(parseConfigSetCurrentExpectation({ expectCurrentAbsent: true })).toEqual({
-      kind: "absent",
-    });
-    expect(parseConfigSetCurrentExpectation({ expectCurrentJson: "null" })).toEqual({
-      kind: "json",
-      value: null,
-    });
-    expect(
-      parseConfigSetCurrentExpectation({ expectCurrentJson: '{"enabled":true,"ports":[1,2]}' }),
-    ).toEqual({
-      kind: "json",
-      value: { enabled: true, ports: [1, 2] },
-    });
-  });
+  it.each([
+    [{ expectCurrentAbsent: true }, { kind: "absent" }],
+    [{ expectCurrentJson: "null" }, { kind: "json", value: null }],
+    [
+      { expectCurrentJson: '{"enabled":true,"ports":[1,2]}' },
+      { kind: "json", value: { enabled: true, ports: [1, 2] } },
+    ],
+  ] satisfies [ConfigSetOptions, ConfigSetCurrentExpectation][])(
+    "parses current-value expectation %j",
+    (options, expected) => {
+      expect(parseConfigSetCurrentExpectation(options)).toEqual(expected);
+    },
+  );
 
   it.each([
     [
@@ -84,15 +79,11 @@ describe("config set input parsing", () => {
   it.each([
     ["malformed payload", "{", "Failed to parse --batch-json:"],
     ["empty batch payload", "[]", "--batch-json must contain at least one config update."],
-    [
-      "non-array payload",
-      '{"path":"gateway.auth.mode","value":"token"}',
-      "--batch-json must be a JSON array.",
-    ],
-    ["entry without path", '[{"value":"token"}]', "--batch-json[0].path is required."],
+    ["non-array payload", '{"path":"p","value":"v"}', "--batch-json must be a JSON array."],
+    ["entry without path", '[{"value":"v"}]', "--batch-json[0].path is required."],
     [
       "entry with multiple mode keys",
-      '[{"path":"gateway.auth.mode","value":"token","provider":{"source":"env"}}]',
+      '[{"path":"p","value":"v","provider":{"source":"env"}}]',
       "--batch-json[0] must include exactly one of: value, ref, provider.",
     ],
   ] as const)("rejects %s", (_name, batchJson, message) => {

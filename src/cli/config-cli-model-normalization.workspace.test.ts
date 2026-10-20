@@ -87,15 +87,13 @@ it("preserves global provider policies across workspace changes without executin
       pluginMetadataSnapshot.owners.modelIdNormalizationPolicies.get("custom")?.prefixWhenBare,
     ).toBe("old");
     const options = { pluginMetadataSnapshot, env };
-    const expectGlobalPolicy = async (config: OpenClawConfig) => {
+    for (const workspace of [previous, next]) {
+      const config = {
+        ...baseConfig,
+        agents: { entries: { ...baseConfig.agents?.entries, secondary: { workspace } } },
+      };
       const normalized = await normalizeConfigMutationModelRefs(config, options);
       expect(normalized.models?.providers?.custom?.models[0]?.id).toBe("global/stable");
-    };
-    await expectGlobalPolicy(baseConfig);
-    const config: OpenClawConfig = {
-      ...baseConfig,
-      agents: { entries: { ...baseConfig.agents?.entries, secondary: { workspace: next } } },
-    };
-    await expectGlobalPolicy(config);
+    }
   });
 });

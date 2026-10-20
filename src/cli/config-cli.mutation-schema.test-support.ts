@@ -42,29 +42,22 @@ export function registerConfigMutationSchemaTests({
         { gateway: { mode: "local", port: 18789 } },
         { gateway: { port: 18789 } },
       ],
+      [
+        [
+          "set",
+          "gateway.auth.trustedProxy.requiredHeaders[0]",
+          '"X-Forwarded-Proto"',
+          "--strict-json",
+        ],
+        proxy(),
+        proxy(["X-Forwarded-Proto"]),
+      ],
+      [["set", 'agents.defaults.models["0"].alias', '"zero"', "--strict-json"], {}, numericModel()],
     ] satisfies [string[], OpenClawConfig, OpenClawConfig][])(
       "applies %j without loading a mutation schema",
       async (args, resolved, expected) => {
         setSnapshot(resolved, resolved);
         await runConfigCommand(["config", ...args]);
-        expect(firstWrittenConfig()).toEqual(expected);
-        expect(mockReadBestEffortRuntimeConfigSchema).not.toHaveBeenCalled();
-      },
-    );
-
-    it.each([
-      [
-        "gateway.auth.trustedProxy.requiredHeaders[0]",
-        "X-Forwarded-Proto",
-        proxy(),
-        proxy(["X-Forwarded-Proto"]),
-      ],
-      ['agents.defaults.models["0"].alias', "zero", {}, numericModel()],
-    ] satisfies [string, string, OpenClawConfig, OpenClawConfig][])(
-      "preserves explicit path identity for %s without loading a schema",
-      async (path, value, resolved, expected) => {
-        setSnapshot(resolved, resolved);
-        await runConfigSet(path, JSON.stringify(value), "--strict-json");
         expect(firstWrittenConfig()).toEqual(expected);
         expect(mockReadBestEffortRuntimeConfigSchema).not.toHaveBeenCalled();
       },
