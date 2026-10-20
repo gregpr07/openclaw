@@ -14,9 +14,20 @@ import {
 import { startCronListDiagnostics } from "./cron-list-diagnostics.js";
 
 let previousDiagnostics: boolean;
+let clock = 0;
 beforeEach(() => {
   previousDiagnostics = areDiagnosticsEnabledForProcess();
+  clock = 0;
+  setDiagnosticsEnabledForProcess(true);
+  vi.spyOn(performance, "now").mockImplementation(() => clock);
 });
+
+function start(warn = vi.fn()) {
+  return expectDefined(
+    startCronListDiagnostics({ warn }, vi.fn()),
+    "enabled cron list diagnostics",
+  );
+}
 afterEach(() => {
   setDiagnosticsEnabledForProcess(previousDiagnostics);
   vi.restoreAllMocks();
@@ -24,36 +35,23 @@ afterEach(() => {
 
 test("disabled cron list diagnostics do not start clocks", () => {
   setDiagnosticsEnabledForProcess(false);
-  const now = vi.spyOn(performance, "now");
   const warn = vi.fn();
   expect(startCronListDiagnostics({ warn }, vi.fn())).toBeUndefined();
-  expect(now).not.toHaveBeenCalled();
+  expect(performance.now).not.toHaveBeenCalled();
   expect(warn).not.toHaveBeenCalled();
 });
 
 test.each([999.9, 1_000])("cron list warning threshold uses raw elapsed time: %s", (elapsed) => {
-  setDiagnosticsEnabledForProcess(true);
-  let clock = 0;
-  vi.spyOn(performance, "now").mockImplementation(() => clock);
   const warn = vi.fn();
-  const diagnostics = expectDefined(
-    startCronListDiagnostics({ warn }, vi.fn()),
-    "enabled cron list diagnostics",
-  );
+  const diagnostics = start(warn);
   clock = elapsed;
   diagnostics.finish("returned");
   expect(warn).toHaveBeenCalledTimes(elapsed >= 1_000 ? 1 : 0);
 });
 
 test("cron list diagnostics close unfinished work once and retire later marks", () => {
-  setDiagnosticsEnabledForProcess(true);
-  let clock = 0;
-  vi.spyOn(performance, "now").mockImplementation(() => clock);
   const warn = vi.fn();
-  const diagnostics = expectDefined(
-    startCronListDiagnostics({ warn }, vi.fn()),
-    "enabled cron list diagnostics",
-  );
+  const diagnostics = start(warn);
   clock = 100;
   diagnostics.mark("listing");
   clock = 1_100;
@@ -74,14 +72,8 @@ test("cron list diagnostics close unfinished work once and retire later marks", 
 });
 
 test("disabling diagnostics during a cron request cannot publish its summary later", () => {
-  setDiagnosticsEnabledForProcess(true);
-  let clock = 0;
-  vi.spyOn(performance, "now").mockImplementation(() => clock);
   const warn = vi.fn();
-  const diagnostics = expectDefined(
-    startCronListDiagnostics({ warn }, vi.fn()),
-    "enabled cron list diagnostics",
-  );
+  const diagnostics = start(warn);
   clock = 2_000;
   setDiagnosticsEnabledForProcess(false);
   diagnostics.finish("returned");
@@ -91,18 +83,12 @@ test("disabling diagnostics during a cron request cannot publish its summary lat
 });
 
 test.each([true, false])("cron diagnostics preserve captured trace presence: %s", (bound) => {
-  setDiagnosticsEnabledForProcess(true);
-  let clock = 0;
-  vi.spyOn(performance, "now").mockImplementation(() => clock);
   const original = bound ? createDiagnosticTraceContext() : undefined;
   let loggedTrace: DiagnosticTraceContext | undefined;
   const warn = vi.fn(() => {
     loggedTrace = getActiveDiagnosticTraceContext();
   });
-  const diagnostics = expectDefined(
-    runWithDiagnosticTraceContext(original, () => startCronListDiagnostics({ warn }, vi.fn())),
-    "enabled request-scoped cron diagnostics",
-  );
+  const diagnostics = runWithDiagnosticTraceContext(original, () => start(warn));
   clock = 1_500;
   runWithDiagnosticTraceContext(createDiagnosticTraceContext(), () =>
     diagnostics.finish("returned"),

@@ -14,18 +14,16 @@ import * as support from "../worker-environments/service.test-support.js";
 import { environmentsSessionHandlers } from "./environments.session.js";
 import type { GatewayClient } from "./types.js";
 
-const owner = {
-  profileId: "alice",
-  senderId: "alice-sender",
-  name: "Alice",
-  gatewayUiCommandTarget: { connId: "alice-tab", profileId: "alice" },
-};
-const steerer = {
-  profileId: "bob",
-  senderId: "bob-sender",
-  name: "Bob",
-  gatewayUiCommandTarget: { connId: "bob-tab", profileId: "bob" },
-};
+function participant(profileId: string, name: string) {
+  return {
+    profileId,
+    name,
+    senderId: `${profileId}-sender`,
+    gatewayUiCommandTarget: { connId: `${profileId}-tab`, profileId },
+  };
+}
+const owner = participant("alice", "Alice");
+const steerer = participant("bob", "Bob");
 const identity = {
   agentId: "main",
   sessionKey: "agent:main:personal-tools",
@@ -90,7 +88,26 @@ describe("conversation environment presentation participants", () => {
             respond,
           }),
       );
-    return { call, respond, create, provision, service, context };
+    const expectNoAllocation = () => {
+      expect(provision).not.toHaveBeenCalled();
+      expect(context.broadcastToConnIds).not.toHaveBeenCalled();
+    };
+    const expectRejected = (message: RegExp) => {
+      expectNoAllocation();
+      expect(respond).toHaveBeenCalledWith(
+        false,
+        undefined,
+        expect.objectContaining({ message: expect.stringMatching(message) }),
+      );
+    };
+    const expectAvailable = () => {
+      expect(respond).toHaveBeenLastCalledWith(
+        true,
+        expect.objectContaining({ environment: expect.objectContaining({ status: "available" }) }),
+      );
+      expect(provision).toHaveBeenCalledOnce();
+    };
+    return { call, create, service, context, expectRejected, expectAvailable };
   }
 
   it.each(["desktop", "portal"] as const)(
@@ -101,25 +118,11 @@ describe("conversation environment presentation participants", () => {
         expect(await turn.steer(steerer)).toMatchObject({ status: "accepted" });
         await test.call(presentation);
         expect(test.create).not.toHaveBeenCalled();
-        expect(test.provision).not.toHaveBeenCalled();
-        expect(test.context.broadcastToConnIds).not.toHaveBeenCalled();
-        expect(test.respond).toHaveBeenCalledWith(
-          false,
-          undefined,
-          expect.objectContaining({
-            message: expect.stringMatching(
-              /without presentation.*screen.*desktop_show.*portal_show.*environmentId.*requester_profile.id/s,
-            ),
-          }),
+        test.expectRejected(
+          /without presentation.*screen.*desktop_show.*portal_show.*environmentId.*requester_profile.id/s,
         );
         await test.call();
-        expect(test.respond).toHaveBeenLastCalledWith(
-          true,
-          expect.objectContaining({
-            environment: expect.objectContaining({ status: "available" }),
-          }),
-        );
-        expect(test.provision).toHaveBeenCalledOnce();
+        test.expectAvailable();
       });
     },
   );
@@ -127,10 +130,7 @@ describe("conversation environment presentation participants", () => {
   it("presents a single-owner environment only in that owner's connection", async () => {
     const test = fixture();
     await withPersonalToolTurn({ owner }, () => test.call("desktop"));
-    expect(test.respond).toHaveBeenCalledWith(
-      true,
-      expect.objectContaining({ environment: expect.objectContaining({ status: "available" }) }),
-    );
+    test.expectAvailable();
     expect(test.context.broadcastToConnIds).toHaveBeenCalledExactlyOnceWith(
       "ui.command",
       expect.objectContaining({
@@ -138,7 +138,6 @@ describe("conversation environment presentation participants", () => {
       }),
       new Set(["alice-tab"]),
     );
-    expect(test.provision).toHaveBeenCalledOnce();
   });
 
   it.each(["ambiguity", "revocation"])("cancels before allocation: %s", async (change) => {
@@ -160,17 +159,9 @@ describe("conversation environment presentation participants", () => {
       );
       await test.call("portal");
       expect(test.create).toHaveBeenCalledOnce();
-      expect(test.respond).toHaveBeenCalledWith(
-        false,
-        undefined,
-        expect.objectContaining({
-          message: expect.stringMatching(
-            change === "revocation" ? /Profile access revoked/ : /Several people.*Alice.*Bob/s,
-          ),
-        }),
+      test.expectRejected(
+        change === "revocation" ? /Profile access revoked/ : /Several people.*Alice.*Bob/s,
       );
-      expect(test.context.broadcastToConnIds).not.toHaveBeenCalled();
-      expect(test.provision).not.toHaveBeenCalled();
       const result = test.service.getSessionAttachmentStatus(identity.sessionId)!;
       expect(result.attachment.closedAtMs).not.toBeNull();
       expect(result.environment.state).toBe("failed");

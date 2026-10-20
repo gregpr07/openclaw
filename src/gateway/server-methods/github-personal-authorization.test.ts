@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
@@ -80,13 +80,14 @@ vi.mock("../../state/user-profile-list.js", () => ({
     assertCurrent: () => ({ id: profileId, role: null }),
   }),
 }));
-vi.mock("../operator-role-policy.js", () => ({
-  resolveOperatorRolePolicy: () => (mocks.roleScopes ? { scopes: mocks.roleScopes } : null),
-  resolveOperatorRolePolicyForProfile: () =>
-    mocks.roleScopes ? { scopes: mocks.roleScopes } : null,
-  resolveOperatorRolePolicyForAssignment: () =>
-    mocks.roleScopes ? { scopes: mocks.roleScopes } : null,
-}));
+vi.mock("../operator-role-policy.js", () => {
+  const resolve = () => (mocks.roleScopes ? { scopes: mocks.roleScopes } : null);
+  return {
+    resolveOperatorRolePolicy: resolve,
+    resolveOperatorRolePolicyForProfile: resolve,
+    resolveOperatorRolePolicyForAssignment: resolve,
+  };
+});
 // mock-isolation: Selected-session authorization is supplied directly, without initializing sharing storage.
 vi.mock("../session-sharing.js", () => ({
   createSessionListEntryFilter: () => undefined,
@@ -140,12 +141,28 @@ function sessionRead(agentId = "main") {
   };
 }
 
-const releases: Array<() => void> = [];
-afterEach(() => {
-  for (const release of releases.splice(0)) {
-    release();
-  }
-});
+function prepare(request = createRequest(), agentId?: string, signal?: AbortSignal) {
+  return prepareGitHubPublicationOptionsRead(request, { sessionKey: "main", agentId }, signal);
+}
+
+function publish(loaded: ReturnType<typeof sessionRead>, patch: Partial<SessionEntry>) {
+  recordCommittedSessionMetadataPublication(
+    "github-options-fixture",
+    loaded.canonicalKey,
+    undefined,
+    { ...loaded.entry, ...patch },
+  );
+}
+
+function holdSessionRead(snapshot = sessionRead()) {
+  const pending = Promise.withResolvers<typeof snapshot>();
+  const entered = Promise.withResolvers<void>();
+  const hold = () => {
+    entered.resolve();
+    return pending.promise;
+  };
+  return { pending, entered, hold };
+}
 
 describe("GitHub publication request discovery", () => {
   beforeEach(() => {
@@ -157,24 +174,16 @@ describe("GitHub publication request discovery", () => {
 
   it("shares overlapping options preparation without sharing caller authority or release", async () => {
     const snapshot = sessionRead();
-    const gate = Promise.withResolvers<typeof snapshot>();
-    const entered = Promise.withResolvers<void>();
-    mocks.loadSession.mockImplementation(() => {
-      entered.resolve();
-      return gate.promise;
-    });
+    const { pending, entered, hold } = holdSessionRead(snapshot);
+    mocks.loadSession.mockImplementation(hold);
     const cancelled = new AbortController();
-    const first = prepareGitHubPublicationOptionsRead(
-      createRequest(),
-      { sessionKey: "main" },
-      cancelled.signal,
-    );
+    const first = prepare(createRequest(), undefined, cancelled.signal);
     const failed = expect(first).rejects.toThrow("synthetic cancellation");
-    const second = prepareGitHubPublicationOptionsRead(createRequest(), { sessionKey: "main" });
-    const third = prepareGitHubPublicationOptionsRead(createRequest(), { sessionKey: "main" });
+    const second = prepare();
+    const third = prepare();
     await entered.promise;
     cancelled.abort(new Error("synthetic cancellation"));
-    gate.resolve(snapshot);
+    pending.resolve(snapshot);
     await failed;
     using surviving = await second;
     using independent = await third;
@@ -183,20 +192,13 @@ describe("GitHub publication request discovery", () => {
     surviving.release();
     expect(() => surviving.currentSession()).toThrow();
     expect(independent.currentSession().sessionId).toBe(snapshot.entry.sessionId);
-    recordCommittedSessionMetadataPublication(
-      "github-options-fixture",
-      snapshot.canonicalKey,
-      undefined,
-      { ...snapshot.entry, archivedAt: 123 },
-    );
+    publish(snapshot, { archivedAt: 123 });
     expect(() => independent.currentSession()).toThrow("session lifecycle changed");
     mocks.loadSession.mockReturnValue({
       ...snapshot,
       entry: { ...snapshot.entry, archivedAt: 123 },
     });
-    using fresh = await prepareGitHubPublicationOptionsRead(createRequest(), {
-      sessionKey: "main",
-    });
+    using fresh = await prepare();
     expect(fresh.currentSession().archivedAt).toBe(123);
     expect(mocks.loadSession).toHaveBeenCalledTimes(2);
   });
@@ -204,22 +206,16 @@ describe("GitHub publication request discovery", () => {
   it("prepares the new session store after an in-place config publication", async () => {
     const config = getRuntimeConfigSnapshot()!;
     const snapshot = sessionRead();
-    const pending = Promise.withResolvers<typeof snapshot>();
-    const entered = Promise.withResolvers<void>();
-    mocks.loadSession
-      .mockImplementationOnce(() => {
-        entered.resolve();
-        return pending.promise;
-      })
-      .mockReturnValue({
-        ...snapshot,
-        entry: { ...snapshot.entry, sessionId: "reloaded-session" },
-      });
-    const first = prepareGitHubPublicationOptionsRead(createRequest(), { sessionKey: "main" });
+    const { pending, entered, hold } = holdSessionRead(snapshot);
+    mocks.loadSession.mockImplementationOnce(hold).mockReturnValue({
+      ...snapshot,
+      entry: { ...snapshot.entry, sessionId: "reloaded-session" },
+    });
+    const first = prepare();
     await entered.promise;
     config.session = { store: "/test/reloaded/sessions.json" };
     setRuntimeConfigSnapshot(config);
-    const second = prepareGitHubPublicationOptionsRead(createRequest(), { sessionKey: "main" });
+    const second = prepare();
     await Promise.resolve();
     pending.resolve(snapshot);
     (await first).release();
@@ -242,12 +238,9 @@ describe("GitHub publication request discovery", () => {
       operatorRoleActor: principal.operatorRoleActor,
     };
     request.context.getClientConnIds = () => new Set();
-    const read = await prepareGitHubPublicationOptionsRead(request, { sessionKey: "main" });
-    releases.push(read.release);
+    using read = await prepare(request);
     expect(read.personal.kind).toBe("eligible");
-    const publication = await preparePersonalGitHubSessionActionV2(request, {
-      sessionKey: "main",
-    });
+    const publication = await preparePersonalGitHubSessionActionV2(request, { sessionKey: "main" });
     try {
       expect(() => publication.action.assertCurrent()).not.toThrow();
       grant.abort();
@@ -266,8 +259,7 @@ describe("GitHub publication request discovery", () => {
     request.client.connect.scopes = [grant];
     mocks.roleScopes = [ceiling];
 
-    const read = await prepareGitHubPublicationOptionsRead(request, { sessionKey: "main" });
-    releases.push(read.release);
+    using read = await prepare(request);
     expect(read.currentSession()).toEqual(read.session);
     expect(read.personal.kind).toBe("ineligible");
 
@@ -281,18 +273,9 @@ describe("GitHub publication request discovery", () => {
     const agentId = "research";
     const loaded = sessionRead(agentId);
     mocks.loadSession.mockReturnValue(loaded);
-    const read = await prepareGitHubPublicationOptionsRead(createRequest(), {
-      sessionKey: "main",
-      agentId,
-    });
-    releases.push(read.release);
+    using read = await prepare(createRequest(), agentId);
     expect(read.currentSession()).toEqual(read.session);
-    recordCommittedSessionMetadataPublication(
-      "github-options-fixture",
-      loaded.canonicalKey,
-      undefined,
-      { ...loaded.entry, label: "renamed" },
-    );
+    publish(loaded, { label: "renamed" });
     expect(read.currentSession()).toEqual(read.session);
     expect(mocks.loadSession).toHaveBeenCalledTimes(1);
     read.release();
@@ -307,21 +290,10 @@ describe("GitHub publication request discovery", () => {
         ...loaded,
         entry: { ...loaded.entry, archivedAt: archivedAt ?? undefined },
       });
-      using read = await prepareGitHubPublicationOptionsRead(createRequest(), {
-        sessionKey: "main",
-      });
-      releases.push(read.release);
+      using read = await prepare();
       const initial = read.currentSession();
       expect(initial.archivedAt).toBe(archivedAt);
-      recordCommittedSessionMetadataPublication(
-        "github-options-fixture",
-        loaded.canonicalKey,
-        undefined,
-        {
-          ...loaded.entry,
-          archivedAt: archivedAt === null ? 123 : undefined,
-        },
-      );
+      publish(loaded, { archivedAt: archivedAt === null ? 123 : undefined });
       expect(() => read.currentSession()).toThrow("session lifecycle changed");
       expect(() => read.assertSessionUnchanged(initial)).toThrow("session lifecycle changed");
     },
