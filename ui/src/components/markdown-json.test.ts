@@ -12,8 +12,7 @@ import {
 } from "./markdown.ts";
 
 const interactive = { codeBlockInteraction: "interactive" } as const;
-const find = <T extends HTMLElement = HTMLElement>(selector: string) =>
-  document.body.querySelector<T>(selector);
+const find = (selector: string) => document.body.querySelector<HTMLElement>(selector);
 const texts = (selector: string) =>
   [...document.body.querySelectorAll(selector)].map((node) => node.textContent);
 function expectSource(source: string, suffix = "") {

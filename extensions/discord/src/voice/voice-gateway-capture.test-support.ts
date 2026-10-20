@@ -246,19 +246,23 @@ export function createDiscordGatewayCaptureFixture(params: {
         }
       }
     } finally {
-      await closingManager.destroy().finally(async () => {
+      try {
+        await closingManager.destroy();
+      } finally {
         for (const stream of transports.flatMap(({ streams }) => streams)) {
           stream.destroy();
         }
         lateStt.resolve();
-        await drain().finally(() =>
+        try {
+          await drain();
+        } finally {
           setDiscordTranscriptsVoiceManager({
             accountId: captureTarget.accountId,
             manager: null,
             expectedManager: closingManager,
-          }),
-        );
-      });
+          });
+        }
+      }
     }
   }
 

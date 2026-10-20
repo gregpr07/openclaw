@@ -31,14 +31,16 @@ defineDiscordVoiceTests((h) => {
       h.beginSpeakerTurn(entry).close();
       const source = h.lastRealtimeBridge();
       const consult = (callId: string) =>
-        bridgeParams.onToolCall!(
-          {
-            name: "openclaw_agent_consult",
-            callId,
-            itemId: callId,
-            args: { question: "Check the ticket." },
-          },
-          source.session,
+        Promise.resolve(
+          bridgeParams.onToolCall!(
+            {
+              name: "openclaw_agent_consult",
+              callId,
+              itemId: callId,
+              args: { question: "Check the ticket." },
+            },
+            source.session,
+          ),
         );
       const pending = ["first", "duplicate"].map(consult);
       try {

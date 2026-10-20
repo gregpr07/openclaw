@@ -128,10 +128,11 @@ defineDiscordVoiceTests((h) => {
         expect(entry.capture.get("u1")).toBe(replacement);
         second.end();
         await vi.waitFor(() => expect(sink).toHaveBeenCalledTimes(2));
-        expect(sink.mock.calls.map(([utterance]) => utterance.text).toSorted()).toEqual([
-          "segment-1",
-          "segment-2",
-        ]);
+        expect(
+          sink.mock.calls
+            .map(([utterance]) => utterance.text)
+            .toSorted((a, b) => a.localeCompare(b)),
+        ).toEqual(["segment-1", "segment-2"]);
       } finally {
         release.resolve();
         first.destroy();
