@@ -60,14 +60,9 @@ it.each([false, true])("returns unavailable for failed discovery (throw=%s)", as
   }
   expect(await listWorkSessions()).toEqual({ available: false });
 });
-const profile = (
-  id: string,
-  login: string | null,
-  mergedInto: string | null = null,
-  host?: string,
-) => ({
+const profile = (id: string, login: string | null, mergedInto?: string | null, host?: string) => ({
   id,
-  mergedInto,
+  mergedInto: mergedInto ?? null,
   githubIdentity: login ? { ...(host ? { host } : {}), login } : null,
 });
 const identities = (profiles: ReturnType<typeof profile>[]) => {
