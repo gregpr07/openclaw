@@ -1,9 +1,8 @@
-import { readFileSync } from "node:fs";
 import { expect, it } from "vitest";
-import { parse } from "yaml";
 import {
   evaluateWorkflowExpression as expression,
   evaluateWorkflowRunner as runner,
+  readWorkflow,
 } from "./ci-workflow.test-support.js";
 
 const names = (text: string) => text.trim().split(/\s+/u);
@@ -39,11 +38,9 @@ type Workflow = {
   on: { workflow_call?: { inputs?: Record<string, { default?: unknown }> } };
   jobs: Record<string, Job>;
 };
+const loadWorkflow = (name: string): Workflow => readWorkflow(`.github/workflows/${name}.yml`);
 const workflows = new Map(
-  [...dedicated, ...shared, ...mixed].map((name) => [
-    name,
-    parse(readFileSync(`.github/workflows/${name}.yml`, "utf8")) as Workflow,
-  ]),
+  [...dedicated, ...shared, ...mixed].map((name) => [name, loadWorkflow(name)]),
 );
 const jobs = (name: string) => workflows.get(name)!.jobs;
 const group = 'Release "reserved"';
@@ -58,20 +55,18 @@ const releaseDispatch = {
   dispatchId: "full-release-validation-123-1",
   releasePublishRunId: "123",
 };
+const reserved = { ...releaseDispatch, runnerGroup: group };
+const ordinaryEvents = ["pull_request", "push", "schedule", "workflow_dispatch"] as const;
 
-function credentialed(name: string, job: Job) {
-  return (
-    publishing.has(name) &&
-    (job.environment !== undefined ||
-      job.permissions?.["id-token"] === "write" ||
-      /\$\{\{\s*secrets\.(?!GITHUB_TOKEN\b)/u.test(JSON.stringify(job)))
-  );
-}
+const credentialed = (name: string, job: Job) =>
+  publishing.has(name) &&
+  (job.environment !== undefined ||
+    job.permissions?.["id-token"] === "write" ||
+    /\$\{\{\s*secrets\.(?!GITHUB_TOKEN\b)/u.test(JSON.stringify(job)));
 
 it("keeps the credentialed Linux promotion dispatcher on GitHub-hosted runners", () => {
   const name = "openclaw-release-promote";
-  const workflow = parse(readFileSync(`.github/workflows/${name}.yml`, "utf8")) as Workflow;
-  const job = workflow.jobs.publish_linux!;
+  const job = loadWorkflow(name).jobs.publish_linux!;
   expect(credentialed(name, job)).toBe(true);
   expect(runner(job["runs-on"], releaseDispatch)).toBe("ubuntu-latest");
 });
@@ -97,20 +92,15 @@ it("reserves release workers while preserving ordinary and credentialed runner l
     if (pinnedJob) {
       expect(credentialed(name, workflow.jobs[pinnedJob]!)).toBe(true);
     }
-    const cases = [
-      { release: true, eventName: "workflow_dispatch" as const },
-      ...([...shared, ...mixed].includes(name)
-        ? (["pull_request", "push", "schedule", "workflow_dispatch"] as const).map((eventName) => ({
-            release: false,
-            eventName,
-          }))
-        : []),
-    ];
+    const events = [undefined, ...([...shared, ...mixed].includes(name) ? ordinaryEvents : [])];
+    const releaseContext = { ...releaseDispatch, runnerGroup: shared.includes(name) ? group : "" };
     for (const [jobName, job] of Object.entries(workflow.jobs)) {
       if (!job["runs-on"]) {
         continue;
       }
-      for (const { release, eventName } of cases) {
+      for (const event of events) {
+        const release = event === undefined;
+        const eventName = event ?? "workflow_dispatch";
         const ordinary = { ...context, eventName, ...(release ? {} : { releaseGate: true }) };
         if (
           name === "ci" &&
@@ -137,9 +127,7 @@ it("reserves release workers while preserving ordinary and credentialed runner l
         }
         const routed = runner(
           job["runs-on"],
-          release
-            ? { ...releaseDispatch, runnerGroup: shared.includes(name) ? group : "" }
-            : { ...ordinary, releaseRunnerGroup: group },
+          release ? releaseContext : { ...ordinary, releaseRunnerGroup: group },
         );
         expect(routed, `${name}/${jobName}/${eventName}/${release}`).toEqual(
           !release || credentialed(name, job) ? baseline : { group, labels: baseline },
@@ -159,13 +147,9 @@ it("forwards the reservation through shared workers and nested reusable calls", 
       if (!child || !shared.includes(child)) {
         continue;
       }
-      expect(
-        runner(job.with?.runner_group, {
-          ...releaseDispatch,
-          runnerGroup: group,
-        }),
-        `${name}/${jobName} -> ${child}`,
-      ).toBe(group);
+      expect(runner(job.with?.runner_group, reserved), `${name}/${jobName} -> ${child}`).toBe(
+        group,
+      );
     }
   }
 });

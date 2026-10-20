@@ -12,6 +12,7 @@ import {
   gitShow,
   legacyCapabilities,
   phaseState,
+  postState,
   releaseFixture,
   step,
   type FakeStep,
@@ -31,29 +32,28 @@ const pnpmCalls = (result: { calls: { bin: string; args: string[] }[] }, command
 const validationRun = (conclusion = "success", attempt = 1) =>
   actionRun(REPOSITORY, 101, conclusion, attempt);
 
-function validateSetup(fresh = true): FakeStep[] {
-  return [
-    ...(fresh ? [step("git", ["rev-parse", "origin/main"], TOOLING_SHA)] : []),
-    step("git", ["merge-base", "--is-ancestor", TOOLING_SHA, "origin/main"]),
-    ...(fresh
-      ? [
+const validateSetup = (fresh = true): FakeStep[] => [
+  ...(fresh ? [step("git", ["rev-parse", "origin/main"], TOOLING_SHA)] : []),
+  step("git", ["merge-base", "--is-ancestor", TOOLING_SHA, "origin/main"]),
+  ...(fresh
+    ? [
+        ...[
           ".github/workflows/openclaw-release-publish.yml",
           "scripts/lib/release-publish-children.sh",
           ".github/workflows/openclaw-npm-release.yml",
-        ].map((file) => gitShow(`${TOOLING_SHA}:${file}`))
-      : []),
-    ...(fresh
-      ? [step("git", ["tag", "*", TOOLING_SHA]), step("git", ["push", "origin", "*"])]
-      : []),
-    step("gh", ["api", "*", "--jq", ".object.sha"], TOOLING_SHA),
-  ];
-}
+        ].map((file) => gitShow(`${TOOLING_SHA}:${file}`)),
+        step("git", ["tag", "*", TOOLING_SHA]),
+        step("git", ["push", "origin", "*"]),
+      ]
+    : []),
+  step("gh", ["api", "*", "--jq", ".object.sha"], TOOLING_SHA),
+];
 
-function request(attempt = 1, profile = "stable"): FakeStep {
-  return step("pnpm", ["ci:full-release", "--", "--sha", CUT_SHA], "", {
+const request = (profile = "stable"): FakeStep =>
+  step("pnpm", ["ci:full-release", "--", "--sha", CUT_SHA], "", {
     request: {
       phase: "observed",
-      run: { id: 101, attempt },
+      run: { id: 101, attempt: 1 },
       admission: { workflowSha: TOOLING_SHA, workflowRef: toolingTag },
       request: {
         targetSha: CUT_SHA,
@@ -67,7 +67,6 @@ function request(attempt = 1, profile = "stable"): FakeStep {
       },
     },
   });
-}
 
 it("stops on the first failed stable validation and resumes only after operator recovery", () => {
   const legacy = phaseState("validate");
@@ -116,13 +115,7 @@ it.each([true, false])(
     const state = phaseState("validate");
     const requestFile = join(release.stateDir, "frv-request.json");
     state.validate = { toolingSha: TOOLING_SHA, toolingTag, requestFile, runId: "101" };
-    state.capabilities = {
-      parentSyncsBetaDistTag: false,
-      parentSweepsStaleChildren: false,
-      childNpmPublishEnvironment: false,
-      probedAt: "2026-09-24T00:00:00.000Z",
-      toolingSha: TOOLING_SHA,
-    };
+    state.capabilities = postState("validate").capabilities;
     release.seed(state);
     const record = request().request!;
     delete record.admission;
@@ -157,7 +150,7 @@ it.each([true, false])(
 
 it("refuses a retained beta validation before observing or completing it", () => {
   const release = fixture();
-  const result = release.run([...validateSetup(), request(1, "beta")]);
+  const result = release.run([...validateSetup(), request("beta")]);
   expect(result.status, result.output).toBe(2);
   expect(result.stderr).toContain("strict stable validation selection");
   expect(release.readState().phases.validate.status).not.toBe("completed");

@@ -16,6 +16,7 @@ import {
   version,
   workflowSha,
 } from "./plugin-npm-publication-readback.test-support.js";
+import * as fixtureIO from "./upgrade-survivor-shard.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const verifierArgv = resolveRuntimeWorkerArgv(
@@ -33,7 +34,7 @@ it.each([
   const fixture = await createNpmPublicationReadbackFixture(root, "direct", fault);
   const readback = await createPluginNpmPublicationReadback(fixture.options).catch(() => undefined);
   await readback?.verify(packageName, version, "beta").catch(() => undefined);
-  writeFileSync(join(root, "package.json"), JSON.stringify({ version }));
+  fixtureIO.writeJson(join(root, "package.json"), { version });
   const bin = join(root, "bin");
   mkdirSync(bin);
   const ghScript = `#!${process.execPath}
@@ -54,12 +55,11 @@ console.log(JSON.stringify(args[2] === "dist-tags" ? {beta:${JSON.stringify(vers
   "dist.integrity":"sha512-core-fixture", "dist.tarball":"https://registry.npmjs.org/openclaw/-/core.tgz"
 }));
 `;
-  writeFileSync(join(bin, "gh"), ghScript, { mode: 0o755 });
-  writeFileSync(join(bin, "npm"), npmScript, { mode: 0o755 });
-  writeFileSync(
+  fixtureIO.writeExecutable(join(bin, "gh"), ghScript);
+  fixtureIO.writeExecutable(join(bin, "npm"), npmScript);
+  fixtureIO.writeExecutable(
     join(bin, "git"),
     `#!/bin/sh\n[ "$*" = 'rev-parse HEAD' ] || exit 99\nprintf '%s\\n' '${sourceSha}'\n`,
-    { mode: 0o755 },
   );
   const preload = join(root, "fetch.mjs");
   writeFileSync(
@@ -75,22 +75,16 @@ globalThis.fetch = async (url) => {
   const result = spawnSync(
     process.execPath,
     [
-      ...verifierArgv.slice(0, -1),
-      "--import",
-      preload,
-      ...verifierArgv.slice(-1),
+      ...verifierArgv.toSpliced(-1, 0, "--import", preload),
       version,
       "--release-sha",
       sourceSha,
-      "--workflow-ref",
-      "main",
+      ..."--workflow-ref main".split(" "),
       "--plugin-npm-run",
       String(fixture.options.runId),
-      "--skip-postpublish",
-      "--skip-github-release",
-      "--skip-clawhub",
-      "--evidence-out",
-      "parent-evidence.json",
+      ..."--skip-postpublish --skip-github-release --skip-clawhub --evidence-out parent-evidence.json".split(
+        " ",
+      ),
     ],
     {
       cwd: root,
@@ -109,7 +103,7 @@ globalThis.fetch = async (url) => {
   const evidencePath = join(root, "parent-evidence.json");
   expect(existsSync(evidencePath)).toBe(succeeded);
   const readbacks = succeeded
-    ? JSON.parse(readFileSync(evidencePath, "utf8")).pluginNpmPublicationReadbacks
+    ? fixtureIO.readJson(evidencePath).pluginNpmPublicationReadbacks
     : undefined;
   if (fault === "none") {
     expect(readbacks).toMatchObject([
@@ -146,26 +140,23 @@ clawhub_workflow_ref=main
 bootstrap_plugins=""
 verify_published_release
 `;
-  const result = spawnSync("bash", ["-c", script], {
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      HELPER: resolve("scripts/lib/release-publish-children.sh"),
-      ARGS_LOG: argsLog,
-      GITHUB_REF: "refs/heads/main",
-      PARENT_WORKFLOW_SHA: workflowSha,
-      RELEASE_TAG: `v${version}`,
-      POSTPUBLISH_EVIDENCE_DIR: join(root, "evidence"),
-      GITHUB_REPOSITORY: "openclaw/openclaw",
-      TARGET_SHA: sourceSha,
-      CHILD_WORKFLOW_REF: "main",
-      RELEASE_NPM_DIST_TAG: "beta",
-      RUNNER_TEMP: root,
-      PLUGINS: "",
-      NPM_TELEGRAM_RUN_ID: "",
-      GITHUB_WORKSPACE: root,
-      PUBLISH_OPENCLAW_NPM: String(fullPublication),
-    },
+  const result = fixtureIO.runProcess("bash", ["-c", script], {
+    ...process.env,
+    HELPER: resolve("scripts/lib/release-publish-children.sh"),
+    ARGS_LOG: argsLog,
+    GITHUB_REF: "refs/heads/main",
+    PARENT_WORKFLOW_SHA: workflowSha,
+    RELEASE_TAG: `v${version}`,
+    POSTPUBLISH_EVIDENCE_DIR: join(root, "evidence"),
+    GITHUB_REPOSITORY: "openclaw/openclaw",
+    TARGET_SHA: sourceSha,
+    CHILD_WORKFLOW_REF: "main",
+    RELEASE_NPM_DIST_TAG: "beta",
+    RUNNER_TEMP: root,
+    PLUGINS: "",
+    NPM_TELEGRAM_RUN_ID: "",
+    GITHUB_WORKSPACE: root,
+    PUBLISH_OPENCLAW_NPM: String(fullPublication),
   });
   expect(result.status, result.stderr).toBe(79);
   const args = readFileSync(argsLog, "utf8").split("\n");

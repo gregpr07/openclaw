@@ -1,18 +1,17 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, realpathSync, symlinkSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, symlinkSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const admissionArgs =
+  "--import ./scripts/tsx.mjs scripts/qa/repository-checkpoint-admission.ts".split(" ");
 function fixture() {
-  const campaignRoot = realpathSync(tempDirs.make("openclaw-qa-checkpoint-"));
-  const checkpointRoot = path.join(campaignRoot, "checkpoint.git");
-  const nodeRoot = path.join(campaignRoot, "node");
-  for (const root of [checkpointRoot, nodeRoot]) {
-    mkdirSync(root);
-  }
+  const campaignRoot = tempDirs.make("openclaw-qa-checkpoint-");
+  const checkpointRoot = mkdtempSync(path.join(campaignRoot, "checkpoint.git-"));
+  const nodeRoot = mkdtempSync(path.join(campaignRoot, "node-"));
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH,
     HOME: campaignRoot,
@@ -21,13 +20,8 @@ function fixture() {
   };
   // Captured BC038 commands, independent of the production argument builder.
   const guards = ["-c", `core.hooksPath=${os.devNull}`, "-c", "core.fsmonitor=false"];
-  const init = [
-    "git",
-    ...guards,
-    "-C",
-    checkpointRoot,
-    ..."init --quiet --bare --object-format=sha1".split(" "),
-  ];
+  const prefix = ["git", ...guards, "-C", checkpointRoot];
+  const init = [...prefix, ..."init --quiet --bare --object-format=sha1".split(" ")];
   const probe =
     "git config --local --includes --bool --default=false --get extensions.worktreeConfig".split(
       " ",
@@ -36,8 +30,7 @@ function fixture() {
   const git = (argv: string[], cwd = nodeRoot) =>
     spawnSync("git", argv.slice(1), { cwd, env, encoding: "utf8" });
   expect(git(["git", "init", "--quiet", "--template=", nodeRoot]).status).toBe(0);
-  const bin = path.join(campaignRoot, "bin");
-  mkdirSync(bin);
+  const bin = mkdtempSync(path.join(campaignRoot, "bin-"));
   const trace = path.join(campaignRoot, "git-starts");
   writeFileSync(trace, "");
   // A denied command must never enter the traced real-Git executable.
@@ -50,34 +43,30 @@ function fixture() {
     { mode: 0o700 },
   );
   const launch = (overrides: Partial<typeof request> = {}) =>
-    spawnSync(
-      process.execPath,
-      ["--import", "./scripts/tsx.mjs", "scripts/qa/repository-checkpoint-admission.ts"],
-      {
-        input: JSON.stringify({ ...request, ...overrides }),
-        env: { ...env, PATH: `${bin}${path.delimiter}${env.PATH ?? ""}` },
-        encoding: "utf8",
-      },
-    );
+    spawnSync(process.execPath, admissionArgs, {
+      input: JSON.stringify({ ...request, ...overrides }),
+      env: { ...env, PATH: `${bin}${path.delimiter}${env.PATH ?? ""}` },
+      encoding: "utf8",
+    });
   const starts = () => readFileSync(trace, "utf8").split("\n").filter(Boolean).length;
-  return { request, init, probe, git, launch, starts };
+  return { request, prefix, init, probe, git, launch, starts };
 }
 
 it.skipIf(process.platform === "win32")("admits checkpoint init and publication reads", () => {
-  const { request, init, probe, git, launch, starts } = fixture();
+  const { request, prefix, probe, git, launch, starts } = fixture();
   const initialized = launch();
   expect([initialized.status, starts()], initialized.stderr).toEqual([0, 1]);
   expect(
     git(["git", "rev-parse", "--is-bare-repository"], request.checkpointRoot).stdout.trim(),
   ).toBe("true");
-  const query = [...init.slice(0, 7), "rev-parse", "--git-dir"];
+  const query = [...prefix, "rev-parse", "--git-dir"];
   expect(launch({ argv: query }).stdout.trim()).toBe(".");
   const result = launch({ argv: probe });
   expect([result.status, result.stdout.trim(), starts()]).toEqual([0, "false", 3]);
 });
 
 it.skipIf(process.platform === "win32")("denies writes, redirected and escaped roots", () => {
-  const { request, init, probe, launch, starts } = fixture();
+  const { request, prefix, init, probe, launch, starts } = fixture();
   const denied = (overrides: Partial<typeof request>) => {
     const result = launch(overrides);
     expect([result.status, starts()], result.stderr).toEqual([126, 0]);
@@ -89,15 +78,14 @@ it.skipIf(process.platform === "win32")("denies writes, redirected and escaped r
     ["git", "config", "--local", "core.hooksPath", "/tmp"],
     [...init, "extra.git"],
     [...probe, "true"],
-    [...init.slice(0, 7), "init", "--bare"],
+    [...prefix, "init", "--bare"],
   ]) {
     denied({ argv });
   }
   denied({ argv: probe, cwd: request.checkpointRoot });
   denied({ env: { ...request.env, GIT_DIR: request.checkpointRoot } });
   // Stale argv cannot authorize an old, still-owned campaign placement.
-  const currentRoot = path.join(request.campaignRoot, "current.git");
-  mkdirSync(currentRoot);
+  const currentRoot = mkdtempSync(path.join(request.campaignRoot, "current.git-"));
   denied({ checkpointRoot: currentRoot });
   const alias = path.join(request.campaignRoot, "alias.git");
   symlinkSync(request.checkpointRoot, alias, "dir");

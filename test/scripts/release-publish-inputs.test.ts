@@ -142,13 +142,12 @@ it.each([
   },
 );
 
-it("leaves historical manifest planning with its existing observer", () => {
-  expect(resolveInputs({}, { pluginSdkApiAcknowledgement: " \t " })).toEqual({
-    pluginSdkApiAcknowledgement: "",
-    npmDecisions: undefined,
-  });
-  expect(resolveInputs({}, { pluginSdkApiAcknowledgement: "12345678" })).toEqual({
-    pluginSdkApiAcknowledgement: "12345678",
+it.each([
+  [" \t ", ""],
+  ["12345678", "12345678"],
+])("keeps historical planning with acknowledgement %j", (input, expected) => {
+  expect(resolveInputs({}, { pluginSdkApiAcknowledgement: input })).toEqual({
+    pluginSdkApiAcknowledgement: expected,
     npmDecisions: undefined,
   });
 });

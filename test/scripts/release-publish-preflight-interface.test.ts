@@ -1,5 +1,4 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import {
@@ -8,6 +7,7 @@ import {
   parsePublishPreflightArgs as parseArgs,
 } from "../../scripts/lib/release-publish-preflight-interface.mts";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
+import * as fixtureIO from "./upgrade-survivor-shard.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const dispatchOptions = {
@@ -31,13 +31,10 @@ it("parses exact tooling and selected plugin repair inputs", () => {
     workflowRef: "",
     workflowSha: sha,
   });
-  const selected = [
-    "--workflow-ref",
-    toolingRef,
-    ..."--publish-openclaw-npm false --plugin-publish-scope selected --plugins @openclaw/example".split(
+  const selected =
+    `--workflow-ref ${toolingRef} --publish-openclaw-npm false --plugin-publish-scope selected --plugins @openclaw/example`.split(
       " ",
-    ),
-  ];
+    );
   expect(parse(selected)).toMatchObject({
     publishOpenclawNpm: false,
     pluginPublishScope: "selected",
@@ -73,10 +70,9 @@ it.skipIf(process.platform === "win32")(
     const dir = tempDirs.make("publish-dispatch-");
     const output = join(dir, "arguments.json");
     const executable = join(dir, "gh");
-    writeFileSync(
+    fixtureIO.writeExecutable(
       executable,
       `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(output)}, JSON.stringify(process.argv.slice(2)));\n`,
-      { mode: 0o755 },
     );
     const installerDigests = "Owner's approved reason\n$(touch should-not-exist); `false`";
     const latest = {
@@ -89,7 +85,7 @@ it.skipIf(process.platform === "win32")(
       cwd: dir,
       env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
     });
-    const args = JSON.parse(readFileSync(output, "utf8"));
+    const args = fixtureIO.readJson(output);
     expect(args).toContain(`windows_node_installer_digests=${installerDigests}`);
     expect(args).toContain("full_release_validation_run_attempt=2");
     expect(args).toContain("openclaw_npm_resume_run_id=456");

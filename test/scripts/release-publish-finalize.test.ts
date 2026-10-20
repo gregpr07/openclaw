@@ -1,9 +1,9 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { parse } from "yaml";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
+import * as fixtureIO from "./upgrade-survivor-shard.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const sourceSha = "b".repeat(40);
@@ -16,82 +16,72 @@ const finalize = finalizationSteps("finalize_github_release").find(
   (step) => step.name === "Publish the verified draft release",
 )!.run!;
 
-const defaults = {
-  tag: "v2026.9.6",
-  distTag: "latest",
-  draft: false,
-  prerelease: false,
-  actualSha: sourceSha,
-};
-function fixture(options: Partial<typeof defaults> & { latest?: string } = {}) {
-  const { tag, distTag, draft, prerelease, actualSha } = { ...defaults, ...options };
-  const latest = options.latest ?? tag;
+function fixture({
+  tag = "v2026.9.6",
+  distTag = "latest",
+  draft = false,
+  prerelease = false,
+  actualSha = sourceSha,
+  latest = tag,
+} = {}) {
   const root = tempDirs.make("release-publish-finalize-");
   const bin = join(root, "bin");
   mkdirSync(bin);
   writeFileSync(join(root, "calls"), "");
   writeFileSync(join(root, "summary"), "");
   for (const binary of ["gh", "node", "git"]) {
-    writeFileSync(
+    fixtureIO.writeExecutable(
       join(bin, binary),
       `#!${process.execPath}
 import { appendFileSync } from 'node:fs';
 const args = process.argv.slice(2);
+const [command, subcommand] = args;
+const tool = ${JSON.stringify(binary)};
 appendFileSync(process.env.RUNNER_TEMP + '/calls', JSON.stringify([${JSON.stringify(binary)}, ...args]) + '\\n');
-if (${JSON.stringify(binary)} === 'node') {
-  if (args[0] === 'scripts/linux-updater-manifest.mjs' && args[1] === 'carry') process.exit(0);
-  if (args[0] === 'scripts/release-tooling-identity.mjs' && args[1] === 'verify') process.exit(0);
-  if (args[0] === 'scripts/linux-app-channel.mjs' && args[1] === 'finalize-core') {
-    console.log(JSON.stringify({ state: 'finalized' })); process.exit(0);
-  }
-} else if (${JSON.stringify(binary)} === 'gh') {
-  if (args[0] === 'api' && args[1].includes('/commits/')) { console.log(${JSON.stringify(actualSha)}); process.exit(0); }
-  if (args[0] === 'api' && args[1].endsWith('/releases/latest')) { console.log(${JSON.stringify(latest)}); process.exit(0); }
-  if (args[0] === 'release' && args[1] === 'view') {
-    console.log(JSON.stringify(${JSON.stringify({ isDraft: draft, isPrerelease: prerelease })})); process.exit(0);
-  }
-} else {
-  console.log(${JSON.stringify(signedTagObjectSha)} + '\\trefs/tags/' + process.env.RELEASE_TAG);
-  console.log(${JSON.stringify(actualSha)} + '\\trefs/tags/' + process.env.RELEASE_TAG + '^{}');
-  process.exit(0);
-}
-throw new Error('Unexpected operation: ' + JSON.stringify(args));
+const routes = [
+  [tool === 'node' && command === 'scripts/linux-updater-manifest.mjs' && subcommand === 'carry', []],
+  [tool === 'node' && command === 'scripts/release-tooling-identity.mjs' && subcommand === 'verify', []],
+  [tool === 'node' && command === 'scripts/linux-app-channel.mjs' && subcommand === 'finalize-core', [JSON.stringify({ state: 'finalized' })]],
+  [tool === 'gh' && command === 'api' && subcommand.includes('/commits/'), [${JSON.stringify(actualSha)}]],
+  [tool === 'gh' && command === 'api' && subcommand.endsWith('/releases/latest'), [${JSON.stringify(latest)}]],
+  [tool === 'gh' && command === 'release' && subcommand === 'view', [JSON.stringify(${JSON.stringify({ isDraft: draft, isPrerelease: prerelease })})]],
+  [tool === 'git', [
+    ${JSON.stringify(signedTagObjectSha)} + '\\trefs/tags/' + process.env.RELEASE_TAG,
+    ${JSON.stringify(actualSha)} + '\\trefs/tags/' + process.env.RELEASE_TAG + '^{}',
+  ]],
+];
+const route = routes.find(([matches]) => matches);
+if (!route) throw new Error('Unexpected operation: ' + JSON.stringify(args));
+for (const line of route[1]) console.log(line);
 `,
-      { mode: 0o755 },
     );
   }
-  const result = spawnSync("bash", ["-c", finalize], {
-    encoding: "utf8",
-    env: {
-      PATH: `${bin}:${process.env.PATH}`,
-      RUNNER_TEMP: root,
-      GITHUB_STEP_SUMMARY: join(root, "summary"),
-      GITHUB_REPOSITORY: "openclaw/openclaw",
-      GITHUB_REF_NAME: "main",
-      GITHUB_REF: "refs/heads/main",
-      GITHUB_WORKFLOW_SHA: "a".repeat(40),
-      GITHUB_RUN_ID: "123",
-      GITHUB_RUN_ATTEMPT: "2",
-      PARENT_WORKFLOW_SHA: "a".repeat(40),
-      RELEASE_TAG: tag,
-      RELEASE_NPM_DIST_TAG: distTag,
-      SIGNED_RELEASE_TAG_OBJECT_SHA: signedTagObjectSha,
-      SOURCE_SHA: sourceSha,
-      TARGET_SHA: sourceSha,
-    },
+  const result = fixtureIO.runProcess("bash", ["-c", finalize], {
+    PATH: `${bin}:${process.env.PATH}`,
+    RUNNER_TEMP: root,
+    GITHUB_STEP_SUMMARY: join(root, "summary"),
+    GITHUB_REPOSITORY: "openclaw/openclaw",
+    GITHUB_REF_NAME: "main",
+    GITHUB_REF: "refs/heads/main",
+    GITHUB_WORKFLOW_SHA: "a".repeat(40),
+    GITHUB_RUN_ID: "123",
+    GITHUB_RUN_ATTEMPT: "2",
+    PARENT_WORKFLOW_SHA: "a".repeat(40),
+    RELEASE_TAG: tag,
+    RELEASE_NPM_DIST_TAG: distTag,
+    SIGNED_RELEASE_TAG_OBJECT_SHA: signedTagObjectSha,
+    SOURCE_SHA: sourceSha,
+    TARGET_SHA: sourceSha,
   });
   const evidencePath = join(root, "core-finalization.json");
-  const calls = readFileSync(join(root, "calls"), "utf8")
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line) as string[]);
+  const calls = fixtureIO.readJsonLines<string[]>(join(root, "calls"));
   return {
     ...result,
     calls,
     nodeCalls: calls.filter(([binary]) => binary === "node"),
     summary: readFileSync(join(root, "summary"), "utf8"),
     evidence: existsSync(evidencePath)
-      ? (JSON.parse(readFileSync(evidencePath, "utf8")) as Record<string, unknown>)
+      ? (fixtureIO.readJson(evidencePath) as Record<string, unknown>)
       : undefined,
   };
 }
