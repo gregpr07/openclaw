@@ -6,7 +6,10 @@ const HttpUrlSchema = z.string().url().refine(isHttpUrl, "Expected http:// or ht
 const EnterpriseIssuerSchema = z
   .string()
   .url()
-  .refine((value) => isHttpsUrl(new URL(value)));
+  .refine((value) => {
+    const url = URL.parse(value);
+    return url !== null && isHttpsUrl(url);
+  }, "Expected https:// URL");
 const EnterpriseClientIdSchema = z.string().trim().min(1);
 const EnterpriseClientSecretSchema = z.string().min(1).register(sensitive);
 
@@ -66,8 +69,9 @@ export const McpServerSchema = z
           .string()
           .url()
           .refine((value) => {
-            const url = new URL(value);
+            const url = URL.parse(value);
             return (
+              url !== null &&
               url.protocol === "http:" &&
               ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) &&
               !url.username &&
