@@ -64,11 +64,7 @@ async function collectGatewayFixture(suite: FixtureSuite, signal: AbortSignal) {
   drainFixtureCleanup = async () => {
     const errors: unknown[] = [];
     while (cleanupHooks.length) {
-      try {
-        await cleanup();
-      } catch (error) {
-        errors.push(error);
-      }
+      await cleanup().catch((error: unknown) => errors.push(error));
     }
     if (errors.length) {
       throw new AggregateError(errors, "Gateway fixture recovery cleanup failed");

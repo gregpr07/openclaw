@@ -1,3 +1,4 @@
+import { expectDefined } from "@openclaw/normalization-core";
 import { expect } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { approveNodePairing, requestNodePairing } from "../infra/device-pairing-node.js";
@@ -20,13 +21,7 @@ export async function createTalkParityNodeFixture(
 ) {
   const prepared = await prepareNodeHostRuntime({
     config,
-    commands: [
-      "system.run",
-      "system.run.prepare",
-      "system.which",
-      "system.execApprovals.get",
-      "system.execApprovals.set",
-    ],
+    commands: expectDefined(config.gateway?.nodes?.commands?.allow, "parity node commands"),
     enableAgentRuns: false,
     installedAppsSharingEnabled: false,
     desktopSharingEnabled: false,

@@ -14,19 +14,15 @@ import { resetPersistentGatewaySessionStore } from "./test/persistent-session-st
 export type ChatSessionDirectoryOptions = { fresh?: boolean };
 export type StoredChatSessionEntry = Parameters<typeof writeSessionStore>[0]["entries"][string];
 
-export async function writeStoredMainSession(entry: StoredChatSessionEntry = {}) {
-  await writeSessionStore({
+export const writeStoredMainSession = (entry: StoredChatSessionEntry = {}) =>
+  writeSessionStore({
     entries: { main: { sessionId: "sess-main", updatedAt: Date.now(), ...entry } },
   });
-}
 
-export function futureFixtureUpdatedAt(): number {
-  return Date.now() + 60_000;
-}
+export const futureFixtureUpdatedAt = (): number => Date.now() + 60_000;
 
-export async function writeMainSessionStore(sessionId = "sess-main") {
-  await writeStoredMainSession({ sessionId, updatedAt: futureFixtureUpdatedAt() });
-}
+export const writeMainSessionStore = (sessionId = "sess-main") =>
+  writeStoredMainSession({ sessionId, updatedAt: futureFixtureUpdatedAt() });
 
 export async function prepareMainHistoryHarness(params: {
   ws: Parameters<typeof connectOk>[0];

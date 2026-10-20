@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import { afterAll, afterEach, expect, test, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import * as sessionHistoryWorkers from "../config/sessions/session-history-worker-runtime.js";
@@ -11,7 +10,7 @@ import {
   writePlugin,
 } from "../plugins/loader.test-fixtures.js";
 import type { PluginHookEndedTranscriptReadResult } from "../plugins/session-end-transcript.js";
-import { testState, writeSessionStore } from "./test-helpers.js";
+import { writeSessionStore } from "./test-helpers.js";
 import {
   directSessionReq,
   seedSessionTranscript,
@@ -51,12 +50,11 @@ module.exports = {
   id: ${JSON.stringify(pluginId)},
   name: ${JSON.stringify(pluginId)},
   register(api) {
-    api.on("session_end", async (_event, context) => {
+    api.on("session_end", async (_event, { endedTranscript }) => {
       try {
-        const transcript = context.endedTranscript;
-        const result = transcript?.available
-          ? await transcript.readTail({ maxMessages: 10, maxBytes: 4 * 1024 })
-          : transcript;
+        const result = endedTranscript?.available
+          ? await endedTranscript.readTail({ maxMessages: 10, maxBytes: 4 * 1024 })
+          : endedTranscript;
         globalThis[resultKey]?.resolve(result);
       } catch (error) {
         globalThis[resultKey]?.reject(error);
@@ -70,9 +68,7 @@ module.exports = {
 }
 
 test("sessions.reset delivers the ended SQLite window only to a loaded granted plugin", async () => {
-  await createSessionStoreDir();
-  const storePath = testState.sessionStorePath;
-  assert(typeof storePath === "string", "expected test session store path");
+  const { storePath } = await createSessionStoreDir();
   await writeSessionStore({ entries: { main: sessionStoreEntry("sess-main") } });
   const latestEndedContent = "latest ended interval ".padEnd(3_600, "x");
   const seed = (content: string, id: string) =>

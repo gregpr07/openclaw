@@ -2,6 +2,7 @@ import { once } from "node:events";
 import path from "node:path";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
+import { closeGatewayTestWebSocket } from "../../test/helpers/gateway-websocket.js";
 import { createTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { acquireTestPortBlock } from "../test-utils/port-claims.js";
 import {
@@ -105,10 +106,8 @@ afterAll(async () => {
   const result = await owner
     .stop()
     .catch((error: unknown) => ({ process: "failed", errors: [error] }));
-  if (observer && observer.readyState !== WebSocket.CLOSED) {
-    const closed = once(observer, "close");
-    observer.terminate();
-    await closed;
+  if (observer) {
+    await closeGatewayTestWebSocket(observer);
   }
   await backend?.close().catch((error: unknown) => result.errors.push(error));
   dirs.cleanup();
@@ -129,12 +128,11 @@ it("does not replay a committed create after losing its response", async () => {
   await expect.soft(request).rejects.toThrow("gateway closed (1006");
   await expect.soft(request).rejects.not.toThrow("label already in use");
   const { events } = await control();
-  expect(events.filter((event) => event.kind === "response-dropped")).toHaveLength(1);
+  const ofKind = (kind: string) => events.filter((event) => event.kind === kind);
+  expect(ofKind("response-dropped")).toHaveLength(1);
   expect(child.pid).toBe(childPid);
-  expect.soft(events.filter((event) => event.kind === "mutation-request")).toHaveLength(1);
-  const keys = events
-    .filter((event) => event.kind === "mutation-success")
-    .map((event) => event.key);
+  expect.soft(ofKind("mutation-request")).toHaveLength(1);
+  const keys = ofKind("mutation-success").map((event) => event.key);
   expect.soft(keys).toHaveLength(1);
   for (const key of keys) {
     expect(typeof key).toBe("string");
