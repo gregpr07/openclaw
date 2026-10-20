@@ -1,4 +1,3 @@
-import type { Model } from "@openclaw/llm-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   normalizeResponsesFailedEvent,
@@ -6,12 +5,14 @@ import {
   summarizeResponsesPayload,
   summarizeOpenAITransportError,
 } from "./openai-responses-debug.js";
+import { createModel } from "./openai-responses-prompt-observer.test-support.js";
 
-const failedEventModel = {
-  provider: "openai",
-  api: "openai-responses",
-  id: "gpt-5.6-luna",
-} as unknown as Model;
+const failedEventModel = createModel({ id: "gpt-5.6-luna" });
+const failedResponse = (error: { message: string; code?: string }) =>
+  normalizeResponsesFailedEvent(
+    { response: { id: "resp_failed", status: "failed", error } },
+    failedEventModel,
+  );
 
 describe("OpenAI Responses payload debug summary", () => {
   afterEach(() => vi.unstubAllEnvs());
@@ -136,41 +137,21 @@ describe("OpenAI Responses payload debug summary", () => {
 });
 
 describe("normalizeResponsesFailedEvent", () => {
-  it("preserves the structured provider error code on the failure and ResponsesStreamFailure (#117609)", () => {
-    const summary = normalizeResponsesFailedEvent(
-      {
-        response: {
-          id: "resp_failed",
-          status: "failed",
-          error: { code: "server_error", message: "provider failed" },
-        },
-      },
-      failedEventModel,
-    );
-    // The prose message still embeds the code, but the structured code is now
-    // preserved so downstream failover classification routes on it instead of
-    // guessing from the prose.
-    expect(summary.code).toBe("server_error");
-    expect(summary.message).toBe("server_error: provider failed");
-    expect(summary.responseId).toBe("resp_failed");
+  it("preserves structured failure codes for failover (#117609)", () => {
+    const summary = failedResponse({ code: "server_error", message: "provider failed" });
+    const expected = {
+      code: "server_error",
+      message: "server_error: provider failed",
+      responseId: "resp_failed",
+    };
+    expect(summary).toMatchObject(expected);
 
     const failure = new ResponsesStreamFailure(summary, undefined);
-    expect(failure.code).toBe("server_error");
-    expect(failure.message).toBe("server_error: provider failed");
-    expect(failure.responseId).toBe("resp_failed");
+    expect(failure).toMatchObject(expected);
   });
 
   it("omits code when the failed response has no error code", () => {
-    const summary = normalizeResponsesFailedEvent(
-      {
-        response: {
-          id: "resp_failed",
-          status: "failed",
-          error: { message: "provider failed" },
-        },
-      },
-      failedEventModel,
-    );
+    const summary = failedResponse({ message: "provider failed" });
     expect(summary.code).toBeUndefined();
     expect(summary.message).toBe("unknown: provider failed");
   });

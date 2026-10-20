@@ -1,22 +1,17 @@
 import { createServer } from "node:http";
-import type { Model } from "@openclaw/llm-core";
 import OpenAI from "openai";
 import { expect, vi } from "vitest";
 import { WebSocketServer } from "ws";
 import { cleanupSessionResources } from "../session-resources.js";
+import { createModel } from "./openai-responses-prompt-observer.test-support.js";
 
-export const responsesLoopbackModel = {
+export const responsesLoopbackModel = createModel({
   id: "scripted-model",
   name: "Scripted Model",
-  api: "openai-responses",
-  provider: "openai",
-  baseUrl: "https://api.openai.com/v1",
   reasoning: false,
-  input: ["text"],
-  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   contextWindow: 8192,
   maxTokens: 256,
-} satisfies Model<"openai-responses">;
+});
 
 export async function createResponsesLoopbackServer(events: (turn: number) => unknown[]) {
   const requests: Array<Record<string, unknown>> = [];

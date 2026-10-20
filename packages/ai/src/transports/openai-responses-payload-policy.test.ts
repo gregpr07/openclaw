@@ -4,6 +4,12 @@ import {
   resolveOpenAIResponsesServerCompactionPlan,
 } from "./openai-responses-payload-policy.js";
 
+const nativeModel = {
+  provider: "openai",
+  api: "openai-responses",
+  baseUrl: "https://api.openai.com/v1",
+};
+
 describe("OpenAI Responses request context", () => {
   it.each([
     { fastMode: undefined, expected: 260_000 },
@@ -45,9 +51,7 @@ describe("OpenAI Responses compact threshold", () => {
     expect(
       resolveOpenAIResponsesServerCompactionPlan(
         {
-          provider: "openai",
-          api: "openai-responses",
-          baseUrl: "https://api.openai.com/v1",
+          ...nativeModel,
           contextWindow: 1_050_000,
           contextTokens: 922_000,
         },
@@ -58,73 +62,35 @@ describe("OpenAI Responses compact threshold", () => {
 
   it("keeps disabled compaction disabled under Ultrafast", () => {
     expect(
-      resolveOpenAIResponsesServerCompactionPlan(
-        {
-          provider: "openai",
-          api: "openai-responses",
-          baseUrl: "https://api.openai.com/v1",
-        },
-        { fastMode: "ultrafast", responsesServerCompaction: false },
-      ),
+      resolveOpenAIResponsesServerCompactionPlan(nativeModel, {
+        fastMode: "ultrafast",
+        responsesServerCompaction: false,
+      }),
     ).toEqual({ enabled: false, threshold: undefined });
   });
 
   it.each([
-    {
-      name: "uses the active runtime cap for the direct Sol route",
-      model: { contextWindow: 1_050_000, contextTokens: 272_000 },
-      expected: 190_400,
-    },
-    {
-      name: "keeps window-only behavior",
-      model: { contextWindow: 400_000 },
-      expected: 280_000,
-    },
-    {
-      name: "honors an explicit threshold",
-      model: { contextWindow: 1_050_000, contextTokens: 272_000 },
-      extraParams: { responsesCompactThreshold: 123_456 },
-      expected: 123_456,
-    },
-    {
-      name: "uses the fallback without a known budget",
-      model: {},
-      expected: 80_000,
-    },
-    {
-      name: "floors a positive numeric threshold",
-      model: {},
-      extraParams: { responsesCompactThreshold: 123_456.9 },
-      expected: 123_456,
-    },
-    {
-      name: "accepts a strict positive integer string threshold",
-      model: {},
-      extraParams: { responsesCompactThreshold: "123456" },
-      expected: 123_456,
-    },
-    {
-      name: "rejects a fractional string threshold",
-      model: {},
-      extraParams: { responsesCompactThreshold: "123456.9" },
-      expected: 80_000,
-    },
-    {
-      name: "rejects a nonfinite threshold",
-      model: {},
-      extraParams: { responsesCompactThreshold: Number.POSITIVE_INFINITY },
-      expected: 80_000,
-    },
-  ])("$name", ({ model, extraParams, expected }) => {
+    [
+      "active runtime cap",
+      { contextWindow: 1_050_000, contextTokens: 272_000 },
+      undefined,
+      190_400,
+    ],
+    ["window-only", { contextWindow: 400_000 }, undefined, 280_000],
+    ["explicit threshold", { contextWindow: 1_050_000, contextTokens: 272_000 }, 123_456, 123_456],
+    ["unknown budget", {}, undefined, 80_000],
+    ["floor numeric threshold", {}, 123_456.9, 123_456],
+    ["integer string", {}, "123456", 123_456],
+    ["fractional string", {}, "123456.9", 80_000],
+    ["nonfinite threshold", {}, Number.POSITIVE_INFINITY, 80_000],
+  ] as const)("resolves %s", (_name, model, responsesCompactThreshold, expected) => {
     expect(
       resolveOpenAIResponsesServerCompactionPlan(
         {
-          provider: "openai",
-          api: "openai-responses",
-          baseUrl: "https://api.openai.com/v1",
+          ...nativeModel,
           ...model,
         },
-        extraParams,
+        responsesCompactThreshold === undefined ? undefined : { responsesCompactThreshold },
       ).threshold,
     ).toBe(expected);
   });

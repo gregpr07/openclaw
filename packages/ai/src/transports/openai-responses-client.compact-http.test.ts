@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import type { Context, Model } from "@openclaw/llm-core";
+import type { Context } from "@openclaw/llm-core";
 import OpenAI from "openai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
@@ -7,6 +7,7 @@ import { configureAiTransportHost, getAiTransportHost } from "../host.js";
 import { createOpenAIResponsesTransportStreamFn } from "./openai-responses-client.js";
 import { requestPreparedOpenAIResponsesCompaction } from "./openai-responses-compact-request.js";
 import { createBoundedOpenAIResponsesCompactionFetch } from "./openai-responses-compaction-window.js";
+import { createModel } from "./openai-responses-prompt-observer.test-support.js";
 
 const initialHost = getAiTransportHost();
 afterEach(() => configureAiTransportHost(initialHost));
@@ -58,10 +59,9 @@ describe("prepared Responses compaction HTTP lifetime", () => {
       },
       cancel,
     });
-    const boundedFetch = createBoundedOpenAIResponsesCompactionFetch(
+    const response = await createBoundedOpenAIResponsesCompactionFetch(
       async () => new Response(body),
-    );
-    const response = await boundedFetch("https://synthetic.invalid/compact");
+    )("https://synthetic.invalid/compact");
     await expect(response.json()).rejects.toThrow("response exceeds 16 MiB");
     expect(cancel).toHaveBeenCalledOnce();
     expect(body.locked).toBe(false);
@@ -88,8 +88,7 @@ describe("prepared Responses compaction HTTP lifetime", () => {
         requestPaths.push(request.url ?? "");
         request.resume();
         if (mode === "status-error") {
-          // retry-after-ms hint present on purpose: the SDK must still surface
-          // the failure on the first attempt instead of retrying internally.
+          // Retry hints must not cause SDK-owned retries.
           response.writeHead(503, { "content-type": "application/json", "retry-after-ms": "1" });
           response.end(JSON.stringify({ error: { message: "synthetic 503 failure" } }));
           return;
@@ -101,7 +100,7 @@ describe("prepared Responses compaction HTTP lifetime", () => {
         } else if (mode === "success") {
           response.end(JSON.stringify(compacted));
         } else {
-          // Headers arrive promptly; only SDK body parsing can enforce this deadline.
+          // Only body parsing can enforce the deadline after headers arrive.
           response.write('{"object":"response.compaction","output":[');
         }
       });
@@ -115,26 +114,22 @@ describe("prepared Responses compaction HTTP lifetime", () => {
       }, 2_000);
       try {
         if (deadlineCase) {
-          // Start the deadline only after the real HTTP exchange reaches its stalled
-          // body; cold connection setup must not consume this body-lifetime proof.
+          // Exclude cold connection setup from the body-lifetime deadline.
           vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
         }
         const address = server.address();
         if (!address || typeof address === "string") {
           throw new Error("Missing loopback address");
         }
-        const model = {
+        const model = createModel({
           id: "synthetic-model",
           name: "Synthetic model",
           provider: "synthetic-provider",
-          api: "openai-responses",
           baseUrl: `http://127.0.0.1:${address.port}/v1`,
           reasoning: false,
-          input: ["text"],
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
           contextWindow: 100_000,
           maxTokens: 1_000,
-        } satisfies Model;
+        });
         const outcome = requestPreparedOpenAIResponsesCompaction(
           createOpenAIResponsesTransportStreamFn(),
           model,
@@ -166,8 +161,7 @@ describe("prepared Responses compaction HTTP lifetime", () => {
           expect(result.value?.output).toEqual(compacted.output);
         }
         expect(watchdogFired).toBe(false);
-        // Exactly one request per mode: the embedded runner owns transient
-        // retries, so the SDK never re-issues a failed compaction call.
+        // The embedded runner, not the SDK, owns retries.
         expect(requestPaths).toEqual(["/v1/responses/compact"]);
       } finally {
         vi.useRealTimers();
