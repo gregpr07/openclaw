@@ -114,7 +114,13 @@ describe("host-owned update notices", () => {
       expect(result).toEqual({ delivered: !replaced, owned: !replaced });
       const notices = await messages();
       expect(notices).toMatchObject(
-        replaced ? [] : [assistantMessage(renderUpdateRunNotice(run, "parking"))],
+        replaced
+          ? []
+          : [
+              assistantMessage(
+                expectDefined(renderUpdateRunNotice(run, "parking"), "parking notice"),
+              ),
+            ],
       );
       if (!replaced) {
         expect(getUpdateRun(run.runId)?.steps).toContainEqual(

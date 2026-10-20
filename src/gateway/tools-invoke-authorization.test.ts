@@ -22,11 +22,10 @@ import {
 } from "./tools-invoke-http.test-support.js";
 import { invokeGatewayTool } from "./tools-invoke-shared.js";
 
-type FixtureTool = {
-  name: string;
-  parameters: object;
-  execute: (...args: Parameters<AnyAgentTool["execute"]>) => Promise<unknown>;
-};
+type FixtureTool = Pick<AnyAgentTool, "name" | "parameters"> &
+  Partial<Pick<AnyAgentTool, "label" | "description">> & {
+    execute: (...args: Parameters<AnyAgentTool["execute"]>) => Promise<unknown>;
+  };
 const runtime = vi.hoisted(() => {
   const execute = vi.fn(async () => ({ ok: true }));
   return {

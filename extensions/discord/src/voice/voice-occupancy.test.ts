@@ -100,13 +100,14 @@ defineDiscordVoiceTests((h) => {
 
   it("returns the joined channel title without another channel lookup or starting realtime", async () => {
     const { manager, client } = fixture();
-    client.fetchChannel.mockResolvedValue({
+    const channel = {
       id: "1001",
       guildId: "g1",
       guild: { id: "g1", name: "Guild One" },
       type: h.ChannelType.GuildVoice,
       name: "Planning room",
-    });
+    };
+    client.fetchChannel.mockResolvedValue(channel);
     const result = await h.startTranscripts(manager, vi.fn(), "notes", "1001", "primary");
     expect(result).toMatchObject({ ok: true, session: { title: "Planning room" } });
     expect(client.fetchChannel).toHaveBeenCalledExactlyOnceWith("1001");

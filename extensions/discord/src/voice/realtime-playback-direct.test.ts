@@ -40,7 +40,9 @@ async function createDirectPlaybackFixture() {
       audio.off("event", capture);
       listeners.forEach((listener) => audio.on("event", listener));
     };
-    onTestFinished(() => audio.off("event", capture));
+    onTestFinished(() => {
+      audio.off("event", capture);
+    });
     return { delayed, restore };
   };
   return { fixture, audio, output, sender, send, retain, done, captureEvents };

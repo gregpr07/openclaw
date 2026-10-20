@@ -44,7 +44,7 @@ describe.skipIf(process.platform === "win32")("runtime pin executable boundary",
     ["malformed output", 'process.stdout.write("{}");', /check failed/],
     ["oversized output", 'process.stdout.write("x".repeat(2 * 1024 * 1024));', /check failed/],
     ["mismatched family", 'throw new Error("must not execute");', /must name a node/, "bun"],
-  ] as const)("refuses %s without replacement", async (_name, script, error, name) => {
+  ] as const)("refuses %s without replacement", async (_name, script, error, name?: string) => {
     const file = runtimeFixture(script, name ?? "node");
     await expect(probe(file)).rejects.toThrow(error);
   });

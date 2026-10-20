@@ -16,11 +16,11 @@ vi.mock("./tool-resolution.js", () => ({ resolveGatewayScopedTools: resolveTools
 import { mintAttachGrant, revokeAttachGrant } from "./mcp-grant-store.js";
 import * as mcp from "./mcp-http.test-support.js";
 
-const completed = { content: [{ type: "text", text: "authority inspected" }] };
+const completed = { content: [{ type: "text" as const, text: "authority inspected" }] };
 const activeRuntime = mcp.useLoopbackServerForTest();
 const execute = vi.fn(async () => {
   expect(getGatewayToolCallerIdentity()?.operatorAuthority).toBeUndefined();
-  return completed;
+  return { ...completed, details: {} };
 });
 
 async function sendRequest(token: string, method: "tools/list" | "tools/call") {

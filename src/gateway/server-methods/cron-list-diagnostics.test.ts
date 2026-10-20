@@ -13,12 +13,14 @@ import { startCronListDiagnostics } from "./cron-list-diagnostics.js";
 
 let clock = 0;
 const warn = vi.fn();
+const readClock = vi.fn(() => clock);
 beforeEach(() => {
   const previousDiagnostics = areDiagnosticsEnabledForProcess();
   clock = 0;
   warn.mockReset();
+  readClock.mockClear();
   setDiagnosticsEnabledForProcess(true);
-  vi.spyOn(performance, "now").mockImplementation(() => clock);
+  vi.spyOn(performance, "now").mockImplementation(readClock);
   return () => {
     setDiagnosticsEnabledForProcess(previousDiagnostics);
     vi.restoreAllMocks();
@@ -30,7 +32,7 @@ const start = () => startCronListDiagnostics({ warn }, vi.fn())!;
 test("disabled cron list diagnostics do not start clocks", () => {
   setDiagnosticsEnabledForProcess(false);
   expect(startCronListDiagnostics({ warn }, vi.fn())).toBeUndefined();
-  expect(performance.now).not.toHaveBeenCalled();
+  expect(readClock).not.toHaveBeenCalled();
   expect(warn).not.toHaveBeenCalled();
 });
 

@@ -324,7 +324,7 @@ it.for([
     const previous = native.command;
     const runtime = requiresRunning ? bundledPin.path : "/retained/node";
     const programArguments = [runtime, "/app/openclaw.mjs", "gateway"];
-    const runtimePinUpdate = {
+    const runtimePinUpdate: DaemonRuntimePinUpdate = {
       expected,
       ...(pinned
         ? { pin: fresh ? args.runtimePinUpdate.pin : bundledPin }
