@@ -1,6 +1,28 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buzzSetupContract } from "./setup-core.js";
+import type { BuzzConfigInput } from "./config-schema.js";
+import { buzzSetupContract as setup } from "./setup-core.js";
+
+const RELAY_URL = "wss://buzz.example.com";
+const AUTH_TAG = '["auth","owner","kind=9","signature"]';
+const envInput = { relayUrl: RELAY_URL, useEnv: true };
+type SetupInput = Parameters<typeof setup.applyAccountConfig>[0]["input"];
+
+function identity(name: string, key: string) {
+  return { name, relayUrl: `wss://${name.toLowerCase()}.example.com`, privateKey: key.repeat(32) };
+}
+
+function config(buzz: BuzzConfigInput): OpenClawConfig {
+  return { channels: { buzz } };
+}
+
+function resolveAccount(cfg: OpenClawConfig, input: SetupInput) {
+  return setup.resolveAccountId?.({ cfg, accountId: "ada", input }) ?? "ada";
+}
+
+function apply(cfg: OpenClawConfig, input: SetupInput, accountId = "default") {
+  return setup.applyAccountConfig({ cfg, accountId, input });
+}
 
 describe("buzzSetupContract", () => {
   afterEach(() => {
@@ -12,27 +34,18 @@ describe("buzzSetupContract", () => {
       enabled: false,
       relayUrl: "wss://original.example.com",
       privateKey: { source: "env" as const, provider: "default", id: "BUZZ_EXISTING_KEY" },
-      authTag: '["auth","owner","kind=9","signature"]',
+      authTag: AUTH_TAG,
     };
-    const cfg = { channels: { buzz } } as OpenClawConfig;
+    const cfg = config(buzz);
     const input = {
       relayUrl: "wss://new.example.com",
       privateKey: "22".repeat(32),
     };
-    const requestedAccountId = "ada";
-    const resolvedAccountId =
-      buzzSetupContract.resolveAccountId?.({ cfg, accountId: requestedAccountId, input }) ??
-      requestedAccountId;
+    const resolvedAccountId = resolveAccount(cfg, input);
 
-    expect(resolvedAccountId).toBe(requestedAccountId);
-    expect(
-      buzzSetupContract.validateInput?.({ cfg, accountId: resolvedAccountId, input }),
-    ).toBeNull();
-    const result = buzzSetupContract.applyAccountConfig({
-      cfg,
-      accountId: resolvedAccountId,
-      input,
-    });
+    expect(resolvedAccountId).toBe("ada");
+    expect(setup.validateInput?.({ cfg, accountId: resolvedAccountId, input })).toBeNull();
+    const result = apply(cfg, input, resolvedAccountId);
     expect(result.channels?.buzz).toEqual({
       ...buzz,
       accounts: { ada: { enabled: true, ...input } },
@@ -46,17 +59,14 @@ describe("buzzSetupContract", () => {
     const buzz = {
       enabled: false,
       relayUrl: "wss://original.example.com",
-      authTag: '["auth","owner","kind=9","signature"]',
+      authTag: AUTH_TAG,
     };
-    const cfg = { channels: { buzz } } as OpenClawConfig;
+    const cfg = config(buzz);
     const input = { relayUrl: "wss://new.example.com", useEnv: true };
-    const requestedAccountId = "ada";
-    const resolvedAccountId =
-      buzzSetupContract.resolveAccountId?.({ cfg, accountId: requestedAccountId, input }) ??
-      requestedAccountId;
+    const resolvedAccountId = resolveAccount(cfg, input);
 
-    expect(resolvedAccountId).toBe(requestedAccountId);
-    expect(buzzSetupContract.validateInput?.({ cfg, accountId: resolvedAccountId, input })).toBe(
+    expect(resolvedAccountId).toBe("ada");
+    expect(setup.validateInput?.({ cfg, accountId: resolvedAccountId, input })).toBe(
       "Buzz --use-env is only supported for the root default identity; use an explicit private key or SecretRef for this account.",
     );
     expect(cfg.channels?.buzz).toEqual(buzz);
@@ -64,26 +74,15 @@ describe("buzzSetupContract", () => {
   });
 
   it("renames and reconfigures the explicit default identity without changing siblings", () => {
-    const root = {
-      name: "Root",
-      relayUrl: "wss://root.example.com",
-      privateKey: "11".repeat(32),
-    };
-    const ada = { name: "Ada", relayUrl: "wss://ada.example.com", privateKey: "22".repeat(32) };
-    const explicitDefault = {
-      name: "Default",
-      relayUrl: "wss://default.example.com",
-      privateKey: "33".repeat(32),
-    };
-    const accounts = { ada, default: explicitDefault };
-    const cfg = { channels: { buzz: { ...root, accounts } } } as OpenClawConfig;
+    const root = identity("Root", "11");
+    const accounts = { ada: identity("Ada", "22"), default: identity("Default", "33") };
+    const cfg = config({ ...root, accounts });
     const before = structuredClone(cfg);
     const accountId = "default";
-    const renamed = buzzSetupContract.applyAccountName!({ cfg, accountId, name: " Renamed " });
-    const result = buzzSetupContract.applyAccountConfig({
-      cfg: renamed,
-      accountId,
-      input: { relayUrl: "wss://new.example.com", privateKey: "44".repeat(32) },
+    const renamed = setup.applyAccountName!({ cfg, accountId, name: " Renamed " });
+    const result = apply(renamed, {
+      relayUrl: "wss://new.example.com",
+      privateKey: "44".repeat(32),
     });
     const patch = {
       name: "Renamed",
@@ -100,53 +99,37 @@ describe("buzzSetupContract", () => {
 
   it("validates and applies BUZZ_PRIVATE_KEY setup without storing the key", () => {
     expect(
-      buzzSetupContract.validateInput?.({
+      setup.validateInput?.({
         cfg: {},
         accountId: "default",
-        input: { relayUrl: "wss://buzz.example.com", useEnv: true },
+        input: envInput,
       }),
     ).toBeNull();
     vi.stubEnv("BUZZ_PRIVATE_KEY", "22".repeat(32));
-    const cfg = {
-      channels: {
-        buzz: {
-          enabled: true,
-          relayUrl: "wss://old.example.com",
-          privateKey: "11".repeat(32),
-        },
-      },
-    } as OpenClawConfig;
-
-    const result = buzzSetupContract.applyAccountConfig({
-      cfg,
-      accountId: "default",
-      input: { relayUrl: "wss://buzz.example.com", useEnv: true, name: " Environment bot " },
+    const cfg = config({
+      enabled: true,
+      relayUrl: "wss://old.example.com",
+      privateKey: "11".repeat(32),
     });
+
+    const result = apply(cfg, { ...envInput, name: " Environment bot " });
 
     expect(result.channels?.buzz).toEqual({
       name: "Environment bot",
       enabled: true,
-      relayUrl: "wss://buzz.example.com",
+      relayUrl: RELAY_URL,
     });
   });
 
   it("clears an auth tag when replacing an unresolved SecretRef with the environment", () => {
     vi.stubEnv("BUZZ_PRIVATE_KEY", "22".repeat(32));
-    const cfg = {
-      channels: {
-        buzz: {
-          relayUrl: "wss://buzz.example.com",
-          privateKey: { source: "env", provider: "default", id: "OTHER_BUZZ_KEY" },
-          authTag: '["auth","owner","kind=9","signature"]',
-        },
-      },
-    } as OpenClawConfig;
-
-    const result = buzzSetupContract.applyAccountConfig({
-      cfg,
-      accountId: "default",
-      input: { relayUrl: "wss://buzz.example.com", useEnv: true },
+    const cfg = config({
+      relayUrl: RELAY_URL,
+      privateKey: { source: "env", provider: "default", id: "OTHER_BUZZ_KEY" },
+      authTag: AUTH_TAG,
     });
+
+    const result = apply(cfg, envInput);
 
     expect(result.channels?.buzz?.privateKey).toBeUndefined();
     expect(result.channels?.buzz?.authTag).toBeUndefined();

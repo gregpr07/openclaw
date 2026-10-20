@@ -2,6 +2,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createRuntimeSpies } from "../../test-support/runtime-spies.js";
 
 const mocks = vi.hoisted(() => ({ callGatewayFromCli: vi.fn() }));
+const ROOM_ID = "7c4a6d2a-2ed9-4b4e-a5e2-4d705ee9b34c";
+
+function gatewayClosed(message: string) {
+  return Object.assign(new Error(message), {
+    name: "GatewayTransportError",
+    kind: "closed",
+    code: 1006,
+  });
+}
+
+function savedConfigThen(status: unknown) {
+  mocks.callGatewayFromCli
+    .mockResolvedValueOnce({ appliedConfigHash: "saved", configRevisionHash: "saved" })
+    .mockResolvedValueOnce(status);
+}
 
 vi.mock("openclaw/plugin-sdk/gateway-runtime", () => ({
   callGatewayFromCli: mocks.callGatewayFromCli,
@@ -12,7 +27,7 @@ async function verify() {
   const { verifyBuzzAfterSetup } = await import("./setup-verify.js");
   await verifyBuzzAfterSetup({
     accountId: "default",
-    target: "7c4a6d2a-2ed9-4b4e-a5e2-4d705ee9b34c",
+    target: ROOM_ID,
     runtime,
   });
   return runtime;
@@ -24,51 +39,26 @@ describe("verifyBuzzAfterSetup", () => {
   });
 
   it("verifies authenticated Buzz membership without sending a message", async () => {
-    mocks.callGatewayFromCli
-      .mockResolvedValueOnce({
-        appliedConfigHash: "saved",
-        configRevisionHash: "saved",
-      })
-      .mockResolvedValueOnce({
-        channelAccounts: {
-          buzz: [
-            {
-              accountId: "default",
-              probe: {
-                ok: true,
-                rooms: [{ id: "7c4a6d2a-2ed9-4b4e-a5e2-4d705ee9b34c" }],
-              },
-            },
-          ],
-        },
-      });
+    savedConfigThen({
+      channelAccounts: {
+        buzz: [{ accountId: "default", probe: { ok: true, rooms: [{ id: ROOM_ID }] } }],
+      },
+    });
     await verify();
 
-    expect(mocks.callGatewayFromCli).toHaveBeenCalledTimes(2);
-    expect(mocks.callGatewayFromCli.mock.calls[0]?.[0]).toBe("config.get");
-    expect(mocks.callGatewayFromCli.mock.calls[1]?.[0]).toBe("channels.status");
+    expect(mocks.callGatewayFromCli.mock.calls.map(([method]) => method)).toEqual([
+      "config.get",
+      "channels.status",
+    ]);
     expect(mocks.callGatewayFromCli.mock.calls[1]?.[2]).toEqual({
       channel: "buzz",
       probe: true,
       timeoutMs: 10_000,
     });
-    expect(mocks.callGatewayFromCli).not.toHaveBeenCalledWith(
-      "send",
-      expect.anything(),
-      expect.anything(),
-      expect.anything(),
-    );
   });
 
   it("reports when the authenticated probe is unavailable", async () => {
-    mocks.callGatewayFromCli
-      .mockResolvedValueOnce({
-        appliedConfigHash: "saved",
-        configRevisionHash: "saved",
-      })
-      .mockResolvedValueOnce({
-        channelAccounts: { buzz: [{ accountId: "default" }] },
-      });
+    savedConfigThen({ channelAccounts: { buzz: [{ accountId: "default" }] } });
     const runtime = await verify();
 
     expect(mocks.callGatewayFromCli).toHaveBeenCalledTimes(2);
@@ -78,13 +68,7 @@ describe("verifyBuzzAfterSetup", () => {
   });
 
   it("prints the exact start command when the Gateway is stopped", async () => {
-    mocks.callGatewayFromCli.mockRejectedValue(
-      Object.assign(new Error("gateway closed (1006): no listener"), {
-        name: "GatewayTransportError",
-        kind: "closed",
-        code: 1006,
-      }),
-    );
+    mocks.callGatewayFromCli.mockRejectedValue(gatewayClosed("gateway closed (1006): no listener"));
     const runtime = await verify();
 
     expect(runtime.log).toHaveBeenCalledWith(
@@ -94,11 +78,7 @@ describe("verifyBuzzAfterSetup", () => {
 
   it("keeps the verification error for an unrelated abnormal Gateway closure", async () => {
     mocks.callGatewayFromCli.mockRejectedValue(
-      Object.assign(new Error("gateway connection dropped during verification"), {
-        name: "GatewayTransportError",
-        kind: "closed",
-        code: 1006,
-      }),
+      gatewayClosed("gateway connection dropped during verification"),
     );
     const runtime = await verify();
 

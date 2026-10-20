@@ -1,7 +1,18 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createResolverContext } from "openclaw/plugin-sdk/secret-ref-runtime";
 import { describe, expect, it } from "vitest";
+import type { BuzzConfigInput } from "./config-schema.js";
 import { collectRuntimeConfigAssignments, secretTargetRegistryEntries } from "./secret-contract.js";
+
+function buzzConfig(buzz: BuzzConfigInput): OpenClawConfig {
+  return { channels: { buzz } };
+}
+
+function collect(sourceConfig: OpenClawConfig, config = sourceConfig) {
+  const context = createResolverContext({ sourceConfig, env: {} });
+  collectRuntimeConfigAssignments({ config, defaults: undefined, context });
+  return context;
+}
 
 describe("Buzz secret contract", () => {
   it("publishes Buzz credential targets", () => {
@@ -18,23 +29,18 @@ describe("Buzz secret contract", () => {
     { explicitDefault: true, enabled: true, owners: ["buzz:ada"] },
     { explicitDefault: false, enabled: false, owners: [] },
   ])("isolates active credential owners: %j", ({ explicitDefault, enabled, owners }) => {
-    const ref = (id: string) => ({ source: "env", provider: "default", id });
-    const sourceConfig = {
-      channels: {
-        buzz: {
-          enabled,
-          privateKey: ref("ROOT_KEY"),
-          accounts: {
-            ...(explicitDefault ? { default: {} } : {}),
-            ada: { privateKey: ref("ADA_KEY") },
-            paused: { enabled: false, privateKey: ref("PAUSED_KEY") },
-          },
-        },
+    const ref = (id: string) => ({ source: "env" as const, provider: "default", id });
+    const sourceConfig = buzzConfig({
+      enabled,
+      privateKey: ref("ROOT_KEY"),
+      accounts: {
+        ...(explicitDefault ? { default: {} } : {}),
+        ada: { privateKey: ref("ADA_KEY") },
+        paused: { enabled: false, privateKey: ref("PAUSED_KEY") },
       },
-    } as OpenClawConfig;
+    });
     const config = structuredClone(sourceConfig);
-    const context = createResolverContext({ sourceConfig, env: {} });
-    collectRuntimeConfigAssignments({ config, defaults: undefined, context });
+    const context = collect(sourceConfig, config);
     expect(context.assignments.map((assignment) => assignment.ownerId)).toEqual(owners);
     for (const assignment of context.assignments) {
       expect(assignment).toMatchObject({ requiredForGateway: false, disposition: "isolate" });
@@ -49,26 +55,20 @@ describe("Buzz secret contract", () => {
   });
 
   it("binds recovery to only the selected identity and its effective policy", () => {
-    const sourceConfig = {
-      channels: {
-        buzz: {
-          privateKey: "root-key",
-          groupPolicy: "open",
-          accounts: {
-            ada: {
-              relayUrl: "wss://ada.example.com",
-              privateKey: { source: "env", provider: "default", id: "ADA_KEY" },
-            },
-            grace: { privateKey: "grace-key" },
-          },
+    const sourceConfig = buzzConfig({
+      privateKey: "root-key",
+      groupPolicy: "open",
+      accounts: {
+        ada: {
+          relayUrl: "wss://ada.example.com",
+          privateKey: { source: "env", provider: "default", id: "ADA_KEY" },
         },
+        grace: { privateKey: "grace-key" },
       },
-    } as OpenClawConfig;
-    const digest = (config: OpenClawConfig) => {
-      const context = createResolverContext({ sourceConfig: config, env: {} });
-      collectRuntimeConfigAssignments({ config, defaults: undefined, context });
-      return context.assignments.find((entry) => entry.ownerId === "buzz:ada")?.ownerContractDigest;
-    };
+    });
+    const digest = (config: OpenClawConfig) =>
+      collect(config).assignments.find((entry) => entry.ownerId === "buzz:ada")
+        ?.ownerContractDigest;
     const baseline = digest(sourceConfig);
     expect(baseline).toBeTypeOf("string");
     const otherIdentity = structuredClone(sourceConfig);
@@ -85,23 +85,13 @@ describe("Buzz secret contract", () => {
   });
 
   it("collects configured Buzz SecretRefs", () => {
-    const sourceConfig = {
-      channels: {
-        buzz: {
-          enabled: true,
-          relayUrl: "wss://buzz.example.com",
-          privateKey: { source: "file", provider: "vault", id: "/buzz/private-key" },
-          authTag: { source: "exec", provider: "vault", id: "buzz-auth-tag" },
-        },
-      },
-    } as OpenClawConfig;
-    const context = createResolverContext({ sourceConfig, env: {} });
-
-    collectRuntimeConfigAssignments({
-      config: structuredClone(sourceConfig),
-      defaults: undefined,
-      context,
+    const sourceConfig = buzzConfig({
+      enabled: true,
+      relayUrl: "wss://buzz.example.com",
+      privateKey: { source: "file", provider: "vault", id: "/buzz/private-key" },
+      authTag: { source: "exec", provider: "vault", id: "buzz-auth-tag" },
     });
+    const context = collect(sourceConfig, structuredClone(sourceConfig));
 
     expect(context.assignments.map(({ path, ref }) => ({ path, ref }))).toEqual([
       {
