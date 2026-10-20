@@ -117,10 +117,12 @@ export function createRealtimePlaybackFixture(
       },
     });
     const cancel = vi.spyOn(harness, "handleBargeIn");
-    const onTerminalError = vi.fn();
-    const stopTerminally = vi.fn();
-    const sendUserMessage = vi.fn();
-    const acknowledgeMark = vi.fn();
+    const mocks = {
+      onTerminalError: vi.fn(),
+      stopTerminally: vi.fn(),
+      sendUserMessage: vi.fn(),
+      acknowledgeMark: vi.fn(),
+    };
     const playback = new DiscordRealtimePlayback({
       bridge: () => bridge,
       bridgeReady: () => true,
@@ -129,11 +131,11 @@ export function createRealtimePlaybackFixture(
       player: roomPlayer,
       harness,
       markProviderGenerationObserved: noop,
-      onTerminalError,
+      onTerminalError: mocks.onTerminalError,
       providerId: () => "openai",
       realtimeConfig: () =>
         options.bargeIn === undefined ? undefined : { bargeIn: options.bargeIn },
-      stopTerminally,
+      stopTerminally: mocks.stopTerminally,
       stopped: () => closed,
       wakeNameRequired: () => false,
     });
@@ -149,9 +151,9 @@ export function createRealtimePlaybackFixture(
             connect: async () => {},
             close: noop,
             sendAudio: noop,
-            sendUserMessage,
+            sendUserMessage: mocks.sendUserMessage,
             setMediaTimestamp: noop,
-            acknowledgeMark,
+            acknowledgeMark: mocks.acknowledgeMark,
             submitToolResult: noop,
             isConnected: () => true,
             ...(interruption === "unsupported"
@@ -180,10 +182,7 @@ export function createRealtimePlaybackFixture(
       harness,
       callbacks,
       cancel,
-      onTerminalError,
-      stopTerminally,
-      sendUserMessage,
-      acknowledgeMark,
+      ...mocks,
       close(this: void, preserveUnplayedSpeech = false) {
         closed = true;
         playback.close(preserveUnplayedSpeech);

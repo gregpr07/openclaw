@@ -1,4 +1,4 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import type { DiscordAccountConfig, OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { describe, expect, it } from "vitest";
 import { createDiscordLivePolicyReader } from "../monitor/live-policy.js";
 import { authorizeDiscordVoiceIngress } from "./access.js";
@@ -6,20 +6,11 @@ import { authorizeDiscordVoiceIngress } from "./access.js";
 const ownerChannel = { users: ["discord:u-owner"] };
 const expectedChannel = {
   allowed: true,
-  requireMention: undefined,
-  ignoreOtherMentions: undefined,
-  skills: undefined,
-  enabled: undefined,
   users: ownerChannel.users,
-  roles: undefined,
-  systemPrompt: undefined,
-  includeThreadStarter: undefined,
-  autoThread: undefined,
-  autoThreadName: undefined,
-  autoArchiveDuration: undefined,
   matchKey: "c1",
   matchSource: "direct",
 };
+const config = (discord: DiscordAccountConfig): OpenClawConfig => ({ channels: { discord } });
 
 function authorize(overrides: Partial<Parameters<typeof authorizeDiscordVoiceIngress>[0]> = {}) {
   return authorizeDiscordVoiceIngress({
@@ -34,50 +25,23 @@ function authorize(overrides: Partial<Parameters<typeof authorizeDiscordVoiceIng
     ...overrides,
   });
 }
-function expectDenied(
-  access: Awaited<ReturnType<typeof authorize>>,
-  message = "You are not authorized to use this command.",
-) {
-  expect(access).toEqual({ ok: false, message });
-}
-
 describe("authorizeDiscordVoiceIngress", () => {
   it("applies published guild policy over retained voice startup settings", async () => {
-    let cfg: OpenClawConfig = {
-      channels: { discord: { groupPolicy: "allowlist", guilds: {} } },
-    };
+    let cfg = config({ groupPolicy: "allowlist", guilds: {} });
     const readPolicy = createDiscordLivePolicyReader({
       cfg,
       accountId: "default",
       token: "synthetic-token",
       readConfig: () => cfg,
     });
-    const params = {
-      readPolicy,
-      cfg,
-      discordConfig: {},
-      accountId: "default",
-      guildId: "111",
-      channelId: "222",
-      sender: { id: "333" },
-    };
+    const params = { readPolicy, cfg, discordConfig: {}, sender: { id: "333" } };
     const check = () => authorize(params);
     expect((await check()).ok).toBe(false);
-    cfg = {
-      channels: {
-        discord: {
-          groupPolicy: "allowlist",
-          guilds: { "111": { channels: { "222": { users: ["333"] } } } },
-        },
-      },
-    };
+    const guilds = { g1: { channels: { c1: { users: ["333"] } } } };
+    cfg = config({ groupPolicy: "allowlist", guilds });
     expect((await check()).ok).toBe(true);
-    cfg = { channels: { discord: { groupPolicy: "disabled", guilds: {} } } };
+    cfg = config({ groupPolicy: "disabled", guilds: {} });
     expect((await check()).ok).toBe(false);
-  });
-
-  it("blocks speakers outside the configured channel user allowlist", async () => {
-    expectDenied(await authorize({ sender: { id: "u-guest", name: "guest" } }));
   });
 
   it.each([
@@ -102,25 +66,33 @@ describe("authorizeDiscordVoiceIngress", () => {
     },
   );
 
-  it("blocks commands when channel id is unavailable for an allowlisted channel", async () => {
-    const access = await authorize({
-      discordConfig: {
-        guilds: { g1: { users: ownerChannel.users, channels: { c1: ownerChannel } } },
+  it.each([
+    { name: "unlisted speaker", overrides: { sender: { id: "u-guest", name: "guest" } } },
+    {
+      name: "missing channel id",
+      overrides: {
+        discordConfig: {
+          guilds: { g1: { users: ownerChannel.users, channels: { c1: ownerChannel } } },
+        },
+        channelId: "",
       },
-      channelId: "",
-    });
-    expectDenied(access, "This channel is not allowlisted for voice commands.");
-  });
-
-  it("ignores dangerous name matching for voice ingress", async () => {
-    const access = await authorize({
-      discordConfig: {
-        dangerouslyAllowNameMatching: true,
-        guilds: { g1: { channels: { c1: { users: ["owner"] } } } },
+      message: "This channel is not allowlisted for voice commands.",
+    },
+    {
+      name: "dangerous name matching",
+      overrides: {
+        discordConfig: {
+          dangerouslyAllowNameMatching: true,
+          guilds: { g1: { channels: { c1: { users: ["owner"] } } } },
+        },
+        sender: { id: "u-guest", name: "owner" },
       },
-      sender: { id: "u-guest", name: "owner" },
+    },
+  ])("rejects $name", async ({ overrides, message }) => {
+    expect(await authorize(overrides)).toEqual({
+      ok: false,
+      message: message ?? "You are not authorized to use this command.",
     });
-    expectDenied(access);
   });
 
   it("uses resolved account command allowFrom over merged Discord config", async () => {

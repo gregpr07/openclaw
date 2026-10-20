@@ -1,9 +1,4 @@
-import type {
-  RealtimeVoiceAudioSink,
-  RealtimeVoiceBridgeEvent,
-  RealtimeVoiceBridgeCreateRequest,
-  RealtimeVoiceResponseOutcome,
-} from "openclaw/plugin-sdk/realtime-voice";
+import type { createRealtimeVoiceBridgeSession } from "openclaw/plugin-sdk/realtime-voice";
 import { vi, type Mock } from "vitest";
 import { ChannelType, type APIVoiceState } from "../internal/discord.js";
 import { DiscordGatewayVoiceStateCache } from "../internal/gateway-voice-state-cache.js";
@@ -13,25 +8,17 @@ export type MockCallSource = {
   mock: { calls: ArrayLike<ReadonlyArray<unknown>> };
 };
 
-export type TestRealtimeBridgeParams = {
-  agentId?: string;
-  audioSink: RealtimeVoiceAudioSink;
-  autoRespondToAudio?: boolean;
+export type TestRealtimeBridgeParams = Omit<
+  Parameters<typeof createRealtimeVoiceBridgeSession>[0],
+  "provider" | "onToolCall" | "onReady" | "tools" | "cfg"
+> & {
   cfg?: unknown;
-  instructions?: string;
-  interruptResponseOnInputAudio?: boolean;
-  providerConfig: RealtimeVoiceBridgeCreateRequest["providerConfig"];
-  onEvent?: (event: RealtimeVoiceBridgeEvent) => void;
-  onClose?: RealtimeVoiceBridgeCreateRequest["onClose"];
   onReady?: () => void;
-  onResponseDone?: (outcome: RealtimeVoiceResponseOutcome) => void;
   onToolCall?: (
     event: { args: unknown; callId: string; itemId: string; name: string },
     session: unknown,
   ) => Promise<void> | void;
-  onTranscript?: (role: "user" | "assistant", text: string, isFinal: boolean) => void;
   tools?: Array<{ name: string }>;
-  runAgentConsult?: RealtimeVoiceBridgeCreateRequest["runAgentConsult"];
 };
 
 export function requireRecord(value: unknown, label: string): Record<string, unknown> {
@@ -58,7 +45,7 @@ export function createRealtimeBridgeTestHelpers(
 ) {
   const bridgeParamsAt = (index: number): TestRealtimeBridgeParams =>
     requireRecord(
-      mockCall(createBridge as unknown as MockCallSource, index, "realtime bridge")[0],
+      mockCall(createBridge, index, "realtime bridge")[0],
       "realtime bridge params",
     ) as TestRealtimeBridgeParams;
   const realtimeBridgeAt = (index: number) => {

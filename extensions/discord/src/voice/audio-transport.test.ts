@@ -60,12 +60,7 @@ async function readyFixture(sendPayload?: Parameters<typeof fixture>[0]) {
   await result.audio.ready;
   return result;
 }
-function captureFrame(
-  id: number,
-  pcm: number[],
-  packet: number[],
-  recordingEpoch: bigint,
-): DiscordAudioEvent {
+function frame(id: number, pcm: number[], packet: number[], epoch: bigint): DiscordAudioEvent {
   return {
     type: "capture-frame",
     id,
@@ -73,7 +68,7 @@ function captureFrame(
       pcm: new Uint8Array(pcm),
       packet: new Uint8Array(packet),
       receivedAt: 1,
-      recordingEpoch,
+      recordingEpoch: epoch,
     },
   };
 }
@@ -153,7 +148,7 @@ describe("Discord audio worker control boundary", () => {
     });
     expect(capture.destroyed).toBe(true);
     expect(errors).toHaveBeenCalledOnce();
-    worker.message(captureFrame(capture.id, [0, 0, 0, 0], [0], 0n));
+    worker.message(frame(capture.id, [0, 0, 0, 0], [0], 0n));
     expect(capture.readableLength).toBe(0);
     expect(worker.sent.filter((command) => command.type === "stop")).toHaveLength(1);
   });
@@ -165,8 +160,8 @@ describe("Discord audio worker control boundary", () => {
     capture.on("error", errors);
     const received: number[] = [];
     const recording = (async () => {
-      for await (const frame of capture) {
-        received.push(frame.pcm[0]);
+      for await (const captured of capture) {
+        received.push(captured.pcm[0]);
       }
     })();
     const stopped = audio.stop();
@@ -175,7 +170,7 @@ describe("Discord audio worker control boundary", () => {
     expect(destroy).toHaveBeenCalledOnce();
     expect(capture.destroyed).toBe(false);
     worker.message({ type: "capture-finalized", id: capture.id });
-    worker.message(captureFrame(capture.id, [7, 0], [1], 1n));
+    worker.message(frame(capture.id, [7, 0], [1], 1n));
     worker.message({ type: "capture-end", id: capture.id });
     worker.message({ type: "stopped" });
     worker.emit("exit", 0);

@@ -34,10 +34,10 @@ function createVoiceCommandHarness(
 }
 
 function createInteraction(overrides?: Partial<CommandInteraction>) {
-  const reply = vi.fn(async () => undefined);
+  const reply = vi.fn(async (_payload: { content: string; ephemeral: boolean }) => undefined);
   const defer = vi.fn(async () => undefined);
   const interaction = {
-    guild: undefined,
+    guild: { id: "g1", name: "Guild" },
     user: { id: "u1", username: "tester" },
     rawData: { member: { roles: [] } },
     defer,
@@ -47,21 +47,19 @@ function createInteraction(overrides?: Partial<CommandInteraction>) {
   return { interaction, reply, defer };
 }
 
-function guildInteraction(overrides?: Partial<CommandInteraction>) {
-  return createInteraction({
-    guild: { id: "g1", name: "Guild" } as CommandInteraction["guild"],
-    ...overrides,
-  });
-}
-function statusHarness(overrides?: Parameters<typeof createVoiceCommandHarness>[1]) {
+async function runStatus(
+  overrides?: Parameters<typeof createVoiceCommandHarness>[1],
+  interactionOverrides?: Partial<CommandInteraction>,
+) {
   const statusSpy = vi.fn(() => []);
-  return {
-    ...createVoiceCommandHarness(
-      { status: statusSpy } as unknown as DiscordVoiceManager,
-      overrides,
-    ),
-    statusSpy,
-  };
+  const { status } = createVoiceCommandHarness(
+    { status: statusSpy } as unknown as DiscordVoiceManager,
+    overrides,
+  );
+  const { interaction, reply } = createInteraction(interactionOverrides);
+  const result = await status.run(interaction);
+  expect(statusSpy).toHaveBeenCalledTimes(1);
+  return { reply, result };
 }
 function expectReply(reply: ReturnType<typeof vi.fn>, content: string) {
   expect(reply).toHaveBeenCalledWith({ content, ephemeral: true });
@@ -93,7 +91,7 @@ describe("createDiscordVoiceCommand", () => {
 
   it("dispatches slash-command subcommand interactions", async () => {
     const { command } = createVoiceCommandHarness(null);
-    const { interaction, reply, defer } = guildInteraction({
+    const { interaction, reply, defer } = createInteraction({
       rawData: {
         data: {
           options: [{ name: "status", type: 1 }],
@@ -110,7 +108,7 @@ describe("createDiscordVoiceCommand", () => {
 
   it("vc leave reports missing guild before manager lookup", async () => {
     const { leave } = createVoiceCommandHarness(null);
-    const { interaction, reply } = createInteraction();
+    const { interaction, reply } = createInteraction({ guild: undefined });
 
     await leave.run(interaction);
 
@@ -128,17 +126,15 @@ describe("createDiscordVoiceCommand", () => {
     { owner: "pk:*", authorized: false },
   ])("preserves owner target authority for vc commands: $owner", async ({ owner, authorized }) => {
     const ownerId = "100000000000000001";
-    const { status, statusSpy } = statusHarness({
-      cfg: { commands: { ownerAllowFrom: [owner] } },
-      discordConfig: { dmPolicy: "disabled", allowFrom: ["*"] },
-    });
-    const { interaction, reply } = guildInteraction({
-      user: { id: ownerId, username: "owner" } as CommandInteraction["user"],
-    });
-
-    await status.run(interaction);
-
-    expect(statusSpy).toHaveBeenCalledTimes(1);
+    const { reply } = await runStatus(
+      {
+        cfg: { commands: { ownerAllowFrom: [owner] } },
+        discordConfig: { dmPolicy: "disabled", allowFrom: ["*"] },
+      },
+      {
+        user: { id: ownerId, username: "owner" } as CommandInteraction["user"],
+      },
+    );
     expectReply(
       reply,
       authorized ? "No active voice sessions." : "You are not authorized to use this command.",
@@ -168,7 +164,7 @@ describe("createDiscordVoiceCommand", () => {
       }),
     });
     const runAs = async (id: string) => {
-      const { interaction, reply } = guildInteraction({
+      const { interaction, reply } = createInteraction({
         user: { id, username: "member" } as CommandInteraction["user"],
       });
       await leave.run(interaction);
@@ -191,30 +187,25 @@ describe("createDiscordVoiceCommand", () => {
   });
 
   it("normalizes an account wildcard before admitting vc commands", async () => {
-    const { status, statusSpy } = statusHarness({
-      discordConfig: { allowFrom: [" * "], guilds: { g1: {} } },
-      groupPolicy: "allowlist",
-    });
-    const { interaction, reply } = guildInteraction({
-      user: { id: "u-guest", username: "guest" } as CommandInteraction["user"],
-    });
-
-    await status.run(interaction);
-
-    expect(statusSpy).toHaveBeenCalledTimes(1);
+    const { reply } = await runStatus(
+      {
+        discordConfig: { allowFrom: [" * "], guilds: { g1: {} } },
+        groupPolicy: "allowlist",
+      },
+      {
+        user: { id: "u-guest", username: "guest" } as CommandInteraction["user"],
+      },
+    );
     expectReply(reply, "No active voice sessions.");
   });
 
   it("vc status handles channels without optional metadata", async () => {
-    const { status, statusSpy } = statusHarness();
-    const { interaction, reply } = guildInteraction({
+    const { reply, result } = await runStatus(undefined, {
       channel: { id: "123456789012345678" } as CommandInteraction["channel"],
       client: { fetchChannel: vi.fn(async () => null) } as unknown as CommandInteraction["client"],
     });
 
-    await expect(status.run(interaction)).resolves.toBeUndefined();
-
-    expect(statusSpy).toHaveBeenCalledTimes(1);
+    expect(result).toBeUndefined();
     expectReply(reply, "No active voice sessions.");
   });
 });

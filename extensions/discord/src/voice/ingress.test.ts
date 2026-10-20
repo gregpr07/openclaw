@@ -157,14 +157,14 @@ describe("Discord voice ingress execution correlation", () => {
     await run({ message: "first turn" });
     await run({ message: "second turn" });
 
-    expect(mocks.agentCommandFromIngress).toHaveBeenCalledTimes(2);
     const inputs = mocks.agentCommandFromIngress.mock.calls.map(([input]) => input);
-    expect(inputs.map((input) => input.message)).toEqual(["first turn", "second turn"]);
-    expect(inputs.map((input) => input.sessionKey)).toEqual([
-      "agent:main:discord:channel:channel-1",
-      "agent:main:discord:channel:channel-1",
-    ]);
-    expect(inputs.map((input) => input.accountId)).toEqual(["work", "work"]);
+    expect(inputs).toMatchObject(
+      ["first turn", "second turn"].map((message) => ({
+        message,
+        sessionKey: "agent:main:discord:channel:channel-1",
+        accountId: "work",
+      })),
+    );
     for (const input of inputs) {
       expect(input).not.toHaveProperty("runId");
     }
