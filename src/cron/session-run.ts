@@ -1,17 +1,19 @@
 /** Scheduled shared-session turns use the ordinary reply admission and delivery owners. */
 import type { AdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
+import { resolveCronStyleNow } from "../agents/current-time.js";
 import {
   captureSessionEventTargetForHost as captureSessionEventTarget,
   enqueueSessionEventForHost as enqueueSessionEvent,
 } from "../auto-reply/reply/session-event-handoff.js";
 import { getRuntimeConfig } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { STARTUP_INTERRUPTED_ERROR } from "./execution-error-constants.js";
+import { parseAgentSessionKey } from "../routing/session-key.js";
+import { resolveHookExternalContentSource } from "../security/external-content-source.js";
 import {
   buildCronDeliveryTrace,
   resolveCronDeliveryContext,
 } from "./isolated-agent/run-delivery-trace.js";
-import { appendCronUnattendedRunPreamble } from "./run-prompt.js";
+import { buildCronCommandBody } from "./run-prompt.js";
 import type { CronServiceDeps } from "./service/state.js";
 import type { CronResolvedDeliveryState } from "./types.js";
 
@@ -86,29 +88,19 @@ export async function runCronSessionTurn(
     await params.deliveryAttemptFence?.beforeAttempt();
     assertCurrent();
   };
+  const baseSessionKey = parseAgentSessionKey(params.sessionKey)?.rest ?? params.sessionKey;
   const externalSource =
-    job.payload.kind === "agentTurn" ? job.payload.externalContentSource : undefined;
-  let message = params.text;
-  if (
-    externalSource &&
-    job.payload.kind === "agentTurn" &&
-    !job.payload.allowUnsafeExternalContent
-  ) {
-    const { buildSafeExternalPrompt } =
-      await import("./isolated-agent/run-external-content.runtime.js");
-    message = buildSafeExternalPrompt({
-      content: message,
-      source: externalSource === "gmail" ? "email" : "webhook",
-      jobName: job.name,
-      jobId: job.id,
-      timestamp: new Date().toISOString(),
-    });
-    assertCurrent();
-  }
-  const text = appendCronUnattendedRunPreamble(message, {
-    externalHook: Boolean(externalSource),
-    restartContinuation: job.state.lastError === STARTUP_INTERRUPTED_ERROR,
+    (job.payload.kind === "agentTurn" ? job.payload.externalContentSource : undefined) ??
+    resolveHookExternalContentSource(baseSessionKey);
+  const { commandBody: text } = await buildCronCommandBody({
+    job,
+    cfg: params.cfg,
+    message: params.text,
+    baseSessionKey,
+    hookExternalContentSource: externalSource,
+    ...resolveCronStyleNow(params.cfg, Date.now()),
   });
+  assertCurrent();
   let sessionId: string | undefined;
   params.onLaneWait?.({ waiting: true });
   const receipt = enqueueSessionEvent(text, {

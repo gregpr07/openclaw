@@ -24,6 +24,7 @@ import { waitForAgentDatabaseWriteAdmission } from "../../state/agent-database-p
 import { resolveCronJobEffectiveAgentId } from "../agent-id.js";
 import { CronSessionLifecycleClaimError } from "../run-authority.js";
 import { createCronRunDiagnosticsFromError } from "../run-diagnostics.js";
+import { buildCronCommandBody } from "../run-prompt.js";
 import type { CronWorkspaceLease } from "../run-workspace.js";
 import { resolveCronScheduledToolPolicy } from "../scheduled-tool-policy.js";
 import { isDetachedCronSessionTarget } from "../session-target.js";
@@ -42,7 +43,6 @@ import {
 } from "./run-delivery-trace.js";
 import { resolveCronPreflight } from "./run-fallback-policy.js";
 import {
-  buildCronCommandBody,
   resolveCronAuthSelection,
   createCronSessionRowWriter,
   retireRolledCronSessionMcpRuntime,

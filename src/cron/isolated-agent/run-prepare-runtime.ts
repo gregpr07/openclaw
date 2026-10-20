@@ -4,15 +4,8 @@ import { retireSessionMcpRuntime } from "../../agents/agent-bundle-mcp-tools.js"
 import { hasAnyAuthProfileStoreSourceAsync } from "../../agents/auth-profiles/source-check.js";
 import type { CliDeps } from "../../cli/outbound-send-deps.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import {
-  isExternalHookSession,
-  mapHookExternalContentSource,
-  type HookExternalContentSource,
-} from "../../security/external-content-source.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import type { CronCompletionDeliveryFence } from "../delivery-attempt-fence.js";
-import { STARTUP_INTERRUPTED_ERROR } from "../execution-error-constants.js";
-import { appendCronUnattendedRunPreamble } from "../run-prompt.js";
 import type {
   CronAgentExecutionPhaseUpdate,
   CronAgentExecutionStarted,
@@ -49,9 +42,6 @@ export type WithRunSession = (
 
 const sessionAccessorRuntimeLoader = createLazyImportLoader(
   () => import("../../config/sessions/session-accessor.js"),
-);
-const cronExternalContentRuntimeLoader = createLazyImportLoader(
-  () => import("./run-external-content.runtime.js"),
 );
 const cronAuthProfileRuntimeLoader = createLazyImportLoader(
   () => import("./run-auth-profile.runtime.js"),
@@ -104,10 +94,6 @@ export function createCronSessionRowWriter(params: {
     }
     return entry;
   };
-}
-
-async function loadCronExternalContentRuntime() {
-  return await cronExternalContentRuntimeLoader.load();
 }
 
 function hasConfiguredAuthProfiles(cfg: OpenClawConfig): boolean {
@@ -179,58 +165,4 @@ export async function retireRolledCronSessionMcpRuntime(params: {
       );
     },
   });
-}
-
-/** Builds the cron prompt while preserving hook wrapping and the stable unattended suffix. */
-export async function buildCronCommandBody(params: {
-  job: Pick<CronJob, "id" | "name" | "payload"> & Partial<Pick<CronJob, "state">>;
-  cfg: OpenClawConfig;
-  message: string;
-  baseSessionKey: string;
-  hookExternalContentSource?: HookExternalContentSource;
-  formattedTime: string;
-  timeLine: string;
-}) {
-  const { job, message, baseSessionKey, hookExternalContentSource, timeLine } = params;
-  const sourcePromptPrefix = `[cron:${job.id} ${job.name}]`;
-  const base = `${sourcePromptPrefix} ${message}`.trim();
-  const isExternalHook =
-    hookExternalContentSource !== undefined || isExternalHookSession(baseSessionKey);
-  const allowUnsafeExternalContent =
-    (job.payload.kind === "agentTurn" && job.payload.allowUnsafeExternalContent === true) ||
-    (hookExternalContentSource === "gmail" &&
-      params.cfg.hooks?.gmail?.allowUnsafeExternalContent === true);
-  const shouldWrapExternal = isExternalHook && !allowUnsafeExternalContent;
-  let commandBody: string;
-
-  if (isExternalHook) {
-    const { detectSuspiciousPatterns } = await loadCronExternalContentRuntime();
-    const suspiciousPatterns = detectSuspiciousPatterns(message);
-    if (suspiciousPatterns.length > 0) {
-      logWarn(
-        `[security] Suspicious patterns detected in external hook content ` +
-          `(session=${baseSessionKey}, patterns=${suspiciousPatterns.length}): ${suspiciousPatterns.slice(0, 3).join(", ")}`,
-      );
-    }
-  }
-
-  if (shouldWrapExternal) {
-    const { buildSafeExternalPrompt } = await loadCronExternalContentRuntime();
-    const hookType = mapHookExternalContentSource(hookExternalContentSource ?? "webhook");
-    const safeContent = buildSafeExternalPrompt({
-      content: message,
-      source: hookType,
-      jobName: job.name,
-      jobId: job.id,
-      timestamp: params.formattedTime,
-    });
-    commandBody = `${safeContent}\n\n${timeLine}`.trim();
-  } else {
-    commandBody = `${base}\n${timeLine}`.trim();
-  }
-  commandBody = appendCronUnattendedRunPreamble(commandBody, {
-    externalHook: isExternalHook,
-    restartContinuation: job.state?.lastError === STARTUP_INTERRUPTED_ERROR,
-  });
-  return { sourcePromptPrefix, isExternalHook, commandBody };
 }

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../test/helpers/promise.js";
 import type { AdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
 import type {
@@ -64,6 +64,10 @@ beforeEach(() => {
     deliverySystemPrompt: undefined,
     messageToolFormatPrompt: undefined,
   });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 function input(): Parameters<typeof runCronSessionTurn>[0] {
@@ -133,6 +137,62 @@ function restoredSource(): RestoredGatewayOperatorAuthority {
     release: vi.fn(),
   };
 }
+
+describe("scheduled session prompts", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-20T16:00:00Z"));
+    fixture.enqueue.mockReturnValue({
+      id: "event",
+      cancel: () => false,
+      accepted: Promise.resolve({ ok: true }),
+      settled: Promise.resolve({ status: "completed", executionStarted: true, delivered: false }),
+    });
+  });
+
+  it("submits the job identity and localized current time with the scheduled instructions", async () => {
+    const params = input();
+    params.cfg = { agents: { defaults: { userTimezone: "America/Los_Angeles" } } };
+    await runCronSessionTurn(params);
+    const text = fixture.enqueue.mock.calls[0]?.[0];
+    expect(text).toContain("[cron:job-1 test] Check the report.");
+    expect(text).toMatch(/Current time: .*9:00.*\(America\/Los_Angeles\)/);
+    expect(text).toContain("Reference UTC: 2026-10-20 16:00 UTC");
+  });
+
+  it.each([
+    ["hook:gmail:message", "Email"],
+    ["agent:main:hook:gmail:message", "Email"],
+    ["agent:main:hook:custom:message", "Webhook"],
+  ])(
+    "wraps legacy external content sent to %s without an explicit source marker",
+    async (sessionKey, source) => {
+      const params = input();
+      params.sessionKey = sessionKey;
+      params.job.sessionTarget = `session:${sessionKey}`;
+      await runCronSessionTurn(params);
+      const text = fixture.enqueue.mock.calls[0]?.[0];
+      expect(text).toContain(`Source: ${source}`);
+      expect(text).toMatch(
+        /<<<EXTERNAL_UNTRUSTED_CONTENT id="[^"]+">>>[\s\S]*Check the report\.[\s\S]*<<<END_EXTERNAL_UNTRUSTED_CONTENT id="[^"]+">>>[\s\S]*This is an unattended scheduled run/,
+      );
+      expect(text).not.toContain("the job's instructions win");
+      expect(text).not.toContain("remove it if your available tools allow");
+    },
+  );
+
+  it("honors the existing Gmail unsafe-content opt-in without granting trusted job guidance", async () => {
+    const params = input();
+    params.sessionKey = "agent:main:hook:gmail:message";
+    params.job.sessionTarget = `session:${params.sessionKey}`;
+    params.cfg = { hooks: { gmail: { allowUnsafeExternalContent: true } } };
+    await runCronSessionTurn(params);
+    const text = fixture.enqueue.mock.calls[0]?.[0];
+    expect(text).toContain("[cron:job-1 test] Check the report.");
+    expect(text).not.toContain("EXTERNAL_UNTRUSTED_CONTENT");
+    expect(text).not.toContain("the job's instructions win");
+  });
+});
 
 describe("scheduled session execution custody", () => {
   it("retains the restored source after acceptance until the controller settles", async () => {
