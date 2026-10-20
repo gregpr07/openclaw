@@ -1,50 +1,23 @@
-import path from "node:path";
-import { resetPluginStateStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
-import { closeQaRuntimeStores } from "openclaw/plugin-sdk/qa-runtime";
-import { resolveStorePath, upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
-import { appendSessionTranscriptMessageByIdentity } from "openclaw/plugin-sdk/session-transcript-runtime";
-import { formatSqliteSessionFileMarker } from "openclaw/plugin-sdk/sqlite-runtime-testing";
-import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { createParitySessionFixture } from "./runtime-parity-session.test-helper.js";
 import { captureRuntimeParityCell } from "./runtime-parity.js";
-import { createTempDirHarness } from "./temp-dir.test-helper.js";
 
-const tempDirs = createTempDirHarness({ beforeCleanup: closeQaRuntimeStores });
-
-afterEach(() => {
-  resetPluginStateStoreForTests({ closeDatabase: false });
-});
-
-afterAll(() => tempDirs.cleanup());
+const seedSession = createParitySessionFixture();
 
 async function captureForcedCodexCell(
   sessionId: string,
   assistant?: Record<string, unknown>,
   logs?: () => string,
 ) {
-  const tempRoot = await tempDirs.makeTempDir("openclaw-qa-forced-runtime-");
-  const env = { ...process.env, OPENCLAW_STATE_DIR: path.join(tempRoot, "state") };
-  const sessionKey = `agent:qa:${sessionId}`;
-  const storePath = resolveStorePath(undefined, { agentId: "qa", env });
-  const identity = { agentId: "qa", env, sessionId, sessionKey, storePath };
-  await upsertSessionEntry({
-    ...identity,
-    entry: {
-      sessionId,
-      sessionFile: formatSqliteSessionFileMarker(identity),
-      updatedAt: 100,
-    },
+  const tempRoot = await seedSession({
+    sessionId,
+    sessionKey: `agent:qa:${sessionId}`,
+    sequenceMessageTimes: true,
+    messages: [
+      { role: "user", content: "runtime isolation check" },
+      ...(assistant ? [assistant] : []),
+    ],
   });
-  const messages = [
-    { role: "user", content: "runtime isolation check" },
-    ...(assistant ? [assistant] : []),
-  ];
-  for (const [index, message] of messages.entries()) {
-    await appendSessionTranscriptMessageByIdentity({
-      ...identity,
-      now: index + 1,
-      message: message as never,
-    });
-  }
   vi.stubGlobal(
     "fetch",
     vi.fn(async () => new Response("[]", { headers: { "content-type": "application/json" } })),

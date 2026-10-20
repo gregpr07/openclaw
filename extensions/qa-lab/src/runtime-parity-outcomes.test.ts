@@ -44,9 +44,7 @@ describe("runtime parity outcomes", () => {
   it("keeps a skip diagnostic out of runtime error classification", async () => {
     const cell = await captureRuntimeParityCell({
       runtime: "codex",
-      gateway: {
-        tempRoot: `/tmp/openclaw-qa-runtime-parity-missing-${process.pid}`,
-      },
+      gateway: { tempRoot: `/tmp/openclaw-qa-runtime-parity-missing-${process.pid}` },
       scenarioResult: {
         status: "skip",
         details: "expected-unavailable tool: this fixture is report-only",
@@ -88,10 +86,7 @@ describe("runtime parity outcomes", () => {
     });
 
     expect(result).toMatchObject({
-      cells: {
-        openclaw: { status: "pass" },
-        codex: { status: "skip" },
-      },
+      cells: { openclaw: { status: "pass" }, codex: { status: "skip" } },
       drift: "structural",
       driftDetails: "known harness gap in codex runtime; paired runtime passed",
     });
