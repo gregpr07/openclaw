@@ -38,6 +38,22 @@ export function defineMeetingSessionFlowTests(options: {
 }) {
   const joinMeeting = (runtime: Runtime, request: Partial<MeetingJoinRequest> = {}) =>
     runtime.join({ url: options.url, mode: "transcribe", ...request });
+  const expectTranscriptScripts = (harness: MeetingBrowserFixture, start = 0) => {
+    const scripts = browserActScripts(harness, start);
+    expect(scripts).toHaveLength(2);
+    expect(scripts[0]).toContain("const allowSessionAdoption = false");
+    expect(scripts[1]).toContain("expectedSessionId");
+    return scripts;
+  };
+  const audioHealth = (active: boolean) => ({
+    audioInputActive: active,
+    audioInputRouted: active,
+    audioOutputActive: active,
+    audioOutputRouted: active,
+    captioning: active,
+    providerConnected: active,
+    realtimeReady: active,
+  });
   it("joins, reuses, reports, snapshots, speaks safely, and leaves through core", async () => {
     const { harness, runtime } = options.createFixture({
       fullConfig: { agents: { entries: { operator: {} } } },
@@ -63,24 +79,13 @@ export function defineMeetingSessionFlowTests(options: {
       lines: [],
       nextIndex: 0,
     });
-    const transcriptActScripts = browserActScripts(harness, transcriptStartCall);
-    expect(transcriptActScripts).toHaveLength(2);
-    expect(transcriptActScripts[0]).toContain("const allowSessionAdoption = false");
+    const transcriptActScripts = expectTranscriptScripts(harness, transcriptStartCall);
     expect(transcriptActScripts[0]).toContain("const captureCaptions = true");
-    expect(transcriptActScripts[1]).toContain("expectedSessionId");
     expect(await runtime.speak(first.session.id, "hello")).toMatchObject({
       found: true,
       spoken: false,
     });
-    Object.assign(first.session.chrome?.health ?? {}, {
-      audioInputActive: true,
-      audioInputRouted: true,
-      audioOutputActive: true,
-      audioOutputRouted: true,
-      captioning: true,
-      providerConnected: true,
-      realtimeReady: true,
-    });
+    Object.assign(first.session.chrome?.health ?? {}, audioHealth(true));
     expect(await runtime.leave(first.session.id)).toMatchObject({
       found: true,
       browserLeft: true,
@@ -88,11 +93,7 @@ export function defineMeetingSessionFlowTests(options: {
         state: "ended",
         chrome: {
           health: {
-            audioInputActive: false,
-            audioInputRouted: false,
-            audioOutputActive: false,
-            audioOutputRouted: false,
-            captioning: false,
+            ...audioHealth(false),
             ...options.endedHealth,
             providerConnected: false,
             realtimeReady: false,
@@ -117,10 +118,7 @@ export function defineMeetingSessionFlowTests(options: {
       found: true,
       lines: [{ text: "Archived caption" }],
     });
-    const actScripts = browserActScripts(harness);
-    expect(actScripts).toHaveLength(2);
-    expect(actScripts[0]).toContain("const allowSessionAdoption = false");
-    expect(actScripts[1]).toContain("expectedSessionId");
+    expectTranscriptScripts(harness);
   });
 
   it("recovers and leaves a manually opened tab when Chrome launching is disabled", async () => {

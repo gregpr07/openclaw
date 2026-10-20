@@ -243,21 +243,10 @@ export function getProviderHttpMocks(): ProviderHttpMocks {
 
 export function installProviderHttpMockCleanup(): void {
   afterEach(() => {
-    providerHttpMocks.waitProviderOperationPollIntervalMock.mockClear();
-    providerHttpMocks.resolveApiKeyForProviderMock.mockClear();
-    providerHttpMocks.executeProviderOperationWithRetryMock.mockClear();
     providerHttpMocks.postJsonRequestMock.mockReset();
-    providerHttpMocks.postMultipartRequestMock.mockClear();
     providerHttpMocks.fetchWithTimeoutMock.mockReset();
-    providerHttpMocks.fetchWithTimeoutGuardedMock.mockClear();
-    providerHttpMocks.fetchProviderOperationResponseMock.mockClear();
-    providerHttpMocks.fetchProviderDownloadResponseMock.mockClear();
-    providerHttpMocks.pollProviderOperationJsonMock.mockClear();
-    providerHttpMocks.assertOkOrThrowHttpErrorMock.mockClear();
-    providerHttpMocks.assertOkOrThrowProviderErrorMock.mockClear();
-    providerHttpMocks.readProviderJsonResponseMock.mockClear();
-    providerHttpMocks.sanitizeConfiguredModelProviderRequestMock.mockClear();
-    providerHttpMocks.resolveProviderHttpRequestConfigMock.mockClear();
-    providerHttpMocks.resolveProviderRequestHeadersMock.mockClear();
+    for (const mock of Object.values(providerHttpMocks)) {
+      mock.mockClear();
+    }
   });
 }

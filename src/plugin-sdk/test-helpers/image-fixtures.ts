@@ -24,45 +24,19 @@ function pngChunk(type: string, data: Buffer): Buffer {
   return Buffer.concat([length, typeBuffer, data, crc]);
 }
 
-function fillSolidRgba(width: number, height: number, color: Rgba): Buffer {
-  const pixels = Buffer.alloc(width * height * 4);
-  for (let offset = 0; offset < pixels.length; offset += 4) {
-    pixels[offset] = color.r;
-    pixels[offset + 1] = color.g;
-    pixels[offset + 2] = color.b;
-    pixels[offset + 3] = color.a ?? 255;
-  }
-  return pixels;
-}
-
-function fillSolidRgb(width: number, height: number, color: Rgba): Buffer {
-  const pixels = Buffer.alloc(width * height * 3);
-  for (let offset = 0; offset < pixels.length; offset += 3) {
-    pixels[offset] = color.r;
-    pixels[offset + 1] = color.g;
-    pixels[offset + 2] = color.b;
-  }
-  return pixels;
-}
-
 /** Create a solid-color PNG buffer, preserving alpha only when needed. */
 export function createSolidPngBuffer(width: number, height: number, color: Rgba): Buffer {
-  if (color.a === undefined || color.a === 255) {
-    return encodePngRgb(fillSolidRgb(width, height, color), width, height);
-  }
-  return encodePngRgba(fillSolidRgba(width, height, color), width, height);
+  const opaque = color.a === undefined || color.a === 255;
+  const pixel = Buffer.from(
+    opaque ? [color.r, color.g, color.b] : [color.r, color.g, color.b, color.a ?? 255],
+  );
+  const pixels = Buffer.alloc(width * height * pixel.length, pixel);
+  return (opaque ? encodePngRgb : encodePngRgba)(pixels, width, height);
 }
 
 /** Create a deterministic RGB PNG with varied pixel values. */
 export function createNoisyPngBuffer(width: number, height: number): Buffer {
-  const rgba = createNoisyRgbaBuffer(width, height);
-  const rgb = Buffer.alloc(width * height * 3);
-  for (let source = 0, target = 0; source < rgba.length; source += 4, target += 3) {
-    rgb[target] = rgba[source] ?? 0;
-    rgb[target + 1] = rgba[source + 1] ?? 0;
-    rgb[target + 2] = rgba[source + 2] ?? 0;
-  }
-  return encodePngRgb(rgb, width, height);
+  return encodePngRgb(createNoisyPixels(width, height, 3), width, height);
 }
 
 /** Create a grayscale+alpha PNG for image paths that must handle non-RGB color types. */
@@ -85,9 +59,6 @@ export function createGrayscaleAlphaPngBuffer(width: number, height: number): Bu
   ihdr.writeUInt32BE(height, 4);
   ihdr[8] = 8;
   ihdr[9] = 4;
-  ihdr[10] = 0;
-  ihdr[11] = 0;
-  ihdr[12] = 0;
 
   return Buffer.concat([
     PNG_SIGNATURE,
@@ -104,13 +75,19 @@ export function createTinyJpegBuffer(): Buffer {
 
 /** Create deterministic RGBA pixels for encoder and media conversion tests. */
 export function createNoisyRgbaBuffer(width: number, height: number): Buffer {
-  const pixels = Buffer.alloc(width * height * 4);
-  for (let offset = 0; offset < pixels.length; offset += 4) {
-    const seed = offset / 4;
+  return createNoisyPixels(width, height, 4);
+}
+
+function createNoisyPixels(width: number, height: number, channels: 3 | 4): Buffer {
+  const pixels = Buffer.alloc(width * height * channels);
+  for (let offset = 0; offset < pixels.length; offset += channels) {
+    const seed = offset / channels;
     pixels[offset] = seed % 251;
     pixels[offset + 1] = (seed * 17) % 253;
     pixels[offset + 2] = (seed * 29) % 255;
-    pixels[offset + 3] = 255;
+    if (channels === 4) {
+      pixels[offset + 3] = 255;
+    }
   }
   return pixels;
 }
