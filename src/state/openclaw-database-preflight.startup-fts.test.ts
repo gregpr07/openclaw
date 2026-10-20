@@ -68,7 +68,6 @@ afterEach(async () => {
   setLoggerOverride(null);
   resetLogger();
   vi.restoreAllMocks();
-  vi.unstubAllEnvs();
 });
 
 async function createFixture(failure?: "mixed" | "backup" | "rebuild" | "writer") {

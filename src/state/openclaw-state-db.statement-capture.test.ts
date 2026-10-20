@@ -37,12 +37,8 @@ it.skipIf(!output)(
     const nativeObservations = channel("sqlite.db.query");
     const observe = (message: unknown) => {
       if (message && typeof message === "object" && "engine" in message && "threadId" in message) {
-        diagnostics.push({
-          source: "engine",
-          phase,
-          engine: message.engine,
-          threadId: message.threadId,
-        });
+        const { engine, threadId: observedThread } = message;
+        diagnostics.push({ source: "engine", phase, engine, threadId: observedThread });
       }
     };
     const observeNative = () =>
