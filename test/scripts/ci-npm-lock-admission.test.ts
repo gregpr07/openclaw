@@ -12,8 +12,13 @@ let cwd: string;
 let base: string;
 let harness: string;
 let commitNumber = 0;
-const git = (...args: string[]) =>
-  execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+const gitAt = (directory: string, ...args: string[]) =>
+  execFileSync("git", args, {
+    cwd: directory,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
+const git = (...args: string[]) => gitAt(cwd, ...args);
 const write = (file: string, text = "fixture\n") => {
   mkdirSync(path.dirname(path.join(cwd, file)), { recursive: true });
   writeFileSync(path.join(cwd, file), text);
@@ -24,6 +29,16 @@ const commit = () => {
   git("-c", "commit.gpgsign=false", "commit", "-qm", `fixture ${commitNumber++}`);
 };
 const skip = () => canSkipNpmLockSetup({ cwd, base });
+const runAdmission = (directory = cwd) =>
+  execFileSync(process.execPath, [path.join(harness, "scripts/ci-npm-lock-admission.mjs")], {
+    cwd: directory,
+    env: { ...process.env, CHECKOUT_BASE_SHA: base, HISTORICAL_TARGET: "false" },
+    encoding: "utf8",
+  });
+const copy = (file: string, directory: string) => {
+  mkdirSync(path.dirname(path.join(directory, file)), { recursive: true });
+  copyFileSync(path.join(root, file), path.join(directory, file));
+};
 
 beforeAll(() => {
   cwd = temps.make("npm-lock-admission-");
@@ -37,15 +52,11 @@ beforeAll(() => {
     "scripts/changed-lanes.mts",
     "scripts/lib/merge-head-diff-base.mjs",
   ]) {
-    mkdirSync(path.dirname(path.join(cwd, file)), { recursive: true });
-    copyFileSync(path.join(root, file), path.join(cwd, file));
-    mkdirSync(path.dirname(path.join(harness, file)), { recursive: true });
-    copyFileSync(path.join(root, file), path.join(harness, file));
+    for (const directory of [cwd, harness]) {
+      copy(file, directory);
+    }
   }
-  copyFileSync(
-    path.join(root, "scripts/ci-npm-lock-admission.mjs"),
-    path.join(harness, "scripts/ci-npm-lock-admission.mjs"),
-  );
+  copy("scripts/ci-npm-lock-admission.mjs", harness);
   write(
     "package.json",
     JSON.stringify({
@@ -72,13 +83,7 @@ describe("npm lock setup admission", () => {
     write("src/example.ts", "changed\n");
     commit();
     expect(skip()).toBe(true);
-    expect(
-      execFileSync(process.execPath, [path.join(harness, "scripts/ci-npm-lock-admission.mjs")], {
-        cwd,
-        env: { ...process.env, CHECKOUT_BASE_SHA: base, HISTORICAL_TARGET: "false" },
-        encoding: "utf8",
-      }),
-    ).toBe("skip=true\n");
+    expect(runAdmission()).toBe("skip=true\n");
   });
   it("keeps full sweeps, historical targets, and invalid or mismatched base refs", () => {
     expect(canSkipNpmLockSetup({ cwd })).toBe(false);
@@ -155,23 +160,12 @@ describe("npm lock setup admission", () => {
     write(file, file.endsWith(".json") ? '{"private":true}' : "changed\n");
     commit();
     const shallow = temps.make("npm-lock-shallow-");
-    const run = (...args: string[]) =>
-      execFileSync("git", args, {
-        cwd: shallow,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-      }).trim();
+    const run = (...args: string[]) => gitAt(shallow, ...args);
     run("clone", "--quiet", "--depth=1", pathToFileURL(cwd).href, ".");
     run("fetch", "--quiet", "--depth=1", "origin", `${base}:refs/remotes/origin/ci-ratchet-base`);
     expect(run("rev-parse", "--is-shallow-repository")).toBe("true");
     expect(() => run("diff", `${base}...HEAD`)).toThrow("no merge base");
-    expect(
-      execFileSync(process.execPath, [path.join(harness, "scripts/ci-npm-lock-admission.mjs")], {
-        cwd: shallow,
-        env: { ...process.env, CHECKOUT_BASE_SHA: base, HISTORICAL_TARGET: "false" },
-        encoding: "utf8",
-      }),
-    ).toBe(`skip=${expected}\n`);
+    expect(runAdmission(shallow)).toBe(`skip=${expected}\n`);
   });
   it("wires the dependency-free decision before conditional setup", () => {
     const workflow = readFileSync(path.join(root, ".github/workflows/ci.yml"), "utf8");

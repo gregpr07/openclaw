@@ -27,6 +27,7 @@ it.for([
   workerArtifacts.fixtureLifetime.run(async () => {
     const { node } = workerArtifacts.createFixtureCommands();
     const directory = workerArtifacts.fixtureDirectory();
+    const write = (file: string, source: string) => writeFixture(directory, file, source);
     const copiedRoot = mode.startsWith("frozen")
       ? path.join(directory, ".ci-workflow")
       : mode === "foreign"
@@ -38,17 +39,15 @@ it.for([
       fs.copyFileSync(path.join(root, file), target);
     }
     expect(fs.existsSync(path.join(copiedRoot, "scripts/lib/vitest-worker-run.mts"))).toBe(false);
-    writeFixture(
-      directory,
+    write(
       "scripts/test-projects.mjs",
       "console.log('legacy transport ' + JSON.stringify(process.argv.slice(2)));\n",
     );
     if (mode === "frozen-with-own-runner") {
-      writeFixture(directory, "scripts/ci-run-node-test-shard.mts", "export {};\n");
+      write("scripts/ci-run-node-test-shard.mts", "export {};\n");
     }
     if (mode === "modern-corrupt" || mode === "modern-unshared") {
-      writeFixture(
-        directory,
+      write(
         "scripts/lib/vitest-worker-run.mts",
         "throw new Error('fixture damaged worker owner');\n",
       );
@@ -59,8 +58,7 @@ it.for([
         "scripts/lib/vitest-process-env.mts",
         "scripts/vitest-process-group.mts",
       ]) {
-        writeFixture(
-          directory,
+        write(
           file,
           `export * from ${JSON.stringify(pathToFileURL(path.join(root, file)).href)};\n${
             mode === "modern-unshared" && file === "scripts/vitest-process-group.mts"
@@ -74,8 +72,7 @@ it.for([
       ["--import", "tsx", path.join(copiedRoot, sparseFiles[0]!)],
       directory,
       testRunnerFixtureEnv({
-        // This sparse adapter exercises the historical Node contract, not the host CI policy.
-        // A prebuilt-dist CI shard must not make the copied runner prepare packages.
+        // Exercise historical Node transport without inheriting host dist preparation.
         OPENCLAW_CI_TEST_RUNTIME_POLICY: "node",
         OPENCLAW_E2E_USE_PREBUILT_DIST: "",
         OPENCLAW_NODE_TEST_ENV_JSON: "{}",
