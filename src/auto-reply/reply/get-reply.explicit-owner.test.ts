@@ -1,9 +1,5 @@
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, expect, it } from "vitest";
 import { resolvePromptBuildHookResult } from "../../agents/embedded-agent-runner/run/attempt-prompt-helpers.js";
-import {
-  clearRuntimeConfigSnapshot,
-  setRuntimeConfigSnapshot,
-} from "../../config/runtime-snapshot.js";
 import {
   loadSessionEntryReadOnly,
   replaceSessionEntry,
@@ -15,62 +11,45 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../../test-utils/openclaw-test-state.js";
-import { withFullRuntimeReplyConfig } from "./get-reply-fast-path.js";
 
 let state: OpenClawTestState | undefined;
 afterEach(async () => {
   await state?.cleanup();
-  clearRuntimeConfigSnapshot();
-  vi.clearAllMocks();
-  vi.restoreAllMocks();
 });
 
 it("consumes only work global next-turn context during prompt preparation", async () => {
   const agentId = "work";
-  state = await createOpenClawTestState({
-    label: "explicit-reply",
-    env: { OPENCLAW_TEST_FAST: "0" },
-  });
-  const cfg = withFullRuntimeReplyConfig({
+  state = await createOpenClawTestState({ label: "explicit-reply" });
+  const cfg = {
     agents: {
       ownership: "explicit",
       entries: {
         main: { workspace: state.path("main-workspace") },
         work: { workspace: state.path("work-workspace") },
       },
-      defaults: {
-        workspace: state.workspaceDir,
-        skipBootstrap: true,
-        model: { primary: "mock-openai/gpt-5.6-luna" },
-        models: { "mock-openai/gpt-5.6-luna": { agentRuntime: { id: "openclaw" } } },
-      },
     },
     plugins: { enabled: false },
     session: { scope: "global" },
-  });
-  await state.writeConfig(cfg);
-  setRuntimeConfigSnapshot(cfg);
+  } satisfies Parameters<typeof resolvePromptBuildHookResult>[0]["config"];
+  const scope = (owner: string) => ({ cfg, agentId: owner, sessionKey: "global" });
   const registry = createEmptyPluginRegistry();
   registry.plugins.push(createPluginRecord({ id: "injector", status: "loaded" }));
   for (const owner of ["main", "work"]) {
-    await replaceSessionEntry(
-      { agentId: owner, sessionKey: "global" },
-      {
-        sessionId: `${owner}-global`,
-        updatedAt: 1,
-        pluginNextTurnInjections: {
-          injector: [
-            {
-              id: owner,
-              pluginId: "injector",
-              text: `${owner} context`,
-              placement: "prepend_context",
-              createdAt: 1,
-            },
-          ],
-        },
+    await replaceSessionEntry(scope(owner), {
+      sessionId: `${owner}-global`,
+      updatedAt: 1,
+      pluginNextTurnInjections: {
+        injector: [
+          {
+            id: owner,
+            pluginId: "injector",
+            text: `${owner} context`,
+            placement: "prepend_context",
+            createdAt: 1,
+          },
+        ],
       },
-    );
+    });
   }
   const prepare = () =>
     withPluginRuntimeRegistryScope(registry, () =>
@@ -82,12 +61,9 @@ it("consumes only work global next-turn context during prompt preparation", asyn
       }),
     );
   expect((await prepare()).prependContext).toBe(`${agentId} context`);
-  expect(
-    loadSessionEntryReadOnly({ agentId, sessionKey: "global" })?.pluginNextTurnInjections,
-  ).toBeUndefined();
-  expect(
-    loadSessionEntryReadOnly({ agentId: "main", sessionKey: "global" })?.pluginNextTurnInjections
-      ?.injector,
-  ).toEqual([expect.objectContaining({ text: "main context" })]);
+  expect(loadSessionEntryReadOnly(scope(agentId))?.pluginNextTurnInjections).toBeUndefined();
+  expect(loadSessionEntryReadOnly(scope("main"))?.pluginNextTurnInjections?.injector).toEqual([
+    expect.objectContaining({ text: "main context" }),
+  ]);
   expect((await prepare()).prependContext).toBeUndefined();
 });

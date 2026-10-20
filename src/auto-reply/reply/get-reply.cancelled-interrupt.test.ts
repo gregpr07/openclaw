@@ -1,9 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import {
-  clearRuntimeConfigSnapshot,
-  setRuntimeConfigSnapshot,
-} from "../../config/runtime-snapshot.js";
+import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { withSessionTurn } from "../../sessions/session-controller.admission.js";
 import {
@@ -43,8 +40,6 @@ let state: OpenClawTestState | undefined;
 afterEach(async () => {
   preparation.hold = undefined;
   await state?.cleanup();
-  clearRuntimeConfigSnapshot();
-  vi.clearAllMocks();
 });
 
 it("preserves a queued successor when interrupt input is canceled during runtime preparation", async () => {

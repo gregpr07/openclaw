@@ -4,7 +4,10 @@ import type { TemplateContext } from "../templating.js";
 import { clearInlineDirectives } from "./get-reply-directives-utils.js";
 import { handleInlineActions } from "./get-reply-inline-actions.js";
 import { buildTestCtx } from "./test-ctx.js";
-import type { TypingController } from "./typing.js";
+import {
+  createTypingController as createNoopTypingController,
+  type TypingController,
+} from "./typing.js";
 
 const { createOpenClawToolsMock } = vi.hoisted(() => ({
   createOpenClawToolsMock: vi.fn(),
@@ -20,13 +23,7 @@ vi.mock("../../agents/openclaw-tools.js", () => ({
 export type HandleInlineActionsInput = Parameters<typeof handleInlineActions>[0];
 
 export const createTypingController = (): TypingController => ({
-  onReplyStart: async () => {},
-  startTypingLoop: async () => {},
-  startTypingOnText: async () => {},
-  refreshTypingTtl: () => {},
-  isActive: () => false,
-  markRunComplete: () => {},
-  markDispatchIdle: () => {},
+  ...createNoopTypingController({}),
   cleanup: vi.fn(),
 });
 
@@ -36,54 +33,51 @@ export const createHandleInlineActionsInput = (params: {
   cleanedBody: string;
   command?: Partial<HandleInlineActionsInput["command"]>;
   overrides?: Partial<Omit<HandleInlineActionsInput, "ctx" | "sessionCtx" | "typing" | "command">>;
-}): HandleInlineActionsInput => {
-  return {
-    ctx: params.ctx,
-    sessionCtx: params.ctx as unknown as TemplateContext,
-    cfg: {},
-    agentId: "main",
-    sessionKey: "s:main",
-    workspaceDir: "/tmp",
-    isGroup: false,
-    typing: params.typing,
-    allowTextCommands: false,
-    inlineStatusRequested: false,
-    command: {
-      surface: "whatsapp",
-      channel: "whatsapp",
-      channelId: "whatsapp",
-      ownerList: [],
-      senderIsOwner: false,
-      isAuthorizedSender: false,
-      senderId: undefined,
-      abortKey: "whatsapp:+999",
-      rawBodyNormalized: params.cleanedBody,
-      commandBodyNormalized: params.cleanedBody,
-      from: "whatsapp:+999",
-      to: "whatsapp:+999",
-      ...params.command,
-    },
-    directives: clearInlineDirectives(params.cleanedBody),
-    cleanedBody: params.cleanedBody,
-    elevatedEnabled: false,
-    elevatedAllowed: false,
-    elevatedFailures: [],
-    defaultActivation: () => "always",
-    resolveModelLevels: async () => ({
-      resolvedThinkLevel: undefined,
-      resolvedReasoningLevel: "off",
-    }),
-    resolvedVerboseLevel: undefined,
-    resolvedElevatedLevel: "off",
-    resolveDefaultThinkingLevel: async () => "off",
-    provider: "openai",
-    model: "gpt-4o-mini",
-    contextTokens: 0,
-    abortedLastRun: false,
-    sessionScope: "per-sender",
-    ...params.overrides,
-  };
-};
+}): HandleInlineActionsInput => ({
+  ctx: params.ctx,
+  sessionCtx: params.ctx as unknown as TemplateContext,
+  cfg: {},
+  agentId: "main",
+  sessionKey: "s:main",
+  workspaceDir: "/tmp",
+  isGroup: false,
+  typing: params.typing,
+  allowTextCommands: false,
+  inlineStatusRequested: false,
+  command: {
+    surface: "whatsapp",
+    channel: "whatsapp",
+    channelId: "whatsapp",
+    ownerList: [],
+    senderIsOwner: false,
+    isAuthorizedSender: false,
+    abortKey: "whatsapp:+999",
+    rawBodyNormalized: params.cleanedBody,
+    commandBodyNormalized: params.cleanedBody,
+    from: "whatsapp:+999",
+    to: "whatsapp:+999",
+    ...params.command,
+  },
+  directives: clearInlineDirectives(params.cleanedBody),
+  cleanedBody: params.cleanedBody,
+  elevatedEnabled: false,
+  elevatedAllowed: false,
+  elevatedFailures: [],
+  defaultActivation: () => "always",
+  resolveModelLevels: async () => ({
+    resolvedThinkLevel: undefined,
+    resolvedReasoningLevel: "off",
+  }),
+  resolvedVerboseLevel: undefined,
+  resolvedElevatedLevel: "off",
+  resolveDefaultThinkingLevel: async () => "off",
+  provider: "openai",
+  model: "gpt-4o-mini",
+  contextTokens: 0,
+  abortedLastRun: false,
+  sessionScope: "per-sender",
+  ...params.overrides,
+});
 
 export function runTestInlineActions(params: Parameters<typeof createHandleInlineActionsInput>[0]) {
   return handleInlineActions(createHandleInlineActionsInput(params));
@@ -115,16 +109,12 @@ export function createInlineToolDispatchFixture<T>(params: {
   const ctx = buildTestCtx({
     Body: params.body,
     CommandBody: params.body,
-    ...(params.nativeChannelId === undefined ? {} : { NativeChannelId: params.nativeChannelId }),
+    NativeChannelId: params.nativeChannelId,
   });
   const skillCommands: SkillCommandSpec[] = [
     {
       ...params.skill,
-      dispatch: {
-        kind: "tool",
-        toolName: params.toolName,
-        argMode: "raw",
-      },
+      dispatch: { kind: "tool", toolName: params.toolName, argMode: "raw" },
       sourceFilePath: params.sourceFilePath,
     },
   ];
