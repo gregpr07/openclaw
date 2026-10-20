@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { readConfigHealthStateInDatabase } from "../config/io.health-state.kernel.js";
+import type { ConfigHealthEntryBasis } from "../config/io.health-state.types.js";
 import {
   acquireStateDatabaseSchemaLease,
   assertStateDatabaseAccessAllowed,
@@ -53,57 +54,110 @@ function createExistingStateContext() {
   return captureOpenClawStateWorkerContext({ path: databasePath, env: state.env });
 }
 
-it("retains the shared native handle until its last actor closes and preserves rows on reopen", async () => {
-  const context = captureOpenClawStateWorkerContext();
-  const first = runWithSqliteWorkerStateContext(context, () =>
-    createSqliteWorkerBackend(undefined, { databasePath: context.admission.databasePath }),
+type Context = ReturnType<typeof captureOpenClawStateWorkerContext>;
+function createBackend(context: Context, existing = false) {
+  const databasePath = context.admission.databasePath;
+  const backend = runWithSqliteWorkerStateContext(context, () =>
+    existing
+      ? openExistingSqliteWorkerBackend(undefined, {
+          databasePath,
+          existingIdentity: context.admission.identity.key,
+        })
+      : createSqliteWorkerBackend(undefined, { databasePath }),
   );
-  const second = runWithSqliteWorkerStateContext(context, () =>
-    openExistingSqliteWorkerBackend(undefined, {
-      databasePath: context.admission.databasePath,
-      existingIdentity: captureOpenClawStateWorkerContext().admission.identity.key,
+  backends.add(backend);
+  return backend;
+}
+
+function admitted<T>(context: Context, run: () => T, bindAuthority = false): T {
+  const stages: string[] = [];
+  const databasePath = context.admission.databasePath;
+  const admission = createSqliteWorkerOperationAdmission((request, grant) => {
+    stages.push(request.stage);
+    context.admission.assertCurrent();
+    grant();
+  });
+  if (bindAuthority) {
+    admission.bindDatabaseAuthority({
+      databasePath: context.admission.identity.canonicalPath,
+      assertRequest: context.admission.assertCurrent,
+      assertAccess: () => assertStateDatabaseAccessAllowed(databasePath),
+      acquireSchema: () => acquireStateDatabaseSchemaLease(databasePath),
+    });
+  }
+  const nativePost = admission.port.postMessage.bind(admission.port);
+  // Service the real grant before this same-thread backend waits synchronously.
+  const dispatch = vi
+    .spyOn(admission.port, "postMessage")
+    .mockImplementation((message, transfer) => {
+      nativePost(message, transfer);
+      admission.service();
+    });
+  try {
+    const result = runWithSqliteWorkerStateContext(context, () =>
+      withSqliteWorkerOperationAdmission({ port: admission.port }, run),
+    );
+    expect(stages).toEqual(["transaction", "commit"]);
+    return result;
+  } finally {
+    dispatch.mockRestore();
+    admission.finish();
+  }
+}
+
+function patchHealth(
+  context: Context,
+  backend: ReturnType<typeof createBackend>,
+  configPath: string,
+  signature: string,
+  expected: ConfigHealthEntryBasis | null = null,
+  updatedAtMs = 100,
+) {
+  return runWithSqliteWorkerStateContext(context, () =>
+    backend.execute({
+      type: "config.health.patch",
+      input: {
+        configPath,
+        patch: { last_observed_suspicious_signature: signature },
+        expected,
+        updatedAtMs,
+      },
     }),
   );
-  backends.add(first).add(second);
+}
+
+function registerPluginValue(
+  context: Context,
+  backend: ReturnType<typeof createBackend>,
+  key: { pluginId: string; namespace: string; key: string },
+  value: unknown,
+  bindAuthority = false,
+) {
+  return admitted(
+    context,
+    () =>
+      backend.execute({
+        type: "pluginState.register",
+        input: {
+          ...key,
+          valueJson: JSON.stringify(value),
+          maxEntries: 4,
+          overflowPolicy: "reject-new",
+        },
+      }),
+    bindAuthority,
+  );
+}
+
+it("retains the shared native handle until its last actor closes and preserves rows on reopen", async () => {
+  const context = captureOpenClawStateWorkerContext();
+  const first = createBackend(context);
+  const second = createBackend(context, true);
   await first[SQLITE_WORKER_PREPARE_COMMAND]?.("pluginState.register");
   const database = openOpenClawStateDatabase();
   const key = { pluginId: "native-borrow-fixture", namespace: "shared", key: "answer" };
-  const register = (backend: typeof first, value: number) => {
-    const stages: string[] = [];
-    const admission = createSqliteWorkerOperationAdmission((request, grant) => {
-      stages.push(request.stage);
-      context.admission.assertCurrent();
-      grant();
-    });
-    const nativePost = admission.port.postMessage.bind(admission.port);
-    // Service the real grant on this thread before the native backend waits synchronously.
-    const dispatch = vi
-      .spyOn(admission.port, "postMessage")
-      .mockImplementation((message, transferList) => {
-        nativePost(message, transferList);
-        admission.service();
-      });
-    try {
-      const result = runWithSqliteWorkerStateContext(context, () =>
-        withSqliteWorkerOperationAdmission({ port: admission.port }, () =>
-          backend.execute({
-            type: "pluginState.register",
-            input: {
-              ...key,
-              valueJson: JSON.stringify(value),
-              maxEntries: 4,
-              overflowPolicy: "reject-new",
-            },
-          }),
-        ),
-      );
-      expect(stages).toEqual(["transaction", "commit"]);
-      return result;
-    } finally {
-      dispatch.mockRestore();
-      admission.finish();
-    }
-  };
+  const register = (backend: typeof first, value: number) =>
+    registerPluginValue(context, backend, key, value);
   expect(register(first, 1)).toEqual({ ok: true, value: undefined });
   // Promote this actor before closing its sibling.
   expect(register(second, 1)).toEqual({ ok: true, value: undefined });
@@ -115,11 +169,7 @@ it("retains the shared native handle until its last actor closes and preserves r
   await second.close();
   expect(database.db.isOpen).toBe(false);
 
-  const reopenedContext = captureOpenClawStateWorkerContext();
-  const reopened = runWithSqliteWorkerStateContext(reopenedContext, () =>
-    createSqliteWorkerBackend(undefined, { databasePath: reopenedContext.admission.databasePath }),
-  );
-  backends.add(reopened);
+  createBackend(captureOpenClawStateWorkerContext());
   expect(pluginStateLookup(key)).toEqual(2);
 });
 
@@ -129,99 +179,38 @@ it.each(["kv", "health"] as const)(
     const context = createExistingStateContext();
     const databasePath = context.admission.databasePath;
     const key = { pluginId: "borrow-fixture", namespace: "shared", key: "answer" };
-    const kv = runWithSqliteWorkerStateContext(context, () =>
-      openExistingSqliteWorkerBackend(undefined, {
-        databasePath,
-        existingIdentity: context.admission.identity.key,
-      }),
-    );
-    backends.add(kv);
+    const kv = createBackend(context, true);
     await kv[SQLITE_WORKER_PREPARE_COMMAND]?.("pluginState.register");
     expect(pluginStateLookup(key)).toBeUndefined();
     expect(readFileSync(databasePath)).toEqual(Buffer.alloc(0));
-    const stages: string[] = [];
     withStateDatabaseSchemaMaintenance({ databasePath }, () => {
-      const admission = createSqliteWorkerOperationAdmission((request, grant) => {
-        stages.push(request.stage);
-        context.admission.assertCurrent();
-        grant();
+      expect(registerPluginValue(context, kv, key, { value: 42 }, true)).toEqual({
+        ok: true,
+        value: undefined,
       });
-      admission.bindDatabaseAuthority({
-        databasePath: context.admission.identity.canonicalPath,
-        assertRequest: context.admission.assertCurrent,
-        assertAccess: () => assertStateDatabaseAccessAllowed(databasePath),
-        acquireSchema: () => acquireStateDatabaseSchemaLease(databasePath),
-      });
-      const nativePost = admission.port.postMessage.bind(admission.port);
-      // Both native backends share this thread; service the real grant before its synchronous wait.
-      const dispatch = vi
-        .spyOn(admission.port, "postMessage")
-        .mockImplementation((message, transferList) => {
-          nativePost(message, transferList);
-          admission.service();
-        });
-      try {
-        expect(
-          runWithSqliteWorkerStateContext(context, () =>
-            withSqliteWorkerOperationAdmission({ port: admission.port }, () =>
-              kv.execute({
-                type: "pluginState.register",
-                input: {
-                  ...key,
-                  valueJson: JSON.stringify({ value: 42 }),
-                  maxEntries: 4,
-                  overflowPolicy: "reject-new",
-                },
-              }),
-            ),
-          ),
-        ).toEqual({ ok: true, value: undefined });
-        expect(stages).toEqual(["transaction", "commit"]);
-      } finally {
-        dispatch.mockRestore();
-        admission.finish();
-      }
     });
-    const health = runWithSqliteWorkerStateContext(context, () =>
-      createSqliteWorkerBackend(undefined, { databasePath }),
-    );
-    backends.add(health);
+    const health = createBackend(context);
     await health[SQLITE_WORKER_PREPARE_COMMAND]?.("config.health.patch");
     const database = openOpenClawStateDatabase();
     const configPath = "/synthetic-native-borrow.json";
-    expect(
-      runWithSqliteWorkerStateContext(context, () =>
-        health.execute({
-          type: "config.health.patch",
-          input: {
-            configPath,
-            patch: { last_observed_suspicious_signature: "first" },
-            expected: null,
-            updatedAtMs: 100,
-          },
-        }),
-      ),
-    ).toBe(true);
+    expect(patchHealth(context, health, configPath, "first")).toBe(true);
 
     await (firstToClose === "kv" ? kv : health).close();
     expect(database.db.isOpen).toBe(true);
     if (firstToClose === "kv") {
       expect(
-        runWithSqliteWorkerStateContext(context, () =>
-          health.execute({
-            type: "config.health.patch",
-            input: {
-              configPath,
-              patch: { last_observed_suspicious_signature: "second" },
-              expected: {
-                lastKnownGoodJson: null,
-                lastPromotedGoodJson: null,
-                suspiciousSignature: "first",
-                updatedAtMs: 100,
-              },
-              updatedAtMs: 200,
-            },
-          }),
+        patchHealth(
+          context,
+          health,
+          configPath,
+          "second",
+          {
+            lastKnownGoodJson: null,
+            lastPromotedGoodJson: null,
+            suspiciousSignature: "first",
+            updatedAtMs: 100,
+          },
+          200,
         ),
       ).toBe(true);
     } else {
@@ -230,11 +219,7 @@ it.each(["kv", "health"] as const)(
     await (firstToClose === "kv" ? health : kv).close();
     expect(database.db.isOpen).toBe(false);
 
-    const reopenedContext = captureOpenClawStateWorkerContext();
-    const reopened = runWithSqliteWorkerStateContext(reopenedContext, () =>
-      createSqliteWorkerBackend(undefined, { databasePath }),
-    );
-    backends.add(reopened);
+    createBackend(captureOpenClawStateWorkerContext());
     expect(pluginStateLookup(key)).toEqual({ value: 42 });
     expect(readConfigHealthStateInDatabase(openOpenClawStateDatabase().db)).toMatchObject({
       entries: {
@@ -253,19 +238,8 @@ it.each(["config.health.patch", "diagnostic.register"] as const)(
     await closeOpenClawStateDatabaseAsync();
     const initialBytes = readFileSync(databasePath);
     const context = captureOpenClawStateWorkerContext({ path: databasePath, env: state.env });
-    const first = runWithSqliteWorkerStateContext(context, () =>
-      openExistingSqliteWorkerBackend(undefined, {
-        databasePath: context.admission.databasePath,
-        existingIdentity: context.admission.identity.key,
-      }),
-    );
-    const second = runWithSqliteWorkerStateContext(context, () =>
-      openExistingSqliteWorkerBackend(undefined, {
-        databasePath: context.admission.databasePath,
-        existingIdentity: context.admission.identity.key,
-      }),
-    );
-    backends.add(first).add(second);
+    const first = createBackend(context, true);
+    const second = createBackend(context, true);
     await first[SQLITE_WORKER_PREPARE_COMMAND]?.("claws.install-schema-versions");
     await second[SQLITE_WORKER_PREPARE_COMMAND]?.(operation);
     expect(
@@ -279,58 +253,23 @@ it.each(["config.health.patch", "diagnostic.register"] as const)(
     expect(readFileSync(databasePath)).toEqual(initialBytes);
 
     const scope = "tests/health-native-borrow";
-    const write = (backend: typeof first, key: string) => {
-      const execute = () =>
-        runWithSqliteWorkerStateContext(context, () =>
-          operation === "config.health.patch"
-            ? backend.execute({
-                type: operation,
-                input: {
-                  configPath: `/${key}.json`,
-                  patch: { last_observed_suspicious_signature: key },
-                  expected: null,
-                  updatedAtMs: 100,
-                },
-              })
-            : backend.execute({
-                type: operation,
-                input: {
-                  scope,
-                  maxEntries: 10,
-                  record: prepareSqliteAuditRecord(scope, {
-                    key,
-                    value: { marker: key },
-                    createdAt: 100,
-                  }),
-                },
-              }),
-        );
-      if (operation === "config.health.patch") {
-        return execute();
-      }
-      const stages: string[] = [];
-      const admission = createSqliteWorkerOperationAdmission((request, grant) => {
-        stages.push(request.stage);
-        context.admission.assertCurrent();
-        grant();
-      });
-      const nativePost = admission.port.postMessage.bind(admission.port);
-      // Service the actual grant before this same-thread backend waits for its response.
-      const dispatch = vi
-        .spyOn(admission.port, "postMessage")
-        .mockImplementation((message, transferList) => {
-          nativePost(message, transferList);
-          admission.service();
-        });
-      try {
-        const result = withSqliteWorkerOperationAdmission({ port: admission.port }, execute);
-        expect(stages).toEqual(["transaction", "commit"]);
-        return result;
-      } finally {
-        dispatch.mockRestore();
-        admission.finish();
-      }
-    };
+    const write = (backend: typeof first, key: string) =>
+      operation === "config.health.patch"
+        ? patchHealth(context, backend, `/${key}.json`, key)
+        : admitted(context, () =>
+            backend.execute({
+              type: operation,
+              input: {
+                scope,
+                maxEntries: 10,
+                record: prepareSqliteAuditRecord(scope, {
+                  key,
+                  value: { marker: key },
+                  createdAt: 100,
+                }),
+              },
+            }),
+          );
     const expectedResult = operation === "config.health.patch" ? true : undefined;
     expect(write(first, "first")).toBe(expectedResult);
     expect(write(second, "second")).toBe(expectedResult);
@@ -341,13 +280,7 @@ it.each(["config.health.patch", "diagnostic.register"] as const)(
     await second.close();
     expect(database.db.isOpen).toBe(false);
 
-    const reopenedContext = captureOpenClawStateWorkerContext();
-    const reopened = runWithSqliteWorkerStateContext(reopenedContext, () =>
-      createSqliteWorkerBackend(undefined, {
-        databasePath: reopenedContext.admission.databasePath,
-      }),
-    );
-    backends.add(reopened);
+    const reopened = createBackend(captureOpenClawStateWorkerContext());
     await reopened[SQLITE_WORKER_PREPARE_COMMAND]?.("claws.install-schema-versions");
     const reopenedDatabase = openOpenClawStateDatabase();
     if (operation === "config.health.patch") {
