@@ -16,22 +16,20 @@ vi.mock("./audit.js", () => ({ appendSystemAgentAuditEntry: audit }));
 
 const { withConfigFileHarness } = useConfigCliIntegrationHarness();
 
-// Exercise the model-facing action, host approval handoff, and real config writer.
-// Only audit storage is replaced; the file read, validation, and deletion are real.
+// Real model-facing proposal, host approval, and config writer; only audit storage is mocked.
 describe("setup config unset", () => {
   it.each([false, true])(
     "removes only the approved field unless authority expires during preparation=%s",
     async (expireAuthority) => {
+      const retained = {
+        thinkingDefault: "high",
+        models: { "openai/gpt-5.2": { params: { fastMode: true } } },
+        modelPolicy: { allow: ["openai/gpt-5.2"] },
+      };
+      const gateway = { mode: "local" };
       const raw = JSON.stringify({
-        gateway: { mode: "local" },
-        agents: {
-          defaults: {
-            fastModeDefault: false,
-            thinkingDefault: "high",
-            models: { "openai/gpt-5.2": { params: { fastMode: true } } },
-            modelPolicy: { allow: ["openai/gpt-5.2"] },
-          },
-        },
+        gateway,
+        agents: { defaults: { fastModeDefault: false, ...retained } },
       });
       await withConfigFileHarness("openclaw-setup-unset-", raw, async ({ configPath }) => {
         audit.mockClear();
@@ -87,13 +85,10 @@ describe("setup config unset", () => {
           return;
         }
         expect(await apply()).toEqual({ applied: true });
-        const saved = JSON5.parse(fs.readFileSync(configPath, "utf8"));
-        expect(saved.agents.defaults).toEqual({
-          thinkingDefault: "high",
-          models: { "openai/gpt-5.2": { params: { fastMode: true } } },
-          modelPolicy: { allow: ["openai/gpt-5.2"] },
+        expect(JSON5.parse(fs.readFileSync(configPath, "utf8"))).toEqual({
+          gateway,
+          agents: { defaults: retained },
         });
-        expect(saved.gateway).toEqual({ mode: "local" });
         expect(audit).toHaveBeenCalledWith(
           expect.objectContaining({
             operation: "config.unset",

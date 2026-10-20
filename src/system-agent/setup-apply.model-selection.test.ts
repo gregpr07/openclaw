@@ -10,88 +10,51 @@ import {
 
 describe("projectSetupInferenceConfig", () => {
   const profileId = "omlx:setup-proof";
+  const keyRef = { source: "env", provider: "default", id: "OMLX_API_KEY" } as const;
+  const referencedCredential = { type: "api_key", provider: "omlx", keyRef } as const;
+  const apiKeyCredential = (key: string, provider = "omlx") =>
+    ({ type: "api_key", provider, key }) as const;
+  const providerConfig = (port: number, apiKey?: SecretInput) => ({
+    baseUrl: `http://127.0.0.1:${port}/v1`,
+    apiKey,
+    models: [],
+  });
 
-  it.each<{
-    name: string;
-    credential: Extract<AuthProfileCredential, { type: "api_key" | "token" }>;
-    providerApiKey?: SecretInput;
-    expectedApiKey: SecretInput;
-  }>([
-    {
-      name: "core no-auth marker",
-      credential: { type: "api_key", provider: "custom-studio", key: "custom-local" },
-      expectedApiKey: "custom-local",
-    },
-    {
-      name: "bundled oMLX no-auth marker",
-      credential: { type: "api_key", provider: "omlx", key: "omlx-local" },
-      expectedApiKey: "omlx-local",
-    },
-    {
-      name: "literal API key",
-      credential: { type: "api_key", provider: "omlx", key: "synthetic-api-key" },
-      expectedApiKey: profileId,
-    },
-    {
-      name: "real token",
-      credential: { type: "token", provider: "omlx", token: "synthetic-token" },
-      expectedApiKey: profileId,
-    },
-    {
-      name: "environment marker",
-      credential: { type: "api_key", provider: "omlx", key: "OMLX_API_KEY" },
-      expectedApiKey: profileId,
-    },
-    {
-      name: "environment SecretRef",
-      credential: {
-        type: "api_key",
-        provider: "omlx",
-        keyRef: { source: "env", provider: "default", id: "OMLX_API_KEY" },
-      },
-      expectedApiKey: { source: "env", provider: "default", id: "OMLX_API_KEY" },
-    },
-    {
-      name: "environment template reference",
-      credential: {
-        type: "api_key",
-        provider: "omlx",
-        keyRef: { source: "env", provider: "default", id: "OMLX_API_KEY" },
-      },
-      providerApiKey: "${OMLX_API_KEY}",
-      expectedApiKey: "${OMLX_API_KEY}",
-    },
-    {
-      name: "profile binding backed by a SecretRef",
-      credential: {
-        type: "api_key",
-        provider: "omlx",
-        keyRef: { source: "env", provider: "default", id: "OMLX_API_KEY" },
-      },
-      providerApiKey: profileId,
-      expectedApiKey: profileId,
-    },
+  it.each<
+    [
+      string,
+      Extract<AuthProfileCredential, { type: "api_key" | "token" }>,
+      SecretInput,
+      SecretInput?,
+    ]
+  >([
+    ["core no-auth marker", apiKeyCredential("custom-local", "custom-studio"), "custom-local"],
+    ["bundled oMLX no-auth marker", apiKeyCredential("omlx-local"), "omlx-local"],
+    ["literal API key", apiKeyCredential("synthetic-api-key"), profileId],
+    ["real token", { type: "token", provider: "omlx", token: "synthetic-token" }, profileId],
+    ["environment marker", apiKeyCredential("OMLX_API_KEY"), profileId],
+    [
+      "environment SecretRef",
+      referencedCredential,
+      { source: "env", provider: "default", id: "OMLX_API_KEY" },
+    ],
+    ["environment template reference", referencedCredential, "${OMLX_API_KEY}", "${OMLX_API_KEY}"],
+    ["profile binding backed by a SecretRef", referencedCredential, profileId, profileId],
   ])(
-    "preserves credential semantics for $name",
-    ({ credential, providerApiKey, expectedApiKey }) => {
+    "preserves credential semantics for %s",
+    (_name, credential, expectedApiKey, providerApiKey) => {
       const provider = credential.provider;
       const prepared: OpenClawConfig = {
         models: {
           providers: {
-            [provider.toUpperCase()]: {
-              baseUrl: "http://127.0.0.1:8003/v1",
-              apiKey: "stale-prepared-alias",
-              models: [],
-            },
-            [provider]: {
-              baseUrl: "http://127.0.0.1:8000/v1",
-              apiKey:
-                providerApiKey ??
+            [provider.toUpperCase()]: providerConfig(8003, "stale-prepared-alias"),
+            [provider]: providerConfig(
+              8000,
+              providerApiKey ??
                 (credential.type === "token"
                   ? credential.token
                   : (credential.key ?? credential.keyRef)),
-              models: [],
-            },
+            ),
           },
         },
       };
@@ -100,16 +63,8 @@ describe("projectSetupInferenceConfig", () => {
         base: {
           models: {
             providers: {
-              [provider.toUpperCase()]: {
-                baseUrl: "http://127.0.0.1:8001/v1",
-                apiKey: "old-alias-key",
-                models: [],
-              },
-              [provider]: {
-                baseUrl: "http://127.0.0.1:8002/v1",
-                apiKey: "old-canonical-key",
-                models: [],
-              },
+              [provider.toUpperCase()]: providerConfig(8001, "old-alias-key"),
+              [provider]: providerConfig(8002, "old-canonical-key"),
               sibling: { baseUrl: "http://127.0.0.1:9000/v1", models: [] },
             },
           },

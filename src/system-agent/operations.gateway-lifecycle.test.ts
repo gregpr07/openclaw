@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runDaemonStop } from "../cli/daemon-cli/lifecycle.js";
-import type { ConfigFileSnapshot } from "../config/types.openclaw.js";
 import type { GatewayService } from "../daemon/service.js";
 import { mockSystemAccountHome } from "../daemon/service.test-helpers.js";
 import type { GatewayHostLifecycle } from "../gateway/server-public.js";
@@ -34,20 +33,14 @@ vi.mock("../daemon/service.js", async (importOriginal) => ({
 
 vi.mock("../config/config.js", async () => {
   const { resolveGatewayPort } = await import("../config/paths.js");
-  const snapshot: ConfigFileSnapshot = {
-    path: "/test/openclaw.json",
-    exists: true,
+  const { createSnapshot } = await import("../config/mutate.test-support.js");
+  const snapshot = {
+    ...createSnapshot({
+      path: "/test/openclaw.json",
+      hash: "lifecycle-test-config",
+      sourceConfig: {},
+    }),
     raw: "{}",
-    parsed: {},
-    sourceConfig: {},
-    resolved: {},
-    runtimeConfig: {},
-    config: {},
-    valid: true,
-    hash: "lifecycle-test-config",
-    issues: [],
-    warnings: [],
-    legacyIssues: [],
   };
   return {
     getRuntimeConfig: () => ({}),
@@ -64,6 +57,11 @@ vi.mock("./audit.js", () => ({
 
 describe("SystemAgent hosted gateway lifecycle", () => {
   const exitSentinel = new Error("native CLI attempted to exit the host");
+  const expectNoNativeCalls = () => {
+    for (const mock of [defaultRuntime.exit, service.start, service.stop]) {
+      expect(mock).not.toHaveBeenCalled();
+    }
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -120,9 +118,7 @@ describe("SystemAgent hosted gateway lifecycle", () => {
       expect(guard).toHaveBeenCalledOnce();
       expect(appendAudit).toHaveBeenCalledWith(expect.objectContaining({ summary }));
       expect(lines).toContain(summary);
-      expect(defaultRuntime.exit).not.toHaveBeenCalled();
-      expect(service.start).not.toHaveBeenCalled();
-      expect(service.stop).not.toHaveBeenCalled();
+      expectNoNativeCalls();
     },
   );
 
@@ -141,7 +137,7 @@ describe("SystemAgent hosted gateway lifecycle", () => {
     ).rejects.toThrow("native service ownership changed");
     expect(appendAudit).not.toHaveBeenCalled();
     expect(lines.join("\n")).not.toContain("[openclaw] done:");
-    expect(defaultRuntime.exit).not.toHaveBeenCalled();
+    expectNoNativeCalls();
   });
 
   it("rejects gateway-stop without a host lifecycle before reaching the exiting native CLI", async () => {
@@ -161,11 +157,9 @@ describe("SystemAgent hosted gateway lifecycle", () => {
         deps: { setupSurface: "gateway" },
       }),
     ).rejects.toThrow("Gateway host lifecycle is unavailable");
-    expect(defaultRuntime.exit).not.toHaveBeenCalled();
+    expectNoNativeCalls();
     expect(captureExit).not.toHaveBeenCalled();
     expect(service.isLoaded).not.toHaveBeenCalled();
-    expect(service.start).not.toHaveBeenCalled();
-    expect(service.stop).not.toHaveBeenCalled();
     expect(appendAudit).not.toHaveBeenCalled();
     expect(lines.join("\n")).not.toContain("[openclaw] done:");
   });
