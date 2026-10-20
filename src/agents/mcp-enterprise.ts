@@ -7,6 +7,7 @@ import * as oidc from "openid-client";
 import { withOpenClawStateLeaseAsync } from "../state/openclaw-state-lease.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { operatorMcpOAuthIdentity } from "./mcp-oauth-identity.js";
+import { withMcpOAuthLeaseSignal } from "./mcp-oauth-provider.js";
 import { mutateMcpOAuthStore, readMcpOAuthStore } from "./mcp-oauth-store.js";
 
 class PostAuthenticatedCrossAppAccessProvider extends CrossAppAccessProvider {
@@ -36,9 +37,23 @@ export type McpEnterpriseConfig = {
   tokenEndpointAuthMethod?: "client_secret_basic" | "client_secret_post";
 };
 
+export function mcpEnterpriseIdpIdentity(config: McpEnterpriseConfig) {
+  return operatorMcpOAuthIdentity("enterprise-sso", `${config.idpIssuer}\0${config.idpClientId}`);
+}
+
 export function mcpEnterpriseIdpStoreKey(config: McpEnterpriseConfig): string {
-  return operatorMcpOAuthIdentity("enterprise-sso", `${config.idpIssuer}\0${config.idpClientId}`)
-    .storeKey;
+  return mcpEnterpriseIdpIdentity(config).storeKey;
+}
+
+/** Keep discovery, code exchange, and refresh on the caller's guarded fetch. */
+export function discoverMcpEnterpriseIdp(config: McpEnterpriseConfig, fetchFn: FetchLike) {
+  return oidc.discovery(
+    new URL(config.idpIssuer),
+    config.idpClientId,
+    config.idpClientSecret,
+    undefined,
+    { [oidc.customFetch]: fetchFn },
+  );
 }
 
 /** A logout or a new IdP login invalidates resource tokens held by a live transport. */
@@ -53,7 +68,10 @@ export async function readMcpEnterpriseAuthorizationId(
 }
 
 /** Read the IdP assertion only at exchange time, never into a shared server catalog. */
-async function readEnterpriseIdToken(config: McpEnterpriseConfig): Promise<string> {
+async function readEnterpriseIdToken(
+  config: McpEnterpriseConfig,
+  fetchFn: FetchLike,
+): Promise<string> {
   const storeKey = mcpEnterpriseIdpStoreKey(config);
   const current = await readMcpOAuthStore(storeKey);
   if (
@@ -82,10 +100,9 @@ async function readEnterpriseIdToken(config: McpEnterpriseConfig): Promise<strin
       if (!stored.tokens?.refresh_token) {
         throw new Error('Enterprise SSO has expired. Run "openclaw mcp login <server>" again.');
       }
-      const discovered = await oidc.discovery(
-        new URL(config.idpIssuer),
-        config.idpClientId,
-        config.idpClientSecret,
+      const discovered = await discoverMcpEnterpriseIdp(
+        config,
+        withMcpOAuthLeaseSignal(fetchFn, lease.signal),
       );
       const refreshed = await oidc.refreshTokenGrant(discovered, stored.tokens.refresh_token);
       const expiresAt = refreshed.claims()?.exp;
@@ -131,7 +148,7 @@ export function createMcpEnterpriseProvider(config: McpEnterpriseConfig, fetchFn
         audience: context.authorizationServerUrl,
         resource: context.resourceUrl,
         scope: context.scope ?? config.scope,
-        idToken: await readEnterpriseIdToken(config),
+        idToken: await readEnterpriseIdToken(config, fetchFn),
         clientId: config.idpClientId,
         clientSecret: config.idpClientSecret,
         fetchFn: context.fetchFn,

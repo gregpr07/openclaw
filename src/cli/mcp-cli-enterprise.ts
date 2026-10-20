@@ -1,7 +1,9 @@
 import * as oidc from "openid-client";
 import type { McpEnterpriseConfig } from "../agents/mcp-enterprise.js";
-import { mcpEnterpriseIdpStoreKey } from "../agents/mcp-enterprise.js";
+import { discoverMcpEnterpriseIdp, mcpEnterpriseIdpStoreKey } from "../agents/mcp-enterprise.js";
+import { buildMcpOAuthHttpFetch } from "../agents/mcp-http-fetch.js";
 import type { McpOAuthLoginLifecycle } from "../agents/mcp-oauth-provider.js";
+import { withMcpOAuthLeaseSignal } from "../agents/mcp-oauth-provider.js";
 import { mutateMcpOAuthStore } from "../agents/mcp-oauth-store.js";
 import { startOAuthLoopbackCallbackServer } from "../infra/oauth-loopback-callback.js";
 import { defaultRuntime } from "../runtime.js";
@@ -18,11 +20,16 @@ export async function loginMcpEnterprise(params: {
 }): Promise<void> {
   const { name, config, owner } = params;
   owner.assertCurrent();
-  const discovered = await oidc.discovery(
-    new URL(config.idpIssuer),
-    config.idpClientId,
-    config.idpClientSecret,
+  const oidcFetch = withMcpOAuthLeaseSignal(
+    buildMcpOAuthHttpFetch({
+      resourceUrl: config.idpIssuer,
+      timeoutMs: 30_000,
+      beforeRequest: owner.assertCurrent,
+    }),
+    owner.signal,
+    owner.assertCurrent,
   );
+  const discovered = await discoverMcpEnterpriseIdp(config, oidcFetch);
   const verifier = oidc.randomPKCECodeVerifier();
   const state = oidc.randomState();
   const nonce = oidc.randomNonce();
