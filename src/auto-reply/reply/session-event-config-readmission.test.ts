@@ -283,6 +283,7 @@ it.for([
         const firstStarted = createDeferred();
         const releaseFirst = createDeferred();
         const prompts: string[] = [];
+        const laneStates: boolean[] = [];
         runEmbeddedAgentMock
           .mockReset()
           .mockImplementation(async (params: RunEmbeddedAgentParams) => {
@@ -301,6 +302,9 @@ it.for([
                 model: params.model,
               });
             } else {
+              if (scenario === "scheduled-control") {
+                expect(laneStates.at(-1)).toBe(false);
+              }
               if (boundAccount) {
                 expect((await readSessionEntryInWorker(scope))?.authProfileOverride).toBe(
                   missingDestinationProfileId,
@@ -389,6 +393,7 @@ it.for([
                       inferenceBinding,
                     },
                     admissionSource: "operator-schedule" as const,
+                    onLaneWait: ({ waiting }) => laneStates.push(waiting),
                     operatorAuthority,
                     assertCurrent: () => {
                       if (revoked) {
@@ -417,6 +422,9 @@ it.for([
             await expect(completion.accepted).resolves.toMatchObject({ ok: false });
           } else {
             await expect(completion.accepted).resolves.toEqual({ ok: true });
+          }
+          if (scenario === "scheduled-control") {
+            expect(laneStates.at(-1)).toBe(true);
           }
           setRuntimeConfigSnapshot({
             ...config,

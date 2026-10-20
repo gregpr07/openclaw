@@ -614,10 +614,12 @@ export function enqueueSessionEventForHost(
             onDeferred: () => {
               assertCurrent();
               deferred = true;
+              options.scheduledAutomation?.onLaneWait?.({ waiting: true });
               return true;
             },
             onAdopted: async () => {
               adopted = true;
+              options.scheduledAutomation?.onLaneWait?.({ waiting: false });
               if (!operation) {
                 throw new Error("Session event has no admitted reply owner");
               }

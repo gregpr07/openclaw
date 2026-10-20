@@ -132,6 +132,7 @@ export type ScheduledSessionAutomation = {
   assertCurrent: () => void;
   /** Refresh durable occurrence authority before admission or an asynchronous effect. */
   prepare?: () => Promise<void>;
+  onLaneWait?: (info: { waiting: boolean }) => void;
   onExecutionStarted?: (info: {
     runId: string;
     sessionId?: string;

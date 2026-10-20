@@ -234,6 +234,7 @@ export async function runEmbeddedFallbackCandidate(
           if (waiting && replyOperation) {
             markReplyOperationGlobalLaneWaitProgress(replyOperation);
           }
+          turn.followupRun.run.scheduledAutomation?.onLaneWait?.({ waiting: waiting !== false });
         },
         blockReplyBreak: turn.resolvedBlockStreamingBreak,
         blockReplyChunking: turn.blockReplyChunking,

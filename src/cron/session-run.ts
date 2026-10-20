@@ -102,7 +102,6 @@ export async function runCronSessionTurn(
   });
   assertCurrent();
   let sessionId: string | undefined;
-  params.onLaneWait?.({ waiting: true });
   const receipt = enqueueSessionEvent(text, {
     agentId: params.agentId,
     sessionKey: params.sessionKey,
@@ -123,9 +122,9 @@ export async function runCronSessionTurn(
       assertCurrent,
       beforeDeliver,
       sourceDelivery: delivery.sourceDelivery,
+      onLaneWait: params.onLaneWait,
       onExecutionStarted: (info) => {
         sessionId = info.sessionId;
-        params.onLaneWait?.({ waiting: false });
         params.onExecutionStarted?.({
           jobId: job.id,
           agentId: params.agentId,

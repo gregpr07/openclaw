@@ -8,6 +8,7 @@ import type {
 import type { RestoredGatewayOperatorAuthority } from "../gateway/operator-run-recovery.js";
 import { makeCronJob } from "./delivery.test-helpers.js";
 import { resolveCronSourceDeliveryPlan } from "./isolated-agent/source-delivery-plan.js";
+import { createCronAgentWatchdog } from "./service/agent-watchdog.js";
 import { runCronSessionTurn } from "./session-run.js";
 
 const fixture = vi.hoisted(() => ({
@@ -195,6 +196,61 @@ describe("scheduled session prompts", () => {
 });
 
 describe("scheduled session execution custody", () => {
+  it("times out adopted preparation without spending the setup budget in the queue", async () => {
+    vi.useFakeTimers();
+    const terminal = createDeferred<SessionEventOutcome>();
+    const enqueued = createDeferred<SessionEventOptions>();
+    fixture.enqueue.mockImplementation((_text, options) => {
+      options.scheduledAutomation?.onLaneWait?.({ waiting: true });
+      enqueued.resolve(options);
+      return {
+        id: "event",
+        cancel: () => false,
+        accepted: Promise.resolve({ ok: true }),
+        settled: terminal.promise,
+      };
+    });
+    const triggerTimeout = vi.fn();
+    const watchdog = createCronAgentWatchdog({
+      deferUntilRunner: true,
+      jobTimeoutMs: 120_000,
+      triggerTimeout,
+    });
+    watchdog.start();
+    const run = runCronSessionTurn({
+      ...input(),
+      onLaneWait: (info) => {
+        if (info?.waiting === false) {
+          watchdog.noteLaneAdmitted();
+        } else {
+          watchdog.noteLaneWait();
+        }
+      },
+      onExecutionStarted: watchdog.noteRunnerStarted,
+    });
+    try {
+      const options = await awaitGateBeforeSettlement(
+        enqueued.promise,
+        run,
+        "settled before enqueue",
+      );
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(triggerTimeout).not.toHaveBeenCalled();
+      options.scheduledAutomation?.onLaneWait?.({ waiting: false });
+      // The controller has the turn, but workspace/account preparation never finishes.
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(triggerTimeout).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(triggerTimeout).toHaveBeenCalledExactlyOnceWith(
+        "cron: isolated agent setup timed out before runner start",
+      );
+    } finally {
+      terminal.resolve({ status: "cancelled", executionStarted: false, delivered: false });
+      await run;
+      watchdog.dispose();
+    }
+  });
+
   it("retains the restored source after acceptance until the controller settles", async () => {
     const source = restoredSource();
     fixture.restore.mockResolvedValue(source);

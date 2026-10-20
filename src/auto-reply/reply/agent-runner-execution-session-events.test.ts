@@ -216,6 +216,7 @@ describe("ordinary session event execution", () => {
       const onExecutionPhase = vi.fn((info: CronAgentExecutionPhaseUpdate) => {
         observedProgress.push(info.phase);
       });
+      const onLaneWait = vi.fn<NonNullable<ScheduledSessionAutomation["onLaneWait"]>>();
       const nativePhase = runtime === "cli" ? "process_spawned" : "model_call_started";
       event.assertCurrent = () => {
         if (!current) {
@@ -235,6 +236,7 @@ describe("ordinary session event execution", () => {
       followupRun.run.scheduledAutomation = {
         ...createScheduledAutomation(),
         onExecutionPhase,
+        onLaneWait,
         executionIdentity: {
           ingress: { kind: "schedule", boundary: "scheduled-event-test", state: "present" },
         },
@@ -254,6 +256,8 @@ describe("ordinary session event execution", () => {
       } else {
         state.runEmbeddedAgentMock.mockImplementationOnce(
           async (params: RunEmbeddedAgentInternalParams) => {
+            params.onLaneWait?.({ waiting: true, waitMs: 0, queuedAhead: 1 });
+            params.onLaneWait?.({ waiting: false, waitMs: 0, queuedAhead: 0 });
             await params.onExecutionStarted?.();
             providerWork();
             params.onExecutionPhase?.({
@@ -283,6 +287,9 @@ describe("ordinary session event execution", () => {
         expect(event.beforeStart).toHaveBeenCalledOnce();
         expect(scheduledRuns).toEqual([expect.any(String)]);
         expect(providerWork).not.toHaveBeenCalled();
+        expect(onLaneWait.mock.calls.map(([info]) => info?.waiting)).toEqual(
+          runtime === "embedded" ? [true, false] : [],
+        );
         expect(event.onStarted).not.toHaveBeenCalled();
         expect(onExecutionPhase.mock.calls.some(([info]) => info.phase === nativePhase)).toBe(
           false,
