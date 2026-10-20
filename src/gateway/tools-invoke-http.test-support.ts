@@ -2,6 +2,10 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { Type } from "typebox";
 import { beforeEach, expect, it, vi } from "vitest";
+import {
+  closeHttpServer,
+  listenLoopback,
+} from "../../test/helpers/gateway-integration-fixtures.js";
 import type { OpenClawToolsOptions } from "../agents/openclaw-tools.types.js";
 import type { AnyAgentTool } from "../agents/tools/common.js";
 import { captureRuntimeConfigAsyncReader } from "../config/io.runtime.js";
@@ -152,22 +156,9 @@ export function createToolsInvokeHttpTestServer(params: {
   });
   return {
     async listen() {
-      await new Promise<void>((resolve, reject) => {
-        server.once("error", reject);
-        server.listen(0, "127.0.0.1", resolve);
-      });
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        throw new Error("expected loopback HTTP server address");
-      }
-      return address.port;
+      return Number(new URL(await listenLoopback(server)).port);
     },
-    async close() {
-      server.closeAllConnections();
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
-      });
-    },
+    close: () => closeHttpServer(server),
     setMethodRegistry(this: void, registry: GatewayMethodRegistry) {
       const context = resolveGatewayContext?.();
       if (!context) {

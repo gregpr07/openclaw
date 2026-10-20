@@ -23,6 +23,12 @@ it("describes sessions over the published wire without changing legacy key seman
     const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
     const requests: Array<{ method: string; params: unknown }> = [];
     let responseKey = "";
+    const session = (key: string) => ({
+      key,
+      sessionId: "selected-transcript",
+      model: "selected-model",
+    });
+    const defaults = { model: "default-model" };
     let holdDescription = false;
     const heldRequest = createDeferred();
     let client: GatewayChatClient | undefined;
@@ -50,11 +56,7 @@ it("describes sessions over the published wire without changing legacy key seman
             return;
           }
           sendMinimalGatewayResponse(socket, frame.id, {
-            session: {
-              key: responseKey,
-              sessionId: "selected-transcript",
-              model: "selected-model",
-            },
+            session: session(responseKey),
           });
         } else if (frame.method === "sessions.list" && validateSessionsListParams(frame.params)) {
           sendMinimalGatewayResponse(socket, frame.id, {
@@ -62,7 +64,7 @@ it("describes sessions over the published wire without changing legacy key seman
             path: "synthetic-store",
             count: 0,
             sessions: [],
-            defaults: { model: "default-model" },
+            defaults,
           });
         } else {
           socket.send(
@@ -97,21 +99,16 @@ it("describes sessions over the published wire without changing legacy key seman
       ]) {
         requests.length = 0;
         responseKey = testCase.key;
+        const agent = testCase.agentId ? { agentId: testCase.agentId } : {};
         await expect(
-          client.describeSession({
-            sessionKey: testCase.sessionKey,
-            ...(testCase.agentId ? { agentId: testCase.agentId } : {}),
-          }),
-        ).resolves.toEqual({
-          session: { key: testCase.key, sessionId: "selected-transcript", model: "selected-model" },
-          defaults: { model: "default-model" },
-        });
+          client.describeSession({ sessionKey: testCase.sessionKey, ...agent }),
+        ).resolves.toEqual({ session: session(testCase.key), defaults });
         expect(requests).toEqual([
           {
             method: "sessions.describe",
             params: {
               key: testCase.sessionKey,
-              ...(testCase.agentId ? { agentId: testCase.agentId } : {}),
+              ...agent,
             },
           },
           {

@@ -1,28 +1,15 @@
-// Tool invoke cron regression tests cover HTTP tool invocation for cron/gateway
-// tools with lightweight mocks around auth, config, and before-tool hooks.
 import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  closeHttpServer,
+  listenLoopback,
+} from "../../test/helpers/gateway-integration-fixtures.js";
 
 const TEST_GATEWAY_TOKEN = "test-gateway-token-1234567890";
-const resolveToolLoopDetectionConfig = () => ({ warnAt: 3 });
-const runBeforeToolCallHook = async (args: { params: unknown }) => ({
-  blocked: false as const,
-  params: args.params,
-});
-
 let cfg: Record<string, unknown> = {};
-const alwaysAuthorized = async () => ({ ok: true as const });
-const disableDefaultMemorySlot = () => false;
-const noWarnLog = () => {};
 
-vi.mock("../config/config.js", () => ({
-  getRuntimeConfig: () => cfg,
-}));
-
-vi.mock("../config/io.js", () => ({
-  getRuntimeConfig: () => cfg,
-}));
+vi.mock("../config/config.js", () => ({ getRuntimeConfig: () => cfg }));
+vi.mock("../config/io.js", () => ({ getRuntimeConfig: () => cfg }));
 
 vi.mock("../config/sessions.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../config/sessions.js")>();
@@ -33,95 +20,69 @@ vi.mock("../config/sessions.js", async (importOriginal) => {
 });
 
 vi.mock("./auth.js", () => ({
-  authorizeHttpGatewayConnect: alwaysAuthorized,
+  authorizeHttpGatewayConnect: async () => ({ ok: true as const }),
 }));
 
-vi.mock("../logger.js", () => ({
-  logWarn: noWarnLog,
-}));
+vi.mock("../logger.js", () => ({ logWarn: () => {} }));
 
 vi.mock("../agents/agent-tools.js", () => ({
-  resolveToolLoopDetectionConfig,
+  resolveToolLoopDetectionConfig: () => ({ warnAt: 3 }),
 }));
 
 vi.mock("../agents/agent-tools.before-tool-call.js", () => ({
-  runBeforeToolCallHook,
+  runBeforeToolCallHook: async ({ params }: { params: unknown }) => ({
+    blocked: false as const,
+    params,
+  }),
 }));
 
 vi.mock("../plugins/config-state.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../plugins/config-state.js")>();
   return {
     ...actual,
-    isTestDefaultMemorySlotDisabled: disableDefaultMemorySlot,
+    isTestDefaultMemorySlotDisabled: () => false,
   };
 });
 
 // mock-isolation: Exercise the HTTP denylist with inert automation and Gateway tools.
 vi.mock("../agents/openclaw-tools.js", () => {
-  const tools = [
-    {
-      name: "automations",
-      parameters: { type: "object", properties: { action: { type: "string" } } },
-      execute: async () => ({ ok: true, via: "automations" }),
-    },
-    {
-      name: "gateway",
-      parameters: { type: "object", properties: { action: { type: "string" } } },
-      execute: async () => ({ ok: true, via: "gateway" }),
-    },
-  ];
-  return {
-    createOpenClawToolsAsync: async () => tools,
-  };
+  const tools = ["automations", "gateway"].map((name) => ({
+    name,
+    parameters: { type: "object", properties: { action: { type: "string" } } },
+    execute: async () => ({ ok: true, via: name }),
+  }));
+  return { createOpenClawToolsAsync: async () => tools };
 });
 
 const { handleToolsInvokeHttpRequest } = await import("./tools-invoke-http.js");
 
-let port = 0;
-let server: ReturnType<typeof createServer> | undefined;
-
+let url: string;
+const server = createServer((req, res) => {
+  void (async () => {
+    const handled = await handleToolsInvokeHttpRequest(req, res, {
+      auth: { mode: "token", token: TEST_GATEWAY_TOKEN, allowTailscale: false },
+    });
+    if (handled) {
+      return;
+    }
+    res.statusCode = 404;
+    res.end("not found");
+  })().catch((err: unknown) => {
+    res.statusCode = 500;
+    res.end(String(err));
+  });
+});
 beforeAll(async () => {
-  server = createServer((req, res) => {
-    void (async () => {
-      const handled = await handleToolsInvokeHttpRequest(req, res, {
-        auth: { mode: "token", token: TEST_GATEWAY_TOKEN, allowTailscale: false },
-      });
-      if (handled) {
-        return;
-      }
-      res.statusCode = 404;
-      res.end("not found");
-    })().catch((err: unknown) => {
-      res.statusCode = 500;
-      res.end(String(err));
-    });
-  });
-  await new Promise<void>((resolve, reject) => {
-    server?.once("error", reject);
-    server?.listen(0, "127.0.0.1", () => {
-      const address = server?.address() as AddressInfo | null;
-      port = address?.port ?? 0;
-      resolve();
-    });
-  });
+  url = `${await listenLoopback(server)}/tools/invoke`;
 });
-
-afterAll(async () => {
-  if (!server) {
-    return;
-  }
-  await new Promise<void>((resolve) => {
-    server?.close(() => resolve());
-  });
-  server = undefined;
-});
+afterAll(() => closeHttpServer(server));
 
 beforeEach(() => {
   cfg = {};
 });
 
 async function invoke(tool: string, scopes = "operator.write") {
-  return await fetch(`http://127.0.0.1:${port}/tools/invoke`, {
+  return await fetch(url, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -142,14 +103,7 @@ describe("tools invoke HTTP denylist", () => {
   });
 
   it("keeps a normalized deny authoritative over a canonical allow", async () => {
-    cfg = {
-      gateway: {
-        tools: {
-          allow: ["automations"],
-          deny: [" CRON "],
-        },
-      },
-    };
+    cfg = { gateway: { tools: { allow: ["automations"], deny: [" CRON "] } } };
 
     const cronRes = await invoke("cron", "operator.admin");
 
@@ -157,16 +111,7 @@ describe("tools invoke HTTP denylist", () => {
   });
 
   it("keeps gateway denied under the coding profile while honoring explicit cron allow", async () => {
-    cfg = {
-      tools: {
-        profile: "coding",
-      },
-      gateway: {
-        tools: {
-          allow: ["cron"],
-        },
-      },
-    };
+    cfg = { tools: { profile: "coding" }, gateway: { tools: { allow: ["cron"] } } };
 
     const cronRes = await invoke("cron", "operator.admin");
     const gatewayRes = await invoke("gateway");

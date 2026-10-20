@@ -74,16 +74,11 @@ beforeEach(() => {
   server.resetContext();
 });
 
-const gatewayAuthHeaders = (scopes = "operator.write") => ({ "x-openclaw-scopes": scopes });
-const postToolsInvoke = async (params: {
-  port: number;
-  headers: Record<string, string>;
-  body: Record<string, unknown>;
-}) =>
-  await fetch(`http://127.0.0.1:${params.port}/tools/invoke`, {
+const postToolsInvoke = async (body: Record<string, unknown>, scopes = "operator.write") =>
+  await fetch(`http://127.0.0.1:${sharedPort}/tools/invoke`, {
     method: "POST",
-    headers: { "content-type": "application/json", ...params.headers },
-    body: JSON.stringify(params.body),
+    headers: { "content-type": "application/json", "x-openclaw-scopes": scopes },
+    body: JSON.stringify(body),
   });
 
 it("refuses tool execution when its memory session closes during the before-tool hook", async () => {
@@ -99,11 +94,7 @@ it("refuses tool execution when its memory session closes during the before-tool
       memorySessionActorOwners.reset();
       return { blocked: false, params };
     });
-    const response = await postToolsInvoke({
-      port: sharedPort,
-      headers: gatewayAuthHeaders(),
-      body: { name: "session_status", sessionKey },
-    });
+    const response = await postToolsInvoke({ name: "session_status", sessionKey });
     expect(response.status).toBe(500);
     expect(await response.json()).toMatchObject({
       ok: false,
@@ -117,8 +108,7 @@ it("refuses tool execution when its memory session closes during the before-tool
 describe.each(["HTTP", "WebSocket"] as const)(
   "standalone role authorization over %s",
   (transport) => {
-    const cases: Array<{
-      label: string;
+    type RoleCase = {
       sessionKey?: string;
       toolName?: string;
       sandbox?: "required";
@@ -128,69 +118,55 @@ describe.each(["HTTP", "WebSocket"] as const)(
       system?: boolean;
       revokeMember?: boolean;
       expectedError?: string;
-    }> = [
-      {
-        label: "denies a missing session on an agent outside the role",
+    };
+    const sandboxCase = (options: RoleCase): RoleCase => ({ sandbox: "required", ...options });
+    const cases: Record<string, RoleCase> = {
+      "denies a missing session on an agent outside the role": {
         sessionKey: "agent:blocked:missing",
         expectedError: 'cannot create sessions for agent "blocked"',
       },
-      {
-        label: "denies a plugin tool without required session provenance",
+      "denies a plugin tool without required session provenance": sandboxCase({
         sessionKey: "agent:main:missing",
         toolName: "plugin_doctor",
-        sandbox: "required",
         expectedError: "requires a sandboxed session",
-      },
-      {
-        label: "denies a missing main alias without required session provenance",
+      }),
+      "denies a missing main alias without required session provenance": sandboxCase({
         sessionKey: "main",
-        sandbox: "required",
         expectedError: "requires a sandboxed session",
-      },
-      {
-        label: "denies an omitted target without required session provenance",
-        sandbox: "required",
+      }),
+      "denies an omitted target without required session provenance": sandboxCase({
         expectedError: "requires a sandboxed session",
-      },
-      { label: "allows an authorized missing session", sessionKey: "main" },
-      {
-        label: "allows an owned required-sandbox session",
+      }),
+      "allows an authorized missing session": { sessionKey: "main" },
+      "allows an owned required-sandbox session": sandboxCase({
         sessionKey: "agent:main:guest-session",
-        sandbox: "required",
         stored: true,
-      },
-      {
-        label: "denies a profiled owner without admin access to a memory session",
+      }),
+      "denies a profiled owner without admin access to a memory session": sandboxCase({
         sessionKey: "agent:main:dashboard:incognito-tools",
-        sandbox: "required",
         stored: true,
         incognito: true,
         expectedError: 'Incognito session "agent:main:dashboard:incognito-tools" was not found.',
-      },
-      {
-        label: "allows an admin to invoke tools in a memory session",
+      }),
+      "allows an admin to invoke tools in a memory session": sandboxCase({
         sessionKey: "agent:main:dashboard:incognito-tools",
-        sandbox: "required",
         stored: true,
         incognito: true,
         admin: true,
-      },
-      {
-        label: "preserves trusted system calls without a session",
+      }),
+      "preserves trusted system calls without a session": sandboxCase({
         sessionKey: "agent:blocked:missing",
-        sandbox: "required",
         system: true,
-      },
-      {
-        label: "denies tool execution when the member is revoked during the before-tool hook",
+      }),
+      "denies tool execution when the member is revoked during the before-tool hook": {
         sessionKey: "agent:main:member-session",
         stored: true,
         revokeMember: true,
         expectedError: "session is read-only",
       },
-    ];
+    };
 
-    it.each(cases)("$label", async (testCase) => {
+    it.each(Object.entries(cases))("%s", async (_label, testCase) => {
       const stateOptions = { label: "standalone-tool-role", prepareProfileCatalog: true };
       await withToolsInvokeTestState(stateOptions, async () => {
         const email = "standalone-operator@example.test";
@@ -266,11 +242,7 @@ describe.each(["HTTP", "WebSocket"] as const)(
               ? { ok: true, method: "token" }
               : { ok: true, method: "trusted-proxy", user: email },
           );
-          const response = await postToolsInvoke({
-            port: sharedPort,
-            headers: gatewayAuthHeaders(scopes.join(",")),
-            body: input,
-          });
+          const response = await postToolsInvoke(input, scopes.join(","));
           expect(response.status).toBe(testCase.expectedError ? 403 : 200);
           expect(await response.json()).toMatchObject(expectedOutcome);
         } else {
@@ -311,36 +283,28 @@ describe.each(["HTTP", "WebSocket"] as const)(
             expect(response).toMatchObject({ ok: true, payload: expectedOutcome });
           }
         }
-        if (testCase.expectedError) {
-          if (testCase.revokeMember) {
-            expect(runtime.beforeHook).toHaveBeenCalledOnce();
-          } else {
-            expect(runtime.beforeHook).not.toHaveBeenCalled();
-            expect(runtime.createTools).not.toHaveBeenCalled();
-          }
-          expect(runtime.execute).not.toHaveBeenCalled();
-        } else {
-          expect(runtime.beforeHook).toHaveBeenCalledOnce();
-          expect(runtime.execute).toHaveBeenCalledOnce();
-          if (transport === "WebSocket") {
-            expect(runtime.beforeHook).toHaveBeenCalledWith(
-              expect.objectContaining({
-                ctx: expect.objectContaining({ approvalReviewerDeviceId: "standalone-reviewer" }),
-              }),
-            );
-          }
+        const deniedBeforeHook = Boolean(testCase.expectedError && !testCase.revokeMember);
+        expect(runtime.beforeHook).toHaveBeenCalledTimes(deniedBeforeHook ? 0 : 1);
+        expect(runtime.execute).toHaveBeenCalledTimes(testCase.expectedError ? 0 : 1);
+        if (deniedBeforeHook) {
+          expect(runtime.createTools).not.toHaveBeenCalled();
+        }
+        if (!testCase.expectedError && transport === "WebSocket") {
+          expect(runtime.beforeHook).toHaveBeenCalledWith(
+            expect.objectContaining({
+              ctx: expect.objectContaining({ approvalReviewerDeviceId: "standalone-reviewer" }),
+            }),
+          );
         }
       });
     });
   },
 );
 
-it.each([
-  ["send", "settled", false, 200],
-  ["send", "settled", true, 500],
-] as const)(
-  "keeps the result boundary for %s (%s, revoked=%s)",
-  async (action, deliveryStatus, revokeCaller, expectedStatus) => {
+it.each([false, true])(
+  "keeps the settled send result boundary (revoked=%s)",
+  async (revokeCaller) => {
+    const expectedStatus = revokeCaller ? 500 : 200;
     await withToolsInvokeTestState({ label: "standalone-tool-creation" }, async () => {
       const sessionKey = "agent:main:outbound-first-contact";
       let callerCurrent = true;
@@ -365,7 +329,7 @@ it.each([
               content: [{ type: "text", text: "private tool result" }],
               details: {
                 messageDelivery: {
-                  status: deliveryStatus,
+                  status: "settled",
                   primaryPlatformMessageId: "accepted-message",
                   partialDelivery: false,
                   createdThreadIds: [],
@@ -376,7 +340,7 @@ it.each([
         };
         return [tool];
       });
-      const input = { name: "message", sessionKey, args: { action } };
+      const input = { name: "message", sessionKey, args: { action: "send" } };
       if (revokeCaller) {
         const outcome = await invokeGatewayTool({
           cfg: runtime.cfg,
@@ -393,11 +357,7 @@ it.each([
         expect(JSON.stringify(outcome)).not.toContain("private tool result");
         return;
       }
-      const response = await postToolsInvoke({
-        port: sharedPort,
-        headers: gatewayAuthHeaders(),
-        body: input,
-      });
+      const response = await postToolsInvoke(input);
       expect(response.status).toBe(expectedStatus);
       const body = await response.text();
       expect(body.includes("private tool result")).toBe(expectedStatus === 200);

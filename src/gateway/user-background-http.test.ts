@@ -1,6 +1,9 @@
 import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  closeHttpServer,
+  listenLoopback,
+} from "../../test/helpers/gateway-integration-fixtures.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { getRuntimeConfig } from "../config/io.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
@@ -93,19 +96,19 @@ describe("private background byte route with real HTTP authentication", () => {
           res.end();
         });
     });
-    await new Promise<void>((resolve) => {
-      server.listen(0, "127.0.0.1", resolve);
-    });
-    const url = "http://127.0.0.1:" + (server.address() as AddressInfo).port + path;
+    const url = (await listenLoopback(server)) + path;
+    const expectStatus = async (status: number, init?: RequestInit, suffix = "") => {
+      expect((await fetch(url + suffix, init)).status).toBe(status);
+    };
     try {
       const result = await fetch(url, { headers: headers() });
       expect(result.status).toBe(200);
-      expect(result.headers.get("content-type")).toBe("image/jpeg");
-      expect(result.headers.get("cache-control")).toBe("private, no-store");
-      expect(result.headers.get("access-control-allow-origin")).toBe(
-        "https://control.example.test",
-      );
-      expect(result.headers.get("access-control-allow-credentials")).toBe("true");
+      expect(Object.fromEntries(result.headers)).toMatchObject({
+        "content-type": "image/jpeg",
+        "cache-control": "private, no-store",
+        "access-control-allow-origin": "https://control.example.test",
+        "access-control-allow-credentials": "true",
+      });
       expect(new Uint8Array(await result.arrayBuffer())).toEqual(
         new Uint8Array([255, 216, 255, 217]),
       );
@@ -121,26 +124,17 @@ describe("private background byte route with real HTTP authentication", () => {
       });
       expect(preflight.status).toBe(204);
       expect(preflight.headers.get("access-control-allow-headers")).toBe("Authorization");
-      expect(
-        (await fetch(url, { headers: headers("two@example.test", "operator.admin") })).status,
-      ).toBe(404);
-      expect((await fetch(url, { headers: headers("one@example.test", "") })).status).toBe(403);
-      expect(
-        (
-          await fetch(url, {
-            headers: headers("one@example.test", "operator.read", "https://untrusted.example.test"),
-          })
-        ).status,
-      ).toBe(401);
-      expect((await fetch(url)).status).toBe(401);
-      expect((await fetch(url + "?token=not-authority")).status).toBe(401);
-      await removeUserBackground(first, expected);
-      expect((await fetch(url, { headers: headers() })).status).toBe(404);
-    } finally {
-      server.closeAllConnections();
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
+      await expectStatus(404, { headers: headers("two@example.test", "operator.admin") });
+      await expectStatus(403, { headers: headers("one@example.test", "") });
+      await expectStatus(401, {
+        headers: headers("one@example.test", "operator.read", "https://untrusted.example.test"),
       });
+      await expectStatus(401);
+      await expectStatus(401, undefined, "?token=not-authority");
+      await removeUserBackground(first, expected);
+      await expectStatus(404, { headers: headers() });
+    } finally {
+      await closeHttpServer(server);
     }
   });
 });
