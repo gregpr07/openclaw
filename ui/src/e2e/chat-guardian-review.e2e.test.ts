@@ -11,7 +11,6 @@ import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts"
 
 const suite = createControlUiE2eSuite({
   name: "Control UI Guardian strict review mocked Gateway E2E",
-  trackBrowserContexts: true,
 });
 const captureProof = process.env.OPENCLAW_CAPTURE_UI_PROOF === "1";
 const viewport = { height: 900, width: 1280 };
@@ -50,22 +49,17 @@ suite.define(() => {
           threadId: "codex-thread-1",
           turnId: "codex-turn-1",
         };
-        const reviewEvent = (data: Record<string, unknown>, seq: number) =>
+        let sequence = 0;
+        const reviewEvent = (data: Record<string, unknown>) =>
           gateway.emitGatewayEvent("agent", {
             runId,
             sessionKey: "main",
             stream: "codex_app_server.guardian",
             data: { ...correlation, ...data },
-            seq,
+            seq: ++sequence,
             ts: Date.now(),
           });
-        await reviewEvent(
-          {
-            phase: "strict_review_required",
-            startedAtMs: Date.now(),
-          },
-          1,
-        );
+        await reviewEvent({ phase: "strict_review_required", startedAtMs: Date.now() });
 
         const notice = page.getByRole("alert").filter({ hasText: "Guardian review required" });
         await notice.waitFor({ state: "visible" });
@@ -74,7 +68,7 @@ suite.define(() => {
         );
 
         await capture("02-review-required.png", notice);
-        await reviewEvent({ phase: "completed", status: "approved" }, 2);
+        await reviewEvent({ phase: "completed", status: "approved" });
         await expect.poll(() => notice.count()).toBe(0);
 
         await capture("03-review-approved.png");

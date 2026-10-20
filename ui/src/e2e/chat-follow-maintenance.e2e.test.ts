@@ -1,10 +1,10 @@
 import path from "node:path";
 import type { Page } from "playwright";
 import { expect, it } from "vitest";
+import type { ChatPageHost } from "../pages/chat/chat-state-host.ts";
 import type { MockGatewayWindow } from "../test-helpers/control-ui-e2e-contract.ts";
 import {
   captureUiProofEnabled,
-  chatSessionListResponse,
   controlUiSessionUrl,
   createChatFlowE2eSuite,
   installMockGateway,
@@ -23,11 +23,7 @@ const streamMessage = (text: string, lines: number) => ({
 async function readPosition(page: Page) {
   return page.locator(".chat-pane-cache__pane--active").evaluate((pane) => {
     const thread = pane.querySelector<HTMLElement>(".chat-thread")!;
-    const state = (
-      pane as HTMLElement & {
-        state: { chatFollowLocked: boolean; chatReadingHistory: boolean };
-      }
-    ).state;
+    const { state } = pane as HTMLElement & { state: ChatPageHost };
     return {
       top: thread.scrollTop,
       height: thread.scrollHeight,
@@ -43,6 +39,7 @@ suite.define(() => {
     await suite.withPage(
       { viewport: { width: 1440, height: 900 }, locale: "en-US", serviceWorkers: "block" },
       async ({ page }) => {
+        const position = () => readPosition(page);
         const historyMessages = Array.from({ length: 72 }, (_, index) => ({
           role: index % 12 === 0 ? "user" : "assistant",
           content: `Synthetic message ${index + 1}.`,
@@ -54,17 +51,15 @@ suite.define(() => {
           historyMessages,
           inFlightRun: { runId, text: "Initial streamed output.\n".repeat(40) },
           sessionInfo: { key: sessionKey, activeRunIds: [runId], hasActiveRun: true },
-          methodResponses: {
-            "sessions.list": chatSessionListResponse([
-              { key: sessionKey, kind: "direct", label: "Following session", updatedAt: 2 },
-              { key: otherSessionKey, kind: "direct", label: "Control session", updatedAt: 1 },
-            ]),
-          },
+          sessions: [
+            { key: sessionKey, kind: "direct", label: "Following session", updatedAt: 2 },
+            { key: otherSessionKey, kind: "direct", label: "Control session", updatedAt: 1 },
+          ],
         });
         await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
         await page.getByText("Synthetic message 72.", { exact: true }).waitFor();
         await waitForChatScrollIdle(page);
-        await expect.poll(async () => (await readPosition(page)).distance).toBeLessThanOrEqual(8);
+        await expect.poll(async () => (await position()).distance).toBeLessThanOrEqual(8);
         const thread = page.locator(".chat-pane-cache__pane--active .chat-thread");
 
         // Force a delayed media measurement in an overscan row above the viewport.
@@ -83,7 +78,7 @@ suite.define(() => {
           row.append(filler);
         });
         await waitForChatScrollIdle(page);
-        const expanded = await readPosition(page);
+        const expanded = await position();
 
         // One task exposes maintenance offset as reader movement; separate tasks do not.
         await page.evaluate(
@@ -103,9 +98,7 @@ suite.define(() => {
           { sessionKey, runId, message: streamMessage("Concurrent streaming growth.", 70) },
         );
         await expect.poll(() => thread.textContent()).toContain("Concurrent streaming growth.");
-        await expect
-          .poll(async () => (await readPosition(page)).height)
-          .toBeGreaterThan(expanded.height);
+        await expect.poll(async () => (await position()).height).toBeGreaterThan(expanded.height);
         await waitForChatScrollIdle(page);
 
         await gateway.emitGatewayEvent("chat", {
@@ -119,8 +112,8 @@ suite.define(() => {
         if (captureUiProofEnabled) {
           await page.screenshot({ path: path.join(suite.artifactDir, "stream-follow.png") });
         }
-        expect(await readPosition(page)).toMatchObject({ locked: false, reading: false });
-        expect((await readPosition(page)).distance).toBeLessThanOrEqual(8);
+        expect(await position()).toMatchObject({ locked: false, reading: false });
+        expect((await position()).distance).toBeLessThanOrEqual(8);
 
         const sessionLink = (key: string) =>
           page.locator(
@@ -133,20 +126,20 @@ suite.define(() => {
           }
         };
         await roundTrip();
-        expect((await readPosition(page)).distance).toBeLessThanOrEqual(8);
+        expect((await position()).distance).toBeLessThanOrEqual(8);
 
         await thread.hover();
         await page.mouse.wheel(0, -600);
-        await expect.poll(async () => (await readPosition(page)).reading).toBe(true);
+        await expect.poll(async () => (await position()).reading).toBe(true);
         await waitForChatScrollIdle(page);
-        const reader = await readPosition(page);
+        const reader = await position();
         await roundTrip();
-        const restored = await readPosition(page);
+        const restored = await position();
         expect(restored).toMatchObject({ locked: true, reading: true });
         expect(Math.abs(restored.top - reader.top)).toBeLessThanOrEqual(2);
         await page.getByRole("button", { name: "Scroll to latest", exact: true }).click();
-        await expect.poll(async () => (await readPosition(page)).distance).toBeLessThanOrEqual(8);
-        expect(await readPosition(page)).toMatchObject({ locked: false, reading: false });
+        await expect.poll(async () => (await position()).distance).toBeLessThanOrEqual(8);
+        expect(await position()).toMatchObject({ locked: false, reading: false });
       },
     );
   });

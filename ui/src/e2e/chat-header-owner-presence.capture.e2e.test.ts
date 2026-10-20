@@ -2,6 +2,8 @@ import path from "node:path";
 import { expect, it } from "vitest";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import { controlUiSessionUrl, installMockGateway } from "../test-helpers/control-ui-e2e.ts";
+import { createControlUiSessionRow } from "../test-helpers/control-ui-session-fixtures.ts";
+import { chatSessionListResponse } from "./chat-flow.test-support.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
 const suite = createControlUiE2eSuite({
@@ -58,29 +60,20 @@ suite.define(() => {
                 widgets: [],
               },
               "sessions.list": {
-                count: 1,
+                ...chatSessionListResponse([
+                  createControlUiSessionRow(
+                    sessionKey,
+                    "Owner presence",
+                    Date.parse("2026-08-14T12:00:00.000Z"),
+                    {
+                      createdActor: ada,
+                      owner: { actor: ada },
+                      participants: [{ identity: identity("Zoe"), label: "Zoe" }],
+                      participantCount: 1,
+                    },
+                  ),
+                ]),
                 owners: [ada, actor("Zoe")],
-                defaults: { contextTokens: null, model: "gpt-5.5", modelProvider: "openai" },
-                path: "",
-                sessions: [
-                  {
-                    contextTokens: null,
-                    createdActor: ada,
-                    owner: { actor: ada },
-                    participants: [{ identity: identity("Zoe"), label: "Zoe" }],
-                    participantCount: 1,
-                    displayName: "Owner presence",
-                    hasActiveRun: false,
-                    key: sessionKey,
-                    kind: "direct",
-                    label: "Owner presence",
-                    model: "gpt-5.5",
-                    modelProvider: "openai",
-                    status: "done",
-                    totalTokens: 0,
-                    updatedAt: Date.parse("2026-08-14T12:00:00.000Z"),
-                  },
-                ],
                 ts: Date.parse("2026-08-14T12:00:00.000Z"),
               },
             },

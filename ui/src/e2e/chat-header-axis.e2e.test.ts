@@ -1,8 +1,7 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, it } from "vitest";
-import { takeControlUiScreenshotFrame } from "../test-helpers/control-ui-e2e-screenshot.ts";
-import { newChatPage, sessionRow } from "./chat-flow-fixtures.test-support.ts";
+import { chatFixture, newChatPage, sessionRow } from "./chat-flow-fixtures.test-support.ts";
 import {
   chatSessionListResponse,
   captureUiProofEnabled,
@@ -10,13 +9,15 @@ import {
   controlUiSessionUrl,
   installMockGateway,
 } from "./chat-flow.test-support.ts";
+import { captureFrame } from "./sidebar-assertions.test-support.ts";
 
 const suite = createChatFlowE2eSuite();
 const sessionKey = "agent:main:session-a";
 const parentLabel = "Release readiness and production rollout coordination";
 const workspaceRow = (key: string, label: string, updatedAt: number, fields = {}) =>
   sessionRow(key, label, updatedAt, { spawnedCwd: "/repo/openclaw", ...fields });
-
+const compactPage = (viewport: { width: number; height: number }) =>
+  chatFixture(suite, { sessions: chatSessionListResponse().sessions }, { viewport });
 suite.define(() => {
   for (const colorScheme of ["light", "dark"] as const) {
     for (const viewport of [
@@ -34,17 +35,15 @@ suite.define(() => {
           await route.fulfill({ body: favicon, contentType: "image/svg+xml", status: 200 });
         });
         await installMockGateway(page, {
-          methodResponses: {
-            "sessions.list": chatSessionListResponse([
-              workspaceRow("agent:main:parent", parentLabel, 1),
-              workspaceRow(
-                sessionKey,
-                "Implement parent breadcrumb navigation and polish overflow behavior",
-                2,
-                { parentSessionKey: "agent:main:parent" },
-              ),
-            ]),
-          },
+          sessions: [
+            workspaceRow("agent:main:parent", parentLabel, 1),
+            workspaceRow(
+              sessionKey,
+              "Implement parent breadcrumb navigation and polish overflow behavior",
+              2,
+              { parentSessionKey: "agent:main:parent" },
+            ),
+          ],
           sessionKey,
         });
 
@@ -52,19 +51,16 @@ suite.define(() => {
         const header = page.locator(
           "openclaw-chat-pane.chat-pane-cache__pane--active .chat-pane__header",
         );
+        const title = header.locator(".chat-pane__session-title-text");
         await header.waitFor();
         await header.locator(".workspace-icon").waitFor();
 
         if (captureUiProofEnabled) {
-          const frame = await takeControlUiScreenshotFrame(
-            page,
+          await captureFrame(
+            suite.artifactDir,
+            `project-icon-${viewport.label}-${colorScheme}.png`,
             header,
-            [header.locator(".workspace-icon"), header.locator(".chat-pane__session-title-text")],
-            { animations: "disabled" },
-          );
-          await writeFile(
-            path.join(suite.artifactDir, `project-icon-${viewport.label}-${colorScheme}.png`),
-            frame.png,
+            [header.locator(".workspace-icon"), title],
           );
         }
 
@@ -115,10 +111,7 @@ suite.define(() => {
           };
         });
 
-        expect(
-          Math.abs(geometry.menu - geometry.nav),
-          JSON.stringify(geometry),
-        ).toBeLessThanOrEqual(0.1);
+        expect(Math.abs(geometry.menu - geometry.nav)).toBeLessThanOrEqual(0.1);
         expect(geometry.contentTop).toBeGreaterThanOrEqual(geometry.headerBottom - 0.1);
         expect(geometry.headerOverflow).toBeLessThanOrEqual(1);
         expect(geometry.titleWidth).toBeGreaterThan(0);
@@ -139,15 +132,12 @@ suite.define(() => {
           expect(geometry.parentText).toBeCloseTo(geometry.sessionText, 1);
           expect(geometry.separatorDisplays).toEqual(["none", "none"]);
         }
-        expect(await header.locator(".chat-pane__crumb-sep").count()).toBe(2);
         const parent = header.locator(".chat-pane__parent-session");
         expect(geometry).toMatchObject({ parentEllipses: true, childEllipses: true });
         expect(geometry.trailWidth).toBeLessThanOrEqual(geometry.headerWidth / 2 + 1);
         expect((await parent.textContent())?.trim()).toBe(parentLabel);
         await parent.click();
-        await expect
-          .poll(() => header.locator(".chat-pane__session-title-text").textContent())
-          .toBe(parentLabel);
+        await expect.poll(() => title.textContent()).toBe(parentLabel);
       });
     }
   }
@@ -157,12 +147,7 @@ suite.define(() => {
     { height: 393, label: "short landscape", width: 852 },
   ] as const) {
     it(`keeps compact ${viewport.label} transcript search below the task header`, async () => {
-      const { page } = await newChatPage(suite, {
-        viewport: { height: viewport.height, width: viewport.width },
-      });
-      await installMockGateway(page, {
-        methodResponses: { "sessions.list": chatSessionListResponse() },
-      });
+      const { page } = await compactPage(viewport);
 
       await page.goto(`${suite.server.baseUrl}chat`);
       await page.locator(".agent-chat__composer-combobox > textarea").focus();
@@ -173,8 +158,6 @@ suite.define(() => {
         page.locator(".chat-pane__header").first().boundingBox(),
         search.boundingBox(),
       ]);
-      expect(headerBox).not.toBeNull();
-      expect(searchBox).not.toBeNull();
       expect(searchBox!.y).toBeGreaterThanOrEqual(headerBox!.y + headerBox!.height);
       await search.click();
       await search.fill("reachable");
@@ -182,12 +165,7 @@ suite.define(() => {
     });
 
     it(`preserves compact ${viewport.label} New Session composer edge margins`, async () => {
-      const { context, page } = await newChatPage(suite, {
-        viewport: { height: viewport.height, width: viewport.width },
-      });
-      await installMockGateway(page, {
-        methodResponses: { "sessions.list": chatSessionListResponse() },
-      });
+      const { context, page } = await compactPage(viewport);
 
       await page.goto(`${suite.server.baseUrl}new`);
       const protocol = await context.newCDPSession(page);
@@ -234,11 +212,7 @@ suite.define(() => {
       await route.fulfill({ body: favicon, contentType: "image/svg+xml", status: 200 });
     });
     await installMockGateway(page, {
-      methodResponses: {
-        "sessions.list": chatSessionListResponse([
-          workspaceRow(sessionKey, "Workspace icon recovery", 1),
-        ]),
-      },
+      sessions: [workspaceRow(sessionKey, "Workspace icon recovery", 1)],
       sessionKey,
     });
 

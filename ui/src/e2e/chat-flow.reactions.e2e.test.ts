@@ -16,38 +16,25 @@ suite.define(() => {
       const sessionKey = "agent:main:main";
       const sessionId = "reaction-session";
       const messageId = "riley-prompt";
+      const prompt = "Keep the launch checklist short.";
+      const identity = { type: "profile", id: "profile-avery" } as const;
       const gateway = await installMockGateway(page, {
         sessionKey,
-        presenceUsers: [
-          {
-            self: true,
-            id: "profile-avery",
-            identity: { type: "profile", id: "profile-avery" },
-            name: "Avery",
-          },
-        ],
+        presenceUsers: [{ self: true, id: identity.id, identity, name: "Avery" }],
         sessions: [{ key: sessionKey, sessionId, visibility: "shared", sharingRole: "owner" }],
-        methodResponses: {
-          "session.members.listEvidence": {
-            sessionKey,
-            owner: { type: "human", id: "profile-avery", label: "Avery" },
-            members: [],
-            identities: [],
-            role: "owner",
-            allowedVisibilities: ["shared", "read-only", "suggest", "draft"],
-          },
-        },
         historyMessages: [
-          chatMessage("user", "Let's keep the launch checklist short.", {
+          chatMessage("user", prompt, {
             __openclaw: { id: messageId, seq: 1, senderName: "Riley", senderId: "profile-riley" },
           }),
         ],
       });
       await page.goto(`${suite.server.baseUrl}chat`);
-      const message = page.locator(".chat-group.user", {
-        hasText: "Let's keep the launch checklist short.",
-      });
+      const message = page.locator(".chat-group.user", { hasText: prompt });
       const reactions = page.locator(`.chat-message-reactions[data-message-id="${messageId}"]`);
+      const chip = (emoji: string, pressed: boolean) =>
+        reactions.locator(
+          `.chat-reaction-chip[aria-pressed="${pressed}"][aria-label="${emoji} 1"]`,
+        );
       await message.hover();
       // Without reactions the hover row carries the picker; once reacted, the chip row owns it.
       const footerPicker = message.locator(
@@ -66,9 +53,7 @@ suite.define(() => {
         ).toMatchObject({ messageId, ...fields });
       await pick(footerPicker, "🎉");
       await expectSet(0, { sessionKey, emoji: "🎉" });
-      await reactions
-        .locator('.chat-reaction-chip[aria-pressed="true"][aria-label="🎉 1"]')
-        .waitFor();
+      await chip("🎉", true).waitFor();
       await footerPicker.waitFor({ state: "detached" });
 
       await message.hover();
@@ -76,10 +61,7 @@ suite.define(() => {
       // A complete emoji applies on input, so the OS picker needs no extra keystroke.
       await rowPicker.getByRole("searchbox", { name: "Search emoji…", exact: true }).fill("🦞");
       await expectSet(1, { emoji: "🦞" });
-      const ownChip = reactions.locator(
-        '.chat-reaction-chip[aria-pressed="true"][aria-label="🦞 1"]',
-      );
-      await ownChip.waitFor();
+      const ownChip = chip("🦞", true);
       await ownChip.click();
       await expectSet(2, { emoji: "🦞", remove: true });
       await ownChip.waitFor({ state: "detached" });
@@ -99,9 +81,7 @@ suite.define(() => {
           { emoji: "👀", count: 1, identities: [{ id: "profile-riley", label: "Riley" }] },
         ],
       });
-      await reactions
-        .locator('.chat-reaction-chip[aria-pressed="false"][aria-label="👀 1"]')
-        .waitFor();
+      await chip("👀", false).waitFor();
       expect(await gateway.getRequests("session.reactions.list")).toHaveLength(listRequests);
     });
   });
