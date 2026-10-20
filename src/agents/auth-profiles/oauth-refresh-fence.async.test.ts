@@ -5,39 +5,26 @@ import { createDeferredCore } from "../../shared/deferred.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { withEnvAsync } from "../../test-utils/env.js";
-import {
-  observeOAuthRefreshFenceSettlement,
-  observeOAuthRefreshSettlement,
-  refreshSerializedOAuthCredential,
-} from "./oauth-refresh-fence.js";
+import { createOAuthRefreshCredential } from "./credential-fixtures.test-support.js";
+import * as fence from "./oauth-refresh-fence.js";
 import { isPendingOAuthRefreshFence } from "./oauth-refresh-marker.js";
-import {
-  closeAuthProfileReadPool,
-  readPersistedAuthProfileStoreRaw,
-  runAuthProfileWriteTransaction,
-  writePersistedAuthProfileStoreRaw,
-} from "./sqlite.js";
+import * as sqlite from "./sqlite.js";
 import type { AuthProfileStore, OAuthCredential } from "./types.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 function trackSettlement(promise: Promise<unknown>) {
-  let settled = false;
-  return {
-    get settled() {
-      return settled;
-    },
+  const tracked = { settled: false };
+  function finish<T>(result: T) {
+    tracked.settled = true;
+    return result;
+  }
+  return Object.assign(tracked, {
     outcome: promise.then(
-      (value) => {
-        settled = true;
-        return { value };
-      },
-      (error: unknown) => {
-        settled = true;
-        return { error };
-      },
+      (value) => finish({ value }),
+      (error: unknown) => finish({ error }),
     ),
-  };
+  });
 }
 
 const expectTimeout = (outcome: unknown) =>
@@ -54,7 +41,7 @@ it.each([
 ] as const)("preserves the original pre-deadline %s rejection", async (_label, rejection) => {
   const settlement = createDeferredCore<never>();
   const rejected = expect(
-    observeOAuthRefreshSettlement("rejection", 1_000, settlement.promise),
+    fence.observeOAuthRefreshSettlement("rejection", 1_000, settlement.promise),
   ).rejects.toBe(rejection);
   settlement.reject(rejection);
   await rejected;
@@ -67,30 +54,28 @@ it.each(["success", "failure"] as const)(
     const agentDir = path.join(root, "agents", "work", "agent");
     await withEnvAsync({ OPENCLAW_STATE_DIR: root }, async () => {
       const profileId = "synthetic:default";
-      const expired: OAuthCredential = {
-        type: "oauth",
+      const expired = createOAuthRefreshCredential({
         provider: "synthetic",
-        access: "synthetic-expired-access",
-        refresh: "synthetic-expired-refresh",
         expires: 1,
         accountId: "synthetic-account",
-      };
+      });
       const refreshed: OAuthCredential = {
         ...expired,
         access: "synthetic-refreshed-access",
         refresh: "synthetic-refreshed-refresh",
         expires: Date.now() + 60_000,
       };
-      const claimEntered = createDeferredCore();
-      const claimRelease = createDeferredCore();
-      const settlementEntered = createDeferredCore();
-      const settlementRelease = createDeferredCore();
+      const claim = { entered: createDeferredCore(), release: createDeferredCore() };
+      const settlement = { entered: createDeferredCore(), release: createDeferredCore() };
       const providerError = new Error("synthetic provider rejection");
       let operations = 0;
+      const read = (database?: sqlite.AuthProfileDatabase) =>
+        (sqlite.readPersistedAuthProfileStoreRaw(agentDir, database) as AuthProfileStore).profiles;
+      const write = (profiles: AuthProfileStore["profiles"], db?: sqlite.AuthProfileDatabase) =>
+        sqlite.writePersistedAuthProfileStoreRaw({ version: 1, profiles }, agentDir, db);
       const commit = vi.fn();
       const refresh = vi.fn(async () => {
-        const current = readPersistedAuthProfileStoreRaw(agentDir) as AuthProfileStore;
-        const credential = current.profiles[profileId];
+        const credential = read()[profileId];
         expect(
           isPendingOAuthRefreshFence(credential?.type === "oauth" ? credential : undefined),
         ).toBe(true);
@@ -99,77 +84,60 @@ it.each(["success", "failure"] as const)(
         }
         return { apiKey: refreshed.access, credential: refreshed };
       });
-      writePersistedAuthProfileStoreRaw(
-        { version: 1, profiles: { [profileId]: expired } },
-        agentDir,
-      );
-      const running = refreshSerializedOAuthCredential({
-        backend: {
-          async withLock<T>(
-            fn: (current: string | undefined) => { result: T; next?: string },
-          ): Promise<T> {
-            operations += 1;
-            if (operations === 2) {
-              claimEntered.resolve();
-              await claimRelease.promise;
-            } else if (operations === 3) {
-              settlementEntered.resolve();
-              await settlementRelease.promise;
-            }
-            return runAuthProfileWriteTransaction(agentDir, (database) => {
-              const current = readPersistedAuthProfileStoreRaw(
-                agentDir,
-                database,
-              ) as AuthProfileStore;
-              const update = fn(JSON.stringify(current.profiles));
-              if (update.next !== undefined) {
-                writePersistedAuthProfileStoreRaw(
-                  { version: 1, profiles: JSON.parse(update.next) },
-                  agentDir,
-                  database,
-                );
+      write({ [profileId]: expired });
+      const tracked = trackSettlement(
+        fence.refreshSerializedOAuthCredential({
+          backend: {
+            async withLock(fn) {
+              operations += 1;
+              const gate = operations === 2 ? claim : operations === 3 ? settlement : undefined;
+              if (gate) {
+                gate.entered.resolve();
+                await gate.release.promise;
               }
-              return update.result;
-            });
+              return sqlite.runAuthProfileWriteTransaction(agentDir, (database) => {
+                const update = fn(JSON.stringify(read(database)));
+                if (update.next !== undefined) {
+                  write(JSON.parse(update.next), database);
+                }
+                return update.result;
+              });
+            },
           },
-        },
-        provider: "synthetic",
-        profileId,
-        label: "synthetic awaited persistence",
-        timeoutMs: 5_000,
-        parse: (current) => JSON.parse(current ?? "{}") as Record<string, OAuthCredential>,
-        serialize: JSON.stringify,
-        readCredential: (data) => data[profileId],
-        writeCredential: (data, credential) => ({ ...data, [profileId]: credential }),
-        canRefresh: async () => true,
-        refresh,
-        resolve: async (credential) => ({ apiKey: credential.access, credential }),
-        commit,
-      });
-      const tracked = trackSettlement(running);
-      const observed = tracked.outcome;
+          provider: "synthetic",
+          profileId,
+          label: "synthetic awaited persistence",
+          timeoutMs: 5_000,
+          parse: (current) => JSON.parse(current ?? "{}") as Record<string, OAuthCredential>,
+          serialize: JSON.stringify,
+          readCredential: (data) => data[profileId],
+          writeCredential: (data, credential) => ({ ...data, [profileId]: credential }),
+          canRefresh: async () => true,
+          refresh,
+          resolve: async (credential) => ({ apiKey: credential.access, credential }),
+          commit,
+        }),
+      );
       try {
-        await Promise.race([claimEntered.promise, observed]);
+        await Promise.race([claim.entered.promise, tracked.outcome]);
         expect(tracked.settled).toBe(false);
         expect(refresh).not.toHaveBeenCalled();
         expect(commit).not.toHaveBeenCalled();
-        claimRelease.resolve();
-        await Promise.race([settlementEntered.promise, observed]);
+        claim.release.resolve();
+        await Promise.race([settlement.entered.promise, tracked.outcome]);
         expect(tracked.settled).toBe(false);
         expect(refresh).toHaveBeenCalledOnce();
         expect(commit).toHaveBeenCalledTimes(1);
-        settlementRelease.resolve();
-        const result = await observed;
+        settlement.release.resolve();
+        expect(await tracked.outcome).toEqual(
+          outcome === "success"
+            ? { value: { apiKey: refreshed.access, credential: refreshed } }
+            : { error: providerError },
+        );
         expect(commit).toHaveBeenCalledTimes(2);
-        if (outcome === "success") {
-          expect(result).toEqual({ value: { apiKey: refreshed.access, credential: refreshed } });
-        } else {
-          expect(result).toEqual({ error: providerError });
-        }
-        closeAuthProfileReadPool();
+        sqlite.closeAuthProfileReadPool();
         closeOpenClawAgentDatabasesForTest();
-        const persistedStore = readPersistedAuthProfileStoreRaw(agentDir) as AuthProfileStore;
-        const persisted = persistedStore.profiles[profileId];
+        const persisted = read()[profileId];
         expect(persisted).toMatchObject({
           type: "oauth",
           access:
@@ -179,10 +147,10 @@ it.each(["success", "failure"] as const)(
           isPendingOAuthRefreshFence(persisted?.type === "oauth" ? persisted : undefined),
         ).toBe(false);
       } finally {
-        claimRelease.resolve();
-        settlementRelease.resolve();
-        await observed;
-        closeAuthProfileReadPool();
+        claim.release.resolve();
+        settlement.release.resolve();
+        await tracked.outcome;
+        sqlite.closeAuthProfileReadPool();
         closeOpenClawAgentDatabasesForTest();
         closeOpenClawStateDatabaseForTest();
       }
@@ -215,7 +183,7 @@ describe("refresh observers", () => {
   }
   function observe(read: () => string | Promise<string> = () => reading.promise, timeoutMs = 100) {
     return retain(
-      observeOAuthRefreshFenceSettlement({
+      fence.observeOAuthRefreshFenceSettlement({
         label: "observer",
         timeoutMs,
         signal: controller.signal,
@@ -226,7 +194,7 @@ describe("refresh observers", () => {
     );
   }
   const owner = () =>
-    retain(observeOAuthRefreshSettlement("owner", 100, reading.promise, controller.signal));
+    retain(fence.observeOAuthRefreshSettlement("owner", 100, reading.promise, controller.signal));
   it.each(["stalled read", "expired snapshot", "expired rejection"])(
     "bounds an observer waiting for a %s",
     async (scenario) => {
@@ -295,24 +263,21 @@ describe("refresh observers", () => {
         vi.setSystemTime(100_000);
       }
       let lastReadAt: number | undefined;
-      const tracked = trackSettlement(
-        kind === "owner"
-          ? owner()
-          : observe(() => {
-              if (kind !== "polling") {
-                return reading.promise;
-              }
-              if (wallStep === null) {
-                const now = fakeNow();
-                // Fail a zero-delay polling regression instead of spinning forever.
-                if (lastReadAt === now) {
-                  throw new Error("polling did not advance the clock");
-                }
-                lastReadAt = now;
-              }
-              return "pending";
-            }),
-      );
+      const read = () => {
+        if (kind !== "polling") {
+          return reading.promise;
+        }
+        if (wallStep === null) {
+          const now = fakeNow();
+          // Fail a zero-delay polling regression instead of spinning forever.
+          if (lastReadAt === now) {
+            throw new Error("polling did not advance the clock");
+          }
+          lastReadAt = now;
+        }
+        return "pending";
+      };
+      const tracked = trackSettlement(kind === "owner" ? owner() : observe(read));
       if (wallStep !== null) {
         await vi.advanceTimersByTimeAsync(0);
         vi.setSystemTime(Date.now() + wallStep);

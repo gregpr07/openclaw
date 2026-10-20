@@ -8,17 +8,10 @@ import { AsyncWorkScope } from "../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { captureEnv } from "../../test-utils/env.js";
 import "./oauth-external-auth-passthrough.test-support.js";
+import { createOAuthRefreshCredential } from "./credential-fixtures.test-support.js";
 import { getOAuthProviderRuntimeMocks } from "./oauth-common-mocks.test-support.js";
 import { isOAuthRefreshFence, isPendingOAuthRefreshFence } from "./oauth-refresh-marker.js";
-import {
-  OAUTH_AGENT_ENV_KEYS,
-  createOAuthMainAgentDir,
-  createOAuthTestTempRoot,
-  createExpiredOauthStore,
-  removeOAuthTestTempRoot,
-  resolveApiKeyForProfileInTest,
-  resetOAuthProviderRuntimeMocks,
-} from "./oauth-test-utils.js";
+import * as oauthTest from "./oauth-test-utils.js";
 import { loadPersistedAuthProfileStore } from "./persisted.js";
 import { clearRuntimeAuthProfileStoreSnapshots } from "./runtime-snapshots.js";
 import { resolveAuthProfileDatabasePath } from "./sqlite.js";
@@ -32,19 +25,20 @@ export function oauth(
   prefix = "rotated",
   overrides: Partial<OAuthCredential> = {},
 ): OAuthCredential {
-  return {
-    type: "oauth",
-    provider,
+  return createOAuthRefreshCredential({
     access: `${prefix}-access`,
     refresh: `${prefix}-refresh`,
     expires: Date.now() + 3_600_000,
     ...overrides,
-  };
+  });
 }
 export function expired(
-  overrides: Omit<Parameters<typeof createExpiredOauthStore>[0], "profileId" | "provider"> = {},
+  overrides: Omit<
+    Parameters<typeof oauthTest.createExpiredOauthStore>[0],
+    "profileId" | "provider"
+  > = {},
 ) {
-  return createExpiredOauthStore({ profileId, provider, ...overrides });
+  return oauthTest.createExpiredOauthStore({ profileId, provider, ...overrides });
 }
 export function expectTerminal(credential: AuthProfileCredential | undefined) {
   expect(credential?.type === "oauth" && isOAuthRefreshFence(credential)).toBe(true);
@@ -74,16 +68,16 @@ export function useOAuthCoordinationFixture() {
   let settleWork: (() => void | Promise<void>) | undefined;
   const reset = () => {
     resetFileLockStateForTest();
-    resetOAuthProviderRuntimeMocks(mocks);
+    oauthTest.resetOAuthProviderRuntimeMocks(mocks);
     clearRuntimeAuthProfileStoreSnapshots();
   };
   beforeEach(async () => {
     fixture.work = new AsyncWorkScope();
     releaseRefresh = undefined;
-    env = captureEnv(OAUTH_AGENT_ENV_KEYS);
+    env = captureEnv(oauthTest.OAUTH_AGENT_ENV_KEYS);
     reset();
-    fixture.root = await createOAuthTestTempRoot("openclaw-oauth-shard-");
-    fixture.mainDir = await createOAuthMainAgentDir(fixture.root);
+    fixture.root = await oauthTest.createOAuthTestTempRoot("openclaw-oauth-shard-");
+    fixture.mainDir = await oauthTest.createOAuthMainAgentDir(fixture.root);
     ({ resolveApiKeyForProfile: resolver } = await import("./oauth.js"));
   });
   afterEach(async () => {
@@ -93,7 +87,7 @@ export function useOAuthCoordinationFixture() {
     await fixture.work.drain();
     env.restore();
     reset();
-    await removeOAuthTestTempRoot(fixture.root);
+    await oauthTest.removeOAuthTestTempRoot(fixture.root);
   });
   const fixture = {
     refresh: mocks.refreshProviderOAuthCredentialWithPluginMock,
@@ -111,7 +105,8 @@ export function useOAuthCoordinationFixture() {
     resolve(agentDir: string | undefined, id = profileId) {
       assert.ok(agentDir, "expected a seeded agent directory");
       return fixture.work.track(() =>
-        resolveApiKeyForProfileInTest(resolver, {
+        resolver({
+          cfg: {},
           store: ensureAuthProfileStore(agentDir),
           profileId: id,
           agentDir,
