@@ -6,6 +6,7 @@ import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import { memorySessionActorOwners } from "../config/sessions/session-actor-memory-owner.js";
 import { addSessionMember, removeSessionMember } from "../config/sessions/session-sharing-store.js";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
+import type { GatewayOperatorRoleDefinition } from "../config/types.gateway.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { prepareUserProfileCatalog } from "../state/user-profile-list.js";
 import { setUserProfileRole } from "../state/user-profile-writes.worker.js";
@@ -21,6 +22,11 @@ import {
 } from "./tools-invoke-http.test-support.js";
 import { invokeGatewayTool } from "./tools-invoke-shared.js";
 
+type FixtureTool = {
+  name: string;
+  parameters: object;
+  execute: (...args: Parameters<AnyAgentTool["execute"]>) => Promise<unknown>;
+};
 const runtime = vi.hoisted(() => {
   const execute = vi.fn(async () => ({ ok: true }));
   return {
@@ -30,15 +36,7 @@ const runtime = vi.hoisted(() => {
       blocked: false as const,
       params,
     })),
-    createTools: vi.fn<
-      () => Promise<
-        Array<{
-          name: string;
-          parameters: object;
-          execute: (...args: Parameters<AnyAgentTool["execute"]>) => Promise<unknown>;
-        }>
-      >
-    >(async () =>
+    createTools: vi.fn<() => Promise<FixtureTool[]>>(async () =>
       ["session_status", "plugin_doctor"].map((name) => ({
         name,
         parameters: { type: "object", properties: {} },
@@ -72,6 +70,8 @@ afterEach(() => memorySessionActorOwners.reset());
 beforeEach(() => {
   vi.clearAllMocks();
   server.resetContext();
+  runtime.cfg = { agents: { entries: { main: {} } } };
+  runtime.authorize.mockResolvedValue({ ok: true, method: "token" });
 });
 
 const postToolsInvoke = async (body: Record<string, unknown>, scopes = "operator.write") =>
@@ -84,12 +84,10 @@ const postToolsInvoke = async (body: Record<string, unknown>, scopes = "operator
 it("refuses tool execution when its memory session closes during the before-tool hook", async () => {
   await withToolsInvokeTestState({ label: "memory-tool-closure" }, async () => {
     const sessionKey = "agent:main:dashboard:incognito-tool-closure";
-    runtime.cfg = { agents: { entries: { main: {} } } };
     await upsertSessionEntryCore(
       { agentId: "main", sessionKey },
       { sessionId: "private-tool", updatedAt: 1, incognito: true },
     );
-    runtime.authorize.mockResolvedValue({ ok: true, method: "token" });
     runtime.beforeHook.mockImplementationOnce(async ({ params }) => {
       memorySessionActorOwners.reset();
       return { blocked: false, params };
@@ -119,46 +117,32 @@ describe.each(["HTTP", "WebSocket"] as const)(
       revokeMember?: boolean;
       expectedError?: string;
     };
-    const sandboxCase = (options: RoleCase): RoleCase => ({ sandbox: "required", ...options });
+    const sandboxCase = (sessionKey?: string, options: RoleCase = {}): RoleCase => ({
+      sessionKey,
+      sandbox: "required",
+      ...options,
+    });
+    const missingSandbox = (sessionKey?: string, toolName?: string) =>
+      sandboxCase(sessionKey, { toolName, expectedError: "requires a sandboxed session" });
+    const memoryKey = "agent:main:dashboard:incognito-tools";
+    const memoryCase = sandboxCase(memoryKey, { stored: true, incognito: true });
     const cases: Record<string, RoleCase> = {
-      "denies a missing session on an agent outside the role": {
+      "denies out-of-role session creation": {
         sessionKey: "agent:blocked:missing",
         expectedError: 'cannot create sessions for agent "blocked"',
       },
-      "denies a plugin tool without required session provenance": sandboxCase({
-        sessionKey: "agent:main:missing",
-        toolName: "plugin_doctor",
-        expectedError: "requires a sandboxed session",
-      }),
-      "denies a missing main alias without required session provenance": sandboxCase({
-        sessionKey: "main",
-        expectedError: "requires a sandboxed session",
-      }),
-      "denies an omitted target without required session provenance": sandboxCase({
-        expectedError: "requires a sandboxed session",
-      }),
-      "allows an authorized missing session": { sessionKey: "main" },
-      "allows an owned required-sandbox session": sandboxCase({
-        sessionKey: "agent:main:guest-session",
-        stored: true,
-      }),
-      "denies a profiled owner without admin access to a memory session": sandboxCase({
-        sessionKey: "agent:main:dashboard:incognito-tools",
-        stored: true,
-        incognito: true,
-        expectedError: 'Incognito session "agent:main:dashboard:incognito-tools" was not found.',
-      }),
-      "allows an admin to invoke tools in a memory session": sandboxCase({
-        sessionKey: "agent:main:dashboard:incognito-tools",
-        stored: true,
-        incognito: true,
-        admin: true,
-      }),
-      "preserves trusted system calls without a session": sandboxCase({
-        sessionKey: "agent:blocked:missing",
-        system: true,
-      }),
-      "denies tool execution when the member is revoked during the before-tool hook": {
+      "plugin provenance": missingSandbox("agent:main:missing", "plugin_doctor"),
+      "main-alias provenance": missingSandbox("main"),
+      "omitted-target provenance": missingSandbox(),
+      "authorized missing session": { sessionKey: "main" },
+      "owned sandbox session": sandboxCase("agent:main:guest-session", { stored: true }),
+      "non-admin memory-session owner": {
+        ...memoryCase,
+        expectedError: `Incognito session "${memoryKey}" was not found.`,
+      },
+      "memory-session admin": { ...memoryCase, admin: true },
+      "sessionless system call": sandboxCase("agent:blocked:missing", { system: true }),
+      "denies membership revoked during the hook": {
         sessionKey: "agent:main:member-session",
         stored: true,
         revokeMember: true,
@@ -172,6 +156,12 @@ describe.each(["HTTP", "WebSocket"] as const)(
         const email = "standalone-operator@example.test";
         const profile = ensureProfileForEmail(email);
         using _ = { [Symbol.dispose]: (await prepareUserProfileCatalog()).release };
+        const role = (admin: boolean): GatewayOperatorRoleDefinition => ({
+          sessions: { others: admin ? "write" : "view" },
+          agents: admin ? "*" : ["main"],
+          scopes: [admin ? "operator.admin" : "operator.write"],
+          sandbox: testCase.sandbox,
+        });
         runtime.cfg = {
           agents: {
             defaults: { sandbox: { mode: "off" } },
@@ -184,20 +174,7 @@ describe.each(["HTTP", "WebSocket"] as const)(
           gateway: {
             roles: {
               default: "guest",
-              definitions: {
-                guest: {
-                  sessions: { others: "view" },
-                  agents: ["main"],
-                  scopes: ["operator.write"],
-                  sandbox: testCase.sandbox,
-                },
-                admin: {
-                  sessions: { others: "write" },
-                  agents: "*",
-                  scopes: ["operator.admin"],
-                  sandbox: testCase.sandbox,
-                },
-              },
+              definitions: { guest: role(false), admin: role(true) },
             },
           },
         };
@@ -206,15 +183,12 @@ describe.each(["HTTP", "WebSocket"] as const)(
         }
         if (testCase.stored) {
           const sessionKey = expectDefined(testCase.sessionKey, "stored fixture session key");
+          const id = testCase.revokeMember ? "another-creator" : profile.id;
           const entry: InternalSessionEntry = {
             sessionId: "standalone-guest-session",
             updatedAt: 1,
             visibility: testCase.revokeMember ? "read-only" : "shared",
-            createdActor: {
-              type: "human",
-              source: "profile",
-              id: testCase.revokeMember ? "another-creator" : profile.id,
-            },
+            createdActor: { type: "human", source: "profile", id },
             sandbox: "required",
             ...(testCase.incognito ? { incognito: true } : {}),
           };
@@ -308,10 +282,8 @@ it.each([false, true])(
     await withToolsInvokeTestState({ label: "standalone-tool-creation" }, async () => {
       const sessionKey = "agent:main:outbound-first-contact";
       let callerCurrent = true;
-      runtime.cfg = { agents: { entries: { main: {} } } };
-      runtime.authorize.mockResolvedValue({ ok: true, method: "token" });
-      runtime.createTools.mockImplementationOnce(async () => {
-        const tool: AnyAgentTool = {
+      runtime.createTools.mockResolvedValueOnce([
+        {
           name: "message",
           label: "Message",
           description: "Message result fixture",
@@ -330,16 +302,14 @@ it.each([false, true])(
               details: {
                 messageDelivery: {
                   status: "settled",
-                  primaryPlatformMessageId: "accepted-message",
                   partialDelivery: false,
                   createdThreadIds: [],
                 },
               },
             };
           },
-        };
-        return [tool];
-      });
+        } satisfies AnyAgentTool,
+      ]);
       const input = { name: "message", sessionKey, args: { action: "send" } };
       if (revokeCaller) {
         const outcome = await invokeGatewayTool({

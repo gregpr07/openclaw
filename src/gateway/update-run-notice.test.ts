@@ -1,3 +1,4 @@
+import { expectDefined } from "@openclaw/normalization-core";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { captureRuntimeConfigAsyncReader } from "../config/io.runtime.js";
@@ -26,9 +27,7 @@ describe("host-owned update notices", () => {
     state = await createOpenClawTestState({ prefix: "openclaw-update-notice-" });
     await captureRuntimeConfigAsyncReader()();
   });
-  afterEach(async () => {
-    await state.cleanup();
-  });
+  afterEach(() => state.cleanup());
   const target = () => ({
     agentId: "main",
     sessionKey: "agent:main:main",
@@ -42,11 +41,17 @@ describe("host-owned update notices", () => {
   const assistantMessage = (text: string) => ({
     message: { role: "assistant", content: [{ type: "text", text }] },
   });
+  const seedSession = (lifecycleRevision?: string, updatedAt = 1) =>
+    upsertSessionEntryCore(target(), {
+      sessionId: target().sessionId,
+      updatedAt,
+      lifecycleRevision,
+    });
 
   it.each(["succeeded", "failed"] as const)(
     "keeps %s notices concise and saves diagnostic details",
     async (status) => {
-      await upsertSessionEntryCore(target(), { sessionId: target().sessionId, updatedAt: 1 });
+      await seedSession();
       const advice =
         "Managed gateway remains stopped. Keep the gateway stopped until the update succeeds.";
       const warning = "gateway.auth.token is SecretRef-managed; verify the daemon runtime context.";
@@ -60,13 +65,13 @@ describe("host-owned update notices", () => {
         detail: warning,
       });
       recordUpdateRunVerification(initial.runId, { port: 19123, versionMatch: false });
-      const finished = finishUpdateRun(initial.runId, {
-        status,
-        ...(status === "failed" ? { reason: "restart-unhealthy" } : {}),
-      });
-      if (!finished) {
-        throw new Error("Missing finished update");
-      }
+      const finished = expectDefined(
+        finishUpdateRun(initial.runId, {
+          status,
+          ...(status === "failed" ? { reason: "restart-unhealthy" } : {}),
+        }),
+        "finished update",
+      );
 
       const notify = await createUpdateRunNotifier(initial, () => ({}), {});
       expect(await notify(finished, "finished")).toEqual({ delivered: true, owned: true });
@@ -91,19 +96,11 @@ describe("host-owned update notices", () => {
   it.each([false, true])(
     "outlives the requesting attempt while honoring session replacement (%s)",
     async (replaced) => {
-      await upsertSessionEntryCore(target(), {
-        sessionId: target().sessionId,
-        lifecycleRevision: "admitted-session",
-        updatedAt: 1,
-      });
+      await seedSession("admitted-session");
       const run = createUpdateRun({ trigger: "chat", origin: { sessionKey: target().sessionKey } });
       const notify = await createUpdateRunNotifier(run, () => ({}), {});
       if (replaced) {
-        await upsertSessionEntryCore(target(), {
-          sessionId: target().sessionId,
-          lifecycleRevision: "replacement-session",
-          updatedAt: 2,
-        });
+        await seedSession("replacement-session", 2);
       }
       const result = await withOwnedSessionTranscriptWrites(
         {
@@ -116,9 +113,10 @@ describe("host-owned update notices", () => {
       );
       expect(result).toEqual({ delivered: !replaced, owned: !replaced });
       const notices = await messages();
-      expect(notices).toHaveLength(replaced ? 0 : 1);
+      expect(notices).toMatchObject(
+        replaced ? [] : [assistantMessage(renderUpdateRunNotice(run, "parking"))],
+      );
       if (!replaced) {
-        expect(notices[0]).toMatchObject(assistantMessage(renderUpdateRunNotice(run, "parking")));
         expect(getUpdateRun(run.runId)?.steps).toContainEqual(
           expect.objectContaining({ step: "notice:activating", status: "completed" }),
         );

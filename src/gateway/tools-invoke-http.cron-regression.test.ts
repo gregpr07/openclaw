@@ -1,9 +1,5 @@
-import { createServer } from "node:http";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  closeHttpServer,
-  listenLoopback,
-} from "../../test/helpers/gateway-integration-fixtures.js";
+import { afterAll, beforeAll, expect, it, vi } from "vitest";
+import { createTestGatewayHttpServer } from "./http-server.test-support.js";
 
 const TEST_GATEWAY_TOKEN = "test-gateway-token-1234567890";
 let cfg: Record<string, unknown> = {};
@@ -57,29 +53,15 @@ vi.mock("../agents/openclaw-tools.js", () => {
 const { handleToolsInvokeHttpRequest } = await import("./tools-invoke-http.js");
 
 let url: string;
-const server = createServer((req, res) => {
-  void (async () => {
-    const handled = await handleToolsInvokeHttpRequest(req, res, {
-      auth: { mode: "token", token: TEST_GATEWAY_TOKEN, allowTailscale: false },
-    });
-    if (handled) {
-      return;
-    }
-    res.statusCode = 404;
-    res.end("not found");
-  })().catch((err: unknown) => {
-    res.statusCode = 500;
-    res.end(String(err));
-  });
-});
+const server = createTestGatewayHttpServer((req, res) =>
+  handleToolsInvokeHttpRequest(req, res, {
+    auth: { mode: "token", token: TEST_GATEWAY_TOKEN, allowTailscale: false },
+  }),
+);
 beforeAll(async () => {
-  url = `${await listenLoopback(server)}/tools/invoke`;
+  url = `http://127.0.0.1:${await server.listen()}/tools/invoke`;
 });
-afterAll(() => closeHttpServer(server));
-
-beforeEach(() => {
-  cfg = {};
-});
+afterAll(() => server.close());
 
 async function invoke(tool: string, scopes = "operator.write") {
   return await fetch(url, {
@@ -93,30 +75,32 @@ async function invoke(tool: string, scopes = "operator.write") {
   });
 }
 
-describe("tools invoke HTTP denylist", () => {
-  it("blocks cron and gateway by default", async () => {
-    const gatewayRes = await invoke("gateway");
-    const cronRes = await invoke("cron", "operator.admin");
-
-    expect(gatewayRes.status).toBe(404);
-    expect(cronRes.status).toBe(404);
-  });
-
-  it("keeps a normalized deny authoritative over a canonical allow", async () => {
-    cfg = { gateway: { tools: { allow: ["automations"], deny: [" CRON "] } } };
-
-    const cronRes = await invoke("cron", "operator.admin");
-
-    expect(cronRes.status).toBe(404);
-  });
-
-  it("keeps gateway denied under the coding profile while honoring explicit cron allow", async () => {
-    cfg = { tools: { profile: "coding" }, gateway: { tools: { allow: ["cron"] } } };
-
-    const cronRes = await invoke("cron", "operator.admin");
-    const gatewayRes = await invoke("gateway");
-
-    expect(cronRes.status).toBe(200);
-    expect(gatewayRes.status).toBe(404);
-  });
+it.each([
+  {
+    name: "defaults",
+    config: {},
+    checks: [
+      ["gateway", 404],
+      ["cron", 404],
+    ],
+  },
+  {
+    name: "normalized deny over canonical allow",
+    config: { gateway: { tools: { allow: ["automations"], deny: [" CRON "] } } },
+    checks: [["cron", 404]],
+  },
+  {
+    name: "explicit cron allow under coding profile",
+    config: { tools: { profile: "coding" }, gateway: { tools: { allow: ["cron"] } } },
+    checks: [
+      ["cron", 200],
+      ["gateway", 404],
+    ],
+  },
+] as const)("HTTP tool denylist: $name", async ({ config, checks }) => {
+  cfg = config;
+  for (const [tool, status] of checks) {
+    const scopes = tool === "cron" ? "operator.admin" : "operator.write";
+    expect((await invoke(tool, scopes)).status).toBe(status);
+  }
 });
