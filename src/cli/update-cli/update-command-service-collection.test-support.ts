@@ -78,17 +78,15 @@ export function registerServiceCollectionTests() {
             }
             return structuredClone(command);
           },
-          readRuntime: async () => {
-            if (!running) {
-              // systemd can collect the stopped unit between its command and runtime reads.
-              return { status: "unknown" };
-            }
-            return {
-              status: "running",
-              pid: Math.max(process.pid, process.ppid) + 1,
-              systemd: { managerUid: 2001, tasksCurrent: 1 },
-            };
-          },
+          // systemd can collect the stopped unit between command and runtime reads.
+          readRuntime: async () =>
+            running
+              ? {
+                  status: "running",
+                  pid: Math.max(process.pid, process.ppid) + 1,
+                  systemd: { managerUid: 2001, tasksCurrent: 1 },
+                }
+              : { status: "unknown" },
           stop: vi.fn(async () => {
             running = false;
           }),

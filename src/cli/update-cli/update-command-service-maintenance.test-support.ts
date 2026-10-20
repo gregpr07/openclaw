@@ -43,53 +43,29 @@ type NativeOfflineCase = {
   phase?: "inspect" | "prepare";
   state?: number | string;
 };
-
-export const nativeOfflineCases: NativeOfflineCase[] = [
-  ...(
-    [
-      { label: "terminal inactive", runtime: "stopped", offline: true },
-      { label: "restart transition", runtime: "unknown", offline: false },
-      { label: "running", runtime: "running", offline: false },
-    ] as const
-  ).map<NativeOfflineCase>((row) =>
-    Object.assign({ platform: "linux" as const, loaded: true }, row),
-  ),
-  ...(
-    [
-      { label: "unloaded", loaded: false, offline: true },
-      { label: "loaded enabled", enabled: true },
-      { label: "loaded disabled", enabled: false },
-      { label: "loaded disabled preparation", enabled: false, phase: "prepare" },
-      { label: "enabled unknown" },
-    ] as const
-  ).map<NativeOfflineCase>((row) =>
-    Object.assign(
-      {
-        platform: "darwin" as const,
-        runtime: "stopped" as const,
-        loaded: true,
-        offline: false,
-      },
-      row,
-    ),
-  ),
-  ...[
-    { label: "disabled", state: 1, offline: true },
-    { label: "ready", state: 3, offline: true },
-    { label: "queued", state: 2, offline: false },
-    { label: "running", state: 4, offline: false },
-    { label: "unknown", state: 0, offline: false },
-    { label: "malformed", state: "3 trailing output", offline: false },
-  ].map<NativeOfflineCase>((task) => ({
-    platform: "win32",
-    runtime:
-      task.state === 1 || task.state === 3 ? "stopped" : task.state === 4 ? "running" : "unknown",
-    loaded: true,
-    label: task.label,
-    state: task.state,
-    offline: task.offline,
-  })),
+const offlineRows: [NodeJS.Platform, string, Partial<NativeOfflineCase>][] = [
+  ["linux", "terminal inactive", { offline: true }],
+  ["linux", "restart transition", { runtime: "unknown" }],
+  ["linux", "running", { runtime: "running" }],
+  ["darwin", "unloaded", { loaded: false, offline: true }],
+  ["darwin", "loaded enabled", { enabled: true }],
+  ["darwin", "loaded disabled", { enabled: false }],
+  ["darwin", "loaded disabled preparation", { enabled: false, phase: "prepare" }],
+  ["darwin", "enabled unknown", {}],
+  ["win32", "disabled", { state: 1, offline: true }],
+  ["win32", "ready", { state: 3, offline: true }],
+  ["win32", "queued", { state: 2, runtime: "unknown" }],
+  ["win32", "running", { state: 4, runtime: "running" }],
+  ["win32", "unknown", { state: 0, runtime: "unknown" }],
+  ["win32", "malformed", { state: "3 trailing output", runtime: "unknown" }],
 ];
+export const nativeOfflineCases = offlineRows.map(
+  ([platform, label, overrides]): NativeOfflineCase =>
+    Object.assign(
+      { platform, label, runtime: "stopped" as const, loaded: true, offline: false },
+      overrides,
+    ),
+);
 
 vi.mock("./update-command-service-drain.js", () => ({
   withGatewayMaintenanceDrain: mocks.drain,

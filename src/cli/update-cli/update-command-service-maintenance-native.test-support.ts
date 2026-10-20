@@ -1,7 +1,6 @@
 import { vi } from "vitest";
 import { createTestConfigSnapshot } from "../../commands/test-runtime-config-helpers.js";
 import { createSystemPackageOwnershipInspection } from "../../infra/update-system-package-ownership.js";
-import type { UpdateCommandOptions } from "./shared.js";
 
 const command = vi.hoisted(() => ({
   prepare: vi.fn<typeof import("./update-command-run.js").prepareUpdateCommand>(),
@@ -106,7 +105,6 @@ export async function runNativeMaintenanceUpdate(
   handoffId: string,
   serviceRoot?: string,
 ) {
-  const run: NonNullable<UpdateCommandOptions["run"]> = { runId, env: process.env };
   command.prepare.mockResolvedValue({
     startedAt: Date.now(),
     postCoreUpdateResume: false,
@@ -121,7 +119,7 @@ export async function runNativeMaintenanceUpdate(
     servicePlan: serviceRoot ? { rootRedirect: null, serviceRoot } : undefined,
     pkgOwnership: createSystemPackageOwnershipInspection(),
   });
-  command.admit.mockResolvedValue(run);
+  command.admit.mockResolvedValue({ runId, env: process.env });
   command.target.mockResolvedValue({
     root,
     mode: "npm",
