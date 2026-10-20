@@ -19,30 +19,19 @@ function fixture() {
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_GLOBAL: os.devNull,
   };
-  // Captured product command shapes from the failing BC038 boundary.
+  // Captured BC038 commands, independent of the production argument builder.
+  const guards = ["-c", `core.hooksPath=${os.devNull}`, "-c", "core.fsmonitor=false"];
   const init = [
     "git",
-    "-c",
-    `core.hooksPath=${os.devNull}`,
-    "-c",
-    "core.fsmonitor=false",
+    ...guards,
     "-C",
     checkpointRoot,
-    "init",
-    "--quiet",
-    "--bare",
-    "--object-format=sha1",
+    ..."init --quiet --bare --object-format=sha1".split(" "),
   ];
-  const probe = [
-    "git",
-    "config",
-    "--local",
-    "--includes",
-    "--bool",
-    "--default=false",
-    "--get",
-    "extensions.worktreeConfig",
-  ];
+  const probe =
+    "git config --local --includes --bool --default=false --get extensions.worktreeConfig".split(
+      " ",
+    );
   const request = { campaignRoot, checkpointRoot, nodeRoot, cwd: nodeRoot, argv: init, env };
   const git = (argv: string[], cwd = nodeRoot) =>
     spawnSync("git", argv.slice(1), { cwd, env, encoding: "utf8" });
@@ -51,8 +40,7 @@ function fixture() {
   mkdirSync(bin);
   const trace = path.join(campaignRoot, "git-starts");
   writeFileSync(trace, "");
-  // Observe the actual executable boundary, then replace this process with real
-  // Git. A denied command must never enter this executable.
+  // A denied command must never enter the traced real-Git executable.
   const realGit = spawnSync("/bin/sh", ["-c", "command -v git"], {
     encoding: "utf8",
   }).stdout.trim();
@@ -116,8 +104,7 @@ it.skipIf(process.platform === "win32")(
     }
     denied({ argv: probe, cwd: request.checkpointRoot });
     denied({ env: { ...request.env, GIT_DIR: request.checkpointRoot } });
-    // The campaign refreshed its current placement. An argv captured from its old
-    // root must not execute, even though that old directory still exists and is owned.
+    // Stale argv cannot authorize an old, still-owned campaign placement.
     const currentRoot = path.join(request.campaignRoot, "current.git");
     mkdirSync(currentRoot);
     denied({ checkpointRoot: currentRoot });

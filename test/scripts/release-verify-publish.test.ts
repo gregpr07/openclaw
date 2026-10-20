@@ -18,6 +18,9 @@ import {
 } from "./plugin-npm-publication-readback.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const verifierArgv = resolveRuntimeWorkerArgv(
+  resolveRuntimeWorkerUrl(scriptProcessEntrypoints.releaseVerifyPublish),
+);
 
 describe("full parent publication verifier entrypoint", () => {
   it.each([
@@ -79,14 +82,10 @@ globalThis.fetch = async (url) => {
     const result = spawnSync(
       process.execPath,
       [
-        ...resolveRuntimeWorkerArgv(
-          resolveRuntimeWorkerUrl(scriptProcessEntrypoints.releaseVerifyPublish),
-        ).slice(0, -1),
+        ...verifierArgv.slice(0, -1),
         "--import",
         preload,
-        ...resolveRuntimeWorkerArgv(
-          resolveRuntimeWorkerUrl(scriptProcessEntrypoints.releaseVerifyPublish),
-        ).slice(-1),
+        ...verifierArgv.slice(-1),
         version,
         "--release-sha",
         sourceSha,
@@ -118,10 +117,11 @@ globalThis.fetch = async (url) => {
     expect(result.status, result.stderr).toBe(succeeded ? 0 : 1);
     const evidencePath = join(root, "parent-evidence.json");
     expect(existsSync(evidencePath)).toBe(succeeded);
+    const readbacks = succeeded
+      ? JSON.parse(readFileSync(evidencePath, "utf8")).pluginNpmPublicationReadbacks
+      : undefined;
     if (fault === "none") {
-      expect(
-        JSON.parse(readFileSync(evidencePath, "utf8")).pluginNpmPublicationReadbacks,
-      ).toMatchObject([
+      expect(readbacks).toMatchObject([
         {
           packageName,
           sourceSha,
@@ -134,9 +134,7 @@ globalThis.fetch = async (url) => {
         },
       ]);
     } else if (fault === "no-publish") {
-      expect(
-        JSON.parse(readFileSync(evidencePath, "utf8")).pluginNpmPublicationReadbacks,
-      ).toMatchObject([{ packageName, verification: "published-registry" }]);
+      expect(readbacks).toMatchObject([{ packageName, verification: "published-registry" }]);
     } else {
       expect(result.stderr).toContain(
         fault === "missing-planned-job" ? "planned candidate" : "HTTP 404",
@@ -180,12 +178,7 @@ verify_published_release
     });
     expect(result.status, result.stderr).toBe(79);
     const args = readFileSync(argsLog, "utf8").split("\n");
-    expect(args[2]).toBe(
-      join(
-        root,
-        ".release-harness/scripts",
-        fullPublication ? "release-verify-publish.ts" : "release-verify-beta.ts",
-      ),
-    );
+    const verifier = fullPublication ? "release-verify-publish.ts" : "release-verify-beta.ts";
+    expect(args[2]).toBe(join(root, ".release-harness/scripts", verifier));
   });
 });

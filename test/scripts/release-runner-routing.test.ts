@@ -3,49 +3,29 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { evaluateWorkflowExpression, evaluateWorkflowRunner } from "./ci-workflow.test-support.js";
 
-const dedicated = [
-  "full-release-validation",
-  "full-release-artifacts",
-  "full-release-candidate",
-  "full-release-child-evidence",
-  "plugin-prerelease",
-  "openclaw-release-checks",
-  "openclaw-npm-preflight",
-  "docker-release-prepare",
-  "openclaw-cross-os-release-checks-reusable",
-  "openclaw-release-publish",
-  "openclaw-npm-release",
-  "plugin-clawhub-release",
-  "plugin-clawhub-new",
-  "plugin-clawhub-postpublish",
-];
-const shared = [
-  "install-smoke-reusable",
-  "openclaw-live-and-e2e-checks-reusable",
-  "openclaw-repo-e2e-reusable",
-  "package-acceptance",
-  "maturity-scorecard",
-  "qa-profile-evidence",
-  "qa-live-transports-convex",
-  "npm-telegram-beta-e2e",
-  "docker-release",
-  "vercel-container-registry-publish",
-];
+const names = (text: string) => text.trim().split(/\s+/u);
+const dedicated = names(`
+  full-release-validation full-release-artifacts full-release-candidate
+  full-release-child-evidence plugin-prerelease openclaw-release-checks openclaw-npm-preflight
+  docker-release-prepare openclaw-cross-os-release-checks-reusable openclaw-release-publish
+  openclaw-npm-release plugin-clawhub-release plugin-clawhub-new plugin-clawhub-postpublish
+`);
+const shared = names(`
+  install-smoke-reusable openclaw-live-and-e2e-checks-reusable openclaw-repo-e2e-reusable
+  package-acceptance maturity-scorecard qa-profile-evidence qa-live-transports-convex
+  npm-telegram-beta-e2e docker-release vercel-container-registry-publish
+`);
 // Route only for a release dispatch; ordinary events keep their labels.
 const mixed = ["ci", "openclaw-performance", "plugin-npm-release"];
 // Publication paths: approval and credentialed publish jobs stay on default
 // GitHub-hosted labels (npm trusted publishing rejects self-hosted runners).
-const publishing = new Set([
-  "openclaw-release-publish",
-  "openclaw-release-promote",
-  "openclaw-npm-release",
-  "plugin-npm-release",
-  "plugin-clawhub-release",
-  "plugin-clawhub-new",
-  "plugin-clawhub-postpublish",
-  "docker-release",
-  "vercel-container-registry-publish",
-]);
+const publishing = new Set(
+  names(`
+  openclaw-release-publish openclaw-release-promote openclaw-npm-release plugin-npm-release
+  plugin-clawhub-release plugin-clawhub-new plugin-clawhub-postpublish docker-release
+  vercel-container-registry-publish
+`),
+);
 type Job = {
   if?: string;
   "runs-on"?: string;
@@ -64,6 +44,7 @@ const workflows = new Map(
     parse(readFileSync(`.github/workflows/${name}.yml`, "utf8")) as Workflow,
   ]),
 );
+const jobs = (name: string) => workflows.get(name)!.jobs;
 const group = 'Release "reserved"';
 const context = {
   matrix: { runner: "ubuntu-24.04", group: "fixture", task: "test", check_name: "fixture" },
@@ -103,13 +84,10 @@ describe("release runner reservation", () => {
       "docker-release": "publish",
     };
     const defaultLabels: [unknown, string][] = [
-      [
-        Object.values(workflows.get("openclaw-release-publish")!.jobs)[0]?.["runs-on"],
-        "ubuntu-latest",
-      ],
-      [workflows.get("full-release-validation")?.jobs.resolve_target?.["runs-on"], "ubuntu-24.04"],
-      [workflows.get("ci")?.jobs["macos-swift"]?.["runs-on"], "xcode-27"],
-      [workflows.get("ci")?.jobs["checks-windows"]?.["runs-on"], "windows-2025"],
+      [Object.values(jobs("openclaw-release-publish"))[0]?.["runs-on"], "ubuntu-latest"],
+      [jobs("full-release-validation").resolve_target?.["runs-on"], "ubuntu-24.04"],
+      [jobs("ci")["macos-swift"]?.["runs-on"], "xcode-27"],
+      [jobs("ci")["checks-windows"]?.["runs-on"], "windows-2025"],
     ];
     for (const [selector, label] of defaultLabels) {
       expect(evaluateWorkflowRunner(selector, context)).toBe(label);

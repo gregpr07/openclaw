@@ -22,6 +22,8 @@ const fixture = () => {
   return releaseFixture(directories.make(".release-stable-validation-test-", scratch));
 };
 const toolingTag = "release-publish/bbbbbbbbbbbb-123";
+const pnpmCalls = (result: { calls: { bin: string; args: string[] }[] }, command?: string) =>
+  result.calls.filter((call) => call.bin === "pnpm" && (!command || call.args[0] === command));
 
 function validateSetup(fresh = true, retainedCapabilities = false): FakeStep[] {
   return [
@@ -87,12 +89,8 @@ describe("release:stable qualification and recovery", () => {
       "Full Release Validation 101 failed; diagnose before operator recovery.",
     );
     expect(failed.stderr).toContain("pnpm frv status --run 101");
-    expect(failed.calls.filter((call) => call.bin === "pnpm" && call.args[0] === "frv")).toEqual(
-      [],
-    );
-    const helper = failed.calls.find(
-      (call) => call.bin === "pnpm" && call.args[0] === "ci:full-release",
-    );
+    expect(pnpmCalls(failed, "frv")).toEqual([]);
+    const helper = pnpmCalls(failed, "ci:full-release")[0];
     for (const [flag, value] of [
       ["--workflow-sha", CUT_SHA],
       ["--trusted-workflow-ref", "candidate"],
@@ -110,9 +108,7 @@ describe("release:stable qualification and recovery", () => {
     expect(resumed.status, resumed.output).toBe(0);
     expect(release.readState().validate).toMatchObject({ runId: "101", runAttempt: 2 });
     expect(release.readState().phases.validate.status).toBe("completed");
-    expect(resumed.calls.filter((call) => call.bin === "pnpm" && call.args[0] === "frv")).toEqual(
-      [],
-    );
+    expect(pnpmCalls(resumed, "frv")).toEqual([]);
   });
 
   it.each([true, false])(
@@ -150,12 +146,12 @@ describe("release:stable qualification and recovery", () => {
       if (!present) {
         expect(result.status, result.output).toBe(2);
         expect(result.stderr).toContain("Missing retained Full Release Validation request");
-        expect(result.calls.filter((call) => call.bin === "pnpm")).toEqual([]);
+        expect(pnpmCalls(result)).toEqual([]);
         return;
       }
       expect(result.status, result.output).toBe(0);
       expect(readFileSync(requestFile, "utf8")).toBe(before);
-      expect(result.calls.filter((call) => call.bin === "pnpm")).toEqual([
+      expect(pnpmCalls(result)).toEqual([
         { bin: "pnpm", args: ["ci:full-release", "--", "--reconcile-request", requestFile] },
       ]);
     },
@@ -188,7 +184,7 @@ describe("release:stable qualification and recovery", () => {
       expect(result.stderr).toContain("has no observed run");
       expect(result.stderr).toContain("--reconcile-request");
       expect(result.stderr.includes("--resume-request")).toBe(resume);
-      expect(result.calls.filter((call) => call.bin === "pnpm")).toHaveLength(1);
+      expect(pnpmCalls(result)).toHaveLength(1);
       expect(release.readState().validate.runId).toBeUndefined();
     },
   );

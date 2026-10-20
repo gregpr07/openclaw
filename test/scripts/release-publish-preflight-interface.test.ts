@@ -1,44 +1,53 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   buildReleasePublishDispatchCommand,
   formatReleasePublishPreflight,
   parsePublishPreflightArgs,
 } from "../../scripts/lib/release-publish-preflight-interface.mts";
+import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
+
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const dispatchOptions = {
+  repo: "openclaw/openclaw",
+  workflowRef: "main",
+  fullReleaseValidationRunId: "123",
+  pluginPublishScope: "all-publishable" as const,
+};
+const toolingRef = "release-publish/aaaaaaaaaaaa-123";
+const flags = (values: Record<string, string>) =>
+  Object.entries(values).flatMap(([key, value]) => [`--${key}`, value]);
+const parse = (extra: string[]) => parsePublishPreflightArgs(["--tag", "v2026.9.5", ...extra]);
+type DispatchInput = Omit<
+  Parameters<typeof buildReleasePublishDispatchCommand>[0],
+  keyof typeof dispatchOptions
+>;
+const dispatch = (input: DispatchInput, attempt = "1", resume = "") =>
+  buildReleasePublishDispatchCommand({ ...dispatchOptions, ...input }, attempt, toolingRef, resume);
 
 describe("release publish preflight operator interface", () => {
   it("parses exact tooling and selected plugin repair inputs", () => {
-    const cases = [
-      {
-        flags: ["--workflow-sha", "a".repeat(40)],
-        expected: { workflowRef: "", workflowSha: "a".repeat(40) },
-      },
-      {
-        flags: [
-          "--workflow-ref",
-          "release-publish/aaaaaaaaaaaa-123",
-          "--publish-openclaw-npm",
-          "false",
-          "--plugin-publish-scope",
-          "selected",
-          "--plugins",
-          "@openclaw/example",
-        ],
-        expected: {
-          publishOpenclawNpm: false,
-          pluginPublishScope: "selected",
+    const sha = "a".repeat(40);
+    expect(parse(["--workflow-sha", sha])?.options).toMatchObject({
+      workflowRef: "",
+      workflowSha: sha,
+    });
+    expect(
+      parse(
+        flags({
+          "workflow-ref": toolingRef,
+          "publish-openclaw-npm": "false",
+          "plugin-publish-scope": "selected",
           plugins: "@openclaw/example",
-        },
-      },
-    ];
-    for (const { flags, expected } of cases) {
-      expect(parsePublishPreflightArgs(["--tag", "v2026.9.5", ...flags])?.options).toMatchObject(
-        expected,
-      );
-    }
+        }),
+      )?.options,
+    ).toMatchObject({
+      publishOpenclawNpm: false,
+      pluginPublishScope: "selected",
+      plugins: "@openclaw/example",
+    });
   });
 
   it("rejects invalid selectors, publication booleans, and retired bypasses", () => {
@@ -58,51 +67,42 @@ describe("release publish preflight operator interface", () => {
         error: "must be true or false",
       })),
     ];
-    for (const { flags, error } of cases) {
-      expect(() => parsePublishPreflightArgs(["--tag", "v2026.9.5", ...flags])).toThrow(error);
+    for (const { flags: args, error } of cases) {
+      expect(() => parse(args)).toThrow(error);
     }
   });
 
   it.skipIf(process.platform === "win32")(
     "prints a shell-safe POSIX dispatch that preserves artifact and exact resume inputs",
     () => {
-      const dir = mkdtempSync(join(tmpdir(), "publish-dispatch-"));
-      try {
-        const output = join(dir, "arguments.json");
-        const executable = join(dir, "gh");
-        writeFileSync(
-          executable,
-          `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(output)}, JSON.stringify(process.argv.slice(2)));\n`,
-        );
-        chmodSync(executable, 0o755);
-        const installerDigests = "Owner's approved reason\n$(touch should-not-exist); `false`";
-        const command = buildReleasePublishDispatchCommand(
-          {
-            repo: "openclaw/openclaw",
-            tag: "v2026.9.5",
-            workflowRef: "main",
-            fullReleaseValidationRunId: "123",
-            npmDistTag: "latest",
-            pluginPublishScope: "all-publishable",
-            windowsNodeInstallerDigests: installerDigests,
-          },
-          "2",
-          "release-publish/aaaaaaaaaaaa-123",
-          "456",
-        );
-        execFileSync("/bin/sh", ["-c", command], {
-          cwd: dir,
-          env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
-        });
-        const args = JSON.parse(readFileSync(output, "utf8"));
-        expect(args).toContain(`windows_node_installer_digests=${installerDigests}`);
-        expect(args).toContain("full_release_validation_run_attempt=2");
-        expect(args).toContain("openclaw_npm_resume_run_id=456");
-        expect(args).toContain("release-publish/aaaaaaaaaaaa-123");
-        expect(args).toContain("finalize_release_before_docker=true");
-      } finally {
-        rmSync(dir, { recursive: true, force: true });
-      }
+      const dir = tempDirs.make("publish-dispatch-");
+      const output = join(dir, "arguments.json");
+      const executable = join(dir, "gh");
+      writeFileSync(
+        executable,
+        `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(output)}, JSON.stringify(process.argv.slice(2)));\n`,
+        { mode: 0o755 },
+      );
+      const installerDigests = "Owner's approved reason\n$(touch should-not-exist); `false`";
+      const command = dispatch(
+        {
+          tag: "v2026.9.5",
+          npmDistTag: "latest",
+          windowsNodeInstallerDigests: installerDigests,
+        },
+        "2",
+        "456",
+      );
+      execFileSync("/bin/sh", ["-c", command], {
+        cwd: dir,
+        env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
+      });
+      const args = JSON.parse(readFileSync(output, "utf8"));
+      expect(args).toContain(`windows_node_installer_digests=${installerDigests}`);
+      expect(args).toContain("full_release_validation_run_attempt=2");
+      expect(args).toContain("openclaw_npm_resume_run_id=456");
+      expect(args).toContain(toolingRef);
+      expect(args).toContain("finalize_release_before_docker=true");
     },
   );
 
@@ -110,18 +110,7 @@ describe("release publish preflight operator interface", () => {
     { tag: "v2026.9.5", npmDistTag: "beta" },
     { tag: "v2026.8.33", npmDistTag: "extended-stable" },
   ])("keeps $tag on $npmDistTag behind Docker before GitHub activation", (input) => {
-    const command = buildReleasePublishDispatchCommand(
-      {
-        repo: "openclaw/openclaw",
-        workflowRef: "main",
-        fullReleaseValidationRunId: "123",
-        pluginPublishScope: "all-publishable",
-        ...input,
-      },
-      "1",
-      "release-publish/aaaaaaaaaaaa-123",
-      "",
-    );
+    const command = dispatch(input);
     expect(command).not.toContain("finalize_release_before_docker");
   });
 

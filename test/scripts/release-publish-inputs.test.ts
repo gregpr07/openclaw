@@ -15,6 +15,13 @@ function seal({
   vi.stubGlobal("fetch", fetchImpl);
   return createReleasePublishInputs(input);
 }
+function acknowledgement(
+  manifest: Parameters<typeof resolveReleasePublishInputs>[0],
+  value?: string,
+) {
+  return resolveReleasePublishInputs(manifest, { pluginSdkApiAcknowledgement: value })
+    .pluginSdkApiAcknowledgement;
+}
 
 const targetSha = "a".repeat(40);
 const workflowSha = "b".repeat(40);
@@ -63,10 +70,7 @@ describe("sealed publication inputs", () => {
             "dist-tags": { latest: row.latest, beta: row.latest },
           }),
     );
-    const sealed = await seal({
-      ...input,
-      fetchImpl,
-    });
+    const sealed = await seal({ ...input, fetchImpl });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(sealed).toMatchObject({
       version: 1,
@@ -93,25 +97,10 @@ describe("sealed publication inputs", () => {
       });
     }
     const manifest = { ...input.manifest, publishInputs: sealed };
-    expect(resolveReleasePublishInputs(manifest).pluginSdkApiAcknowledgement).toBe("");
-    expect(
-      resolveReleasePublishInputs(manifest, {
-        pluginSdkApiAcknowledgement: " \t ",
-      }),
-    ).toMatchObject({
-      pluginSdkApiAcknowledgement: "",
-    });
-    expect(
-      resolveReleasePublishInputs(manifest, { pluginSdkApiAcknowledgement: " 12345678 " })
-        .pluginSdkApiAcknowledgement,
-    ).toBe("12345678");
-    expect(
-      resolveReleasePublishInputs(manifest, {
-        pluginSdkApiAcknowledgement: "12345678",
-      }),
-    ).toMatchObject({
-      pluginSdkApiAcknowledgement: "12345678",
-    });
+    expect(acknowledgement(manifest)).toBe("");
+    expect(acknowledgement(manifest, " \t ")).toBe("");
+    expect(acknowledgement(manifest, " 12345678 ")).toBe("12345678");
+    expect(acknowledgement(manifest, "12345678")).toBe("12345678");
     expect(() => resolveReleasePublishInputs(manifest, { targetSha: "d".repeat(40) })).toThrow(
       "target SHA mismatch",
     );

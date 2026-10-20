@@ -1,19 +1,25 @@
 // Release wrapper script tests keep changed-target routing tied to scripts that load the wrappers.
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const UNKNOWN_PACKAGE = "@openclaw/not-a-real-release-wrapper-test-package";
-const tempDirs: string[] = [];
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const tsxImport = new URL("../../scripts/tsx.mjs", import.meta.url).href;
-
-afterEach(() => {
-  for (const directory of tempDirs.splice(0)) {
-    rmSync(directory, { recursive: true, force: true });
-  }
-});
+const releaseSha = "a".repeat(40);
+const toolingSha = "b".repeat(40);
+const plannerFlags = (overrides: Record<string, string> = {}) =>
+  Object.entries({
+    "bootstrap-workflow-ref": "main",
+    "bootstrap-workflow-sha": toolingSha,
+    "release-tag": "v2026.6.21-beta.1",
+    "release-sha": releaseSha,
+    "release-publish-run-attempt": "1",
+    "release-publish-run-id": "123",
+    ...overrides,
+  }).flatMap(([key, value]) => [`--${key}`, value]);
 
 function runTsxScript(scriptPath: string, args: string[], cwd = process.cwd()) {
   return spawnSync(process.execPath, ["--import", tsxImport, scriptPath, ...args], {
@@ -23,10 +29,9 @@ function runTsxScript(scriptPath: string, args: string[], cwd = process.cwd()) {
 }
 
 function createOldReleaseTarget() {
-  const root = mkdtempSync(join(tmpdir(), "openclaw-old-release-target-"));
-  tempDirs.push(root);
-  mkdirSync(join(root, "extensions"), { recursive: true });
-  mkdirSync(join(root, "scripts"), { recursive: true });
+  const root = tempDirs.make("openclaw-old-release-target-");
+  mkdirSync(join(root, "extensions"));
+  mkdirSync(join(root, "scripts"));
   writeFileSync(
     join(root, "package.json"),
     `${JSON.stringify({ name: "openclaw", version: "2026.7.1-beta.3" }, null, 2)}\n`,
@@ -61,20 +66,7 @@ describe("release wrapper scripts", () => {
   });
 
   it("loads the OpenClaw ClawHub plan CLI and validates required arguments before planning", () => {
-    const result = runTsxScript("scripts/openclaw-release-clawhub-plan.ts", [
-      "--bootstrap-workflow-ref",
-      "main",
-      "--bootstrap-workflow-sha",
-      "b".repeat(40),
-      "--release-tag",
-      "v2026.6.21-beta.1",
-      "--release-sha",
-      "a".repeat(40),
-      "--release-publish-run-attempt",
-      "1",
-      "--release-publish-run-id",
-      "123",
-    ]);
+    const result = runTsxScript("scripts/openclaw-release-clawhub-plan.ts", plannerFlags());
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("--release-publish-branch is required.");
@@ -84,30 +76,16 @@ describe("release wrapper scripts", () => {
   it("runs trusted harness planning and verification against an old release target cwd", () => {
     const oldTarget = createOldReleaseTarget();
     const repositoryRoot = process.cwd();
-    const releaseSha = "a".repeat(40);
     const bootstrapWorkflowRef = `release-publish/${"b".repeat(12)}-123`;
     const plan = runTsxScript(
       join(repositoryRoot, "scripts/openclaw-release-clawhub-plan.ts"),
-      [
-        "--bootstrap-workflow-ref",
-        bootstrapWorkflowRef,
-        "--bootstrap-workflow-sha",
-        "b".repeat(40),
-        "--release-tag",
-        "v2026.7.1-beta.3",
-        "--release-sha",
-        releaseSha,
-        "--release-publish-branch",
-        "main",
-        "--release-publish-full-ref",
-        "refs/heads/main",
-        "--release-publish-run-attempt",
-        "1",
-        "--release-publish-run-id",
-        "123",
-        "--plugin-publish-scope",
-        "all-publishable",
-      ],
+      plannerFlags({
+        "bootstrap-workflow-ref": bootstrapWorkflowRef,
+        "release-tag": "v2026.7.1-beta.3",
+        "release-publish-branch": "main",
+        "release-publish-full-ref": "refs/heads/main",
+        "plugin-publish-scope": "all-publishable",
+      }),
       oldTarget,
     );
     expect(plan.status, plan.stderr).toBe(0);

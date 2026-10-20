@@ -16,21 +16,16 @@ const finalize = finalizationSteps("finalize_github_release").find(
   (step) => step.name === "Publish the verified draft release",
 )!.run!;
 
-function fixture({
-  tag = "v2026.9.6",
-  distTag = "latest",
-  draft = false,
-  prerelease = false,
-  latest = tag,
-  actualSha = sourceSha,
-}: {
-  tag?: string;
-  distTag?: string;
-  draft?: boolean;
-  prerelease?: boolean;
-  latest?: string;
-  actualSha?: string;
-} = {}) {
+const defaults = {
+  tag: "v2026.9.6",
+  distTag: "latest",
+  draft: false,
+  prerelease: false,
+  actualSha: sourceSha,
+};
+function fixture(options: Partial<typeof defaults> & { latest?: string } = {}) {
+  const { tag, distTag, draft, prerelease, actualSha } = { ...defaults, ...options };
+  const latest = options.latest ?? tag;
   const root = tempDirs.make("release-publish-finalize-");
   const bin = join(root, "bin");
   mkdirSync(bin);
@@ -86,12 +81,14 @@ throw new Error('Unexpected operation: ' + JSON.stringify(args));
     },
   });
   const evidencePath = join(root, "core-finalization.json");
+  const calls = readFileSync(join(root, "calls"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as string[]);
   return {
     ...result,
-    calls: readFileSync(join(root, "calls"), "utf8")
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as string[]),
+    calls,
+    nodeCalls: calls.filter(([binary]) => binary === "node"),
     summary: readFileSync(join(root, "summary"), "utf8"),
     evidence: existsSync(evidencePath)
       ? (JSON.parse(readFileSync(evidencePath, "utf8")) as Record<string, unknown>)
@@ -117,7 +114,7 @@ describe("release publish finalization", () => {
       madeLatest,
     });
     expect(result.summary).toContain("GitHub release: already public; verified, not rewritten");
-    expect(result.calls.filter(([binary]) => binary === "node")).toEqual(
+    expect(result.nodeCalls).toEqual(
       madeLatest ? [expect.arrayContaining(["scripts/linux-updater-manifest.mjs", "carry"])] : [],
     );
     expect(result.calls.some((args) => args.some((arg) => arg.endsWith("/releases/latest")))).toBe(
@@ -133,11 +130,7 @@ describe("release publish finalization", () => {
     const result = fixture(options);
     expect(result.status, result.stderr).toBe(0);
     expect(result.evidence).toEqual({ state: "finalized" });
-    expect(result.calls.filter(([binary]) => binary === "node").map((args) => args[2])).toEqual([
-      "carry",
-      "verify",
-      "finalize-core",
-    ]);
+    expect(result.nodeCalls.map((args) => args[2])).toEqual(["carry", "verify", "finalize-core"]);
     expect(result.summary).not.toContain("already public");
   });
 
@@ -146,6 +139,6 @@ describe("release publish finalization", () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain(`Release tag v2026.9.6 moved: expected ${sourceSha}`);
     expect(result.evidence).toBeUndefined();
-    expect(result.calls.filter(([binary]) => binary === "node")).toEqual([]);
+    expect(result.nodeCalls).toEqual([]);
   });
 });
