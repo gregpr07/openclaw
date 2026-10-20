@@ -13,7 +13,7 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { FailoverError } from "../failover-error.js";
 import { resetFallbackSkipCacheForTest } from "../fallback-skip-cache.test-support.js";
 import { runEmbeddedAgentEntry } from "./run-entry.js";
-import { makeResult } from "./run-entry.test-support.js";
+import { createDirectHarness, makeResult } from "./run-entry.test-support.js";
 
 vi.mock("../auth-profiles/source-check.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../auth-profiles/source-check.js")>()),
@@ -92,11 +92,7 @@ it.each<[string, string[] | undefined, string[], boolean, boolean]>([
           },
         },
         identity: { runId: `hook-${name}`, agentId: "main", sessionId: name },
-        harness: {
-          workspaceDir: state.workspaceDir,
-          preparation: { kind: "direct" },
-          resolveRuntimeOverride: () => "openclaw",
-        },
+        harness: createDirectHarness(state.workspaceDir, "openclaw"),
         behavior: { kind: "maintenance" },
         sessionOverride: { kind: "preserve" },
         runCandidate: async (provider, model, options) => {

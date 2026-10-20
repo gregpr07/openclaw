@@ -9,10 +9,11 @@ export type FallbackRunnerParams = Parameters<
 >[0];
 
 export function initialAttemptOptions(params: FallbackRunnerParams): ModelFallbackRunOptions {
+  const { provider, model } = params;
   return {
     modelRoutingProvenance: {
-      requestedProvider: params.provider,
-      requestedModel: params.model,
+      requestedProvider: provider,
+      requestedModel: model,
       stage: "initial",
     },
   };
@@ -24,8 +25,7 @@ export function fallbackAttemptOptions(
 ): ModelFallbackRunOptions {
   return {
     modelRoutingProvenance: {
-      requestedProvider: params.provider,
-      requestedModel: params.model,
+      ...initialAttemptOptions(params).modelRoutingProvenance,
       stage: "fallback",
       fallbackReason,
     },
@@ -39,14 +39,17 @@ export function recordTurnAttempt(
   if (!record) {
     throw new Error("expected context-engine turn candidate callback");
   }
+  const owner = {
+    agentId: "main",
+    sessionId: label,
+    sessionKey: `agent:main:${label}`,
+    storePath: `/${label}.sqlite`,
+    generation: "generation-1",
+  };
   record({
     boundary: {
       admission: {
-        agentId: "main",
-        sessionId: label,
-        sessionKey: `agent:main:${label}`,
-        storePath: `/${label}.sqlite`,
-        generation: "generation-1",
+        ...owner,
         entryId: `${label}-user`,
         rawSeq: 1,
         effectiveParentId: null,
@@ -55,11 +58,7 @@ export function recordTurnAttempt(
         role: "user",
       },
       terminal: {
-        agentId: "main",
-        sessionId: label,
-        sessionKey: `agent:main:${label}`,
-        storePath: `/${label}.sqlite`,
-        generation: "generation-1",
+        ...owner,
         entryId: `${label}-assistant`,
         rawSeq: 2,
         effectiveParentId: `${label}-user`,
@@ -76,31 +75,30 @@ export function recordTurnAttempt(
 export function makeResult(params: {
   provider: string;
   model: string;
+  sessionId?: string;
+  text?: string;
   classification?: "empty";
   meta?: Partial<EmbeddedAgentRunResult["meta"]>;
 }): EmbeddedAgentRunResult {
+  const { provider, model, classification, meta } = params;
   return {
-    payloads: params.classification ? [] : [{ text: "recovered" }],
+    payloads: classification ? [] : [{ text: params.text ?? "recovered" }],
     meta: {
       durationMs: 10,
       aborted: false,
       providerStarted: true,
       stopReason: "completed",
-      agentHarnessResultClassification: params.classification,
-      agentMeta: {
-        sessionId: "session-1",
-        provider: params.provider,
-        model: params.model,
-      },
-      ...params.meta,
+      agentHarnessResultClassification: classification,
+      agentMeta: { sessionId: params.sessionId ?? "session-1", provider, model },
+      ...meta,
     },
   };
 }
 
-export function createDirectHarness() {
+export function createDirectHarness(workspaceDir = "/tmp/workspace", runtime?: string) {
   return {
-    workspaceDir: "/tmp/workspace",
+    workspaceDir,
     preparation: { kind: "direct" as const },
-    resolveRuntimeOverride: () => undefined,
+    resolveRuntimeOverride: () => runtime,
   };
 }

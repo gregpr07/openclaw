@@ -7,8 +7,7 @@ import { makeAgentAssistantMessage } from "../test-helpers/agent-message-fixture
 import { sanitizeSessionHistory } from "./replay-history.js";
 
 vi.mock("../../plugins/provider-runtime.js", () => ({
-  // Provider plugins are not part of this boundary test; the local sanitizer
-  // contract should strip details before any plugin-specific behavior matters.
+  // mock-isolation: Replay sanitization precedes provider-specific behavior.
   resolveProviderRuntimePlugin: () => undefined,
   sanitizeProviderReplayHistoryWithPluginAsync: () => undefined,
   validateProviderReplayTurnsWithPlugin: () => undefined,
@@ -37,10 +36,7 @@ describe("sanitizeSessionHistory", () => {
   it("preserves multiple signed Haiku 5.5 turns after an appended context update", async () => {
     const modelId = "claude-haiku-5-5";
     const messages: AgentMessage[] = [makeUserMessage("first", 0)];
-    for (const [timestamp, text] of [
-      [1, "first answer"],
-      [3, "second answer"],
-    ] as const) {
+    for (const timestamp of [1, 3]) {
       messages.push(
         makeAgentAssistantMessage({
           api: "anthropic-messages",
@@ -48,8 +44,12 @@ describe("sanitizeSessionHistory", () => {
           model: modelId,
           timestamp,
           content: [
-            { type: "thinking", thinking: text, thinkingSignature: `synthetic-${timestamp}` },
-            { type: "text", text },
+            {
+              type: "thinking",
+              thinking: "reasoning",
+              thinkingSignature: `synthetic-${timestamp}`,
+            },
+            { type: "text", text: "answer" },
           ],
         }),
         makeUserMessage(
@@ -100,10 +100,7 @@ describe("sanitizeSessionHistory", () => {
       ],
       { modelApi: "openai-responses", provider: "github-copilot", modelId: "gpt-5-mini" },
     );
-    const assistant = sanitized[0];
-    if (!assistant || assistant.role !== "assistant") {
-      throw new Error("Expected sanitized first message to be an assistant message");
-    }
-    expect(assistant?.content).toEqual([{ type: "text", text: "plain reply" }]);
+    expect(sanitized[0]).toHaveProperty("role", "assistant");
+    expect(sanitized[0]).toHaveProperty("content", [{ type: "text", text: "plain reply" }]);
   });
 });

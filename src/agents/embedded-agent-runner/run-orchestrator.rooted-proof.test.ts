@@ -33,8 +33,8 @@ vi.mock("./run/attempt-session-runtime-prepare.js", () => ({
 
 const state = await createOpenClawTestState({ label: "rooted-prepared-runtime" });
 afterAll(async () => {
-  clearCurrentPluginMetadataSnapshot();
   await resetPreparedModelRuntimeSnapshotsForTest();
+  clearCurrentPluginMetadataSnapshot();
   await state.cleanup();
   vi.restoreAllMocks();
 });
@@ -108,59 +108,56 @@ it("reuses configured plugins for runs outside the canonical workspace", async (
     allowGatewaySubagentBinding: true,
   });
   expect(configured).toBeDefined();
-  const load = vi.spyOn(loader, "loadPluginRegistryHandle");
-  const runtimeLoad = vi.spyOn(runtimePlugins, "acquireAgentRuntimePluginRegistry");
-  const syncRuntimeLoad = vi.spyOn(runtimePlugins, "loadAgentRuntimePluginRegistryHandle");
-  const metadataBuild = vi.spyOn(metadataInput, "loadPluginMetadataSnapshotInput");
-  try {
-    // Cron and subagent workspaces stay local while reusing the configured plugin generation.
-    preparation.mockImplementationOnce(async ({ attempt, toolBase, setup }) => {
-      expect(attempt.workspaceDir).toBe(taskWorkspace);
-      expect(attempt.preparedModelRuntime?.pluginRegistry).toBe(configured?.pluginRegistry);
-      expect(attempt.preparedModelRuntime?.metadataSnapshot).toBe(configured?.metadataSnapshot);
-      expect(attempt.preparedModelRuntime?.workspaceDir).toBe(state.workspaceDir);
-      expect(toolBase.toolsRaw.some((tool) => tool.name === "llm-task")).toBe(true);
-      expect(setup).toMatchObject({ effectiveWorkspace: taskWorkspace });
-      const read = toolBase.toolsRaw.find((tool) => tool.name === "read");
-      if (!read) {
-        throw new Error("Run did not expose its read tool");
-      }
-      expect(await read.execute("task.txt", { path: "task.txt" })).toMatchObject({
-        content: [expect.objectContaining({ text: expect.stringContaining("task fixture") })],
-      });
-    });
-    const name = "task-workspace-proof";
-    const admission = prepareSystemAgentRunAdmission(config, name, "main", name);
-    try {
-      await expect(
-        runEmbeddedAgent({
-          workspaceDir: taskWorkspace,
-          config,
-          agentId: "main",
-          agentDir: state.agentDir(),
-          sessionId: name,
-          sessionKey: `agent:main:${name}`,
-          sessionPersistence: "detached",
-          prompt: "Review synthetic workshop files.",
-          provider: "proof",
-          model: "model",
-          agentHarnessId: "openclaw",
-          allowGatewaySubagentBinding: true,
-          toolsAllow,
-          timeoutMs: 30000,
-          runId: name,
-          preparedRunAdmission: admission,
-        }),
-      ).rejects.toThrow("rooted preparation complete");
-    } finally {
-      admission.close();
+  const reloads = [
+    vi.spyOn(loader, "loadPluginRegistryHandle"),
+    vi.spyOn(runtimePlugins, "acquireAgentRuntimePluginRegistry"),
+    vi.spyOn(runtimePlugins, "loadAgentRuntimePluginRegistryHandle"),
+    vi.spyOn(metadataInput, "loadPluginMetadataSnapshotInput"),
+  ];
+  // Cron and subagent workspaces stay local while reusing the configured plugin generation.
+  preparation.mockImplementationOnce(async ({ attempt, toolBase, setup }) => {
+    expect(attempt.workspaceDir).toBe(taskWorkspace);
+    expect(attempt.preparedModelRuntime?.pluginRegistry).toBe(configured?.pluginRegistry);
+    expect(attempt.preparedModelRuntime?.metadataSnapshot).toBe(configured?.metadataSnapshot);
+    expect(attempt.preparedModelRuntime?.workspaceDir).toBe(state.workspaceDir);
+    expect(toolBase.toolsRaw.some((tool) => tool.name === "llm-task")).toBe(true);
+    expect(setup).toMatchObject({ effectiveWorkspace: taskWorkspace });
+    const read = toolBase.toolsRaw.find((tool) => tool.name === "read");
+    if (!read) {
+      throw new Error("Run did not expose its read tool");
     }
-    expect(preparation).toHaveBeenCalledTimes(1);
-    expect(runtimeLoad).not.toHaveBeenCalled();
-    expect(syncRuntimeLoad).not.toHaveBeenCalled();
-    expect(load).not.toHaveBeenCalled();
-    expect(metadataBuild).not.toHaveBeenCalled();
+    expect(await read.execute("task.txt", { path: "task.txt" })).toMatchObject({
+      content: [expect.objectContaining({ text: expect.stringContaining("task fixture") })],
+    });
+  });
+  const name = "task-workspace-proof";
+  const admission = prepareSystemAgentRunAdmission(config, name, "main", name);
+  try {
+    await expect(
+      runEmbeddedAgent({
+        workspaceDir: taskWorkspace,
+        config,
+        agentId: "main",
+        agentDir: state.agentDir(),
+        sessionId: name,
+        sessionKey: `agent:main:${name}`,
+        sessionPersistence: "detached",
+        prompt: "Review synthetic workshop files.",
+        provider: "proof",
+        model: "model",
+        agentHarnessId: "openclaw",
+        allowGatewaySubagentBinding: true,
+        toolsAllow,
+        timeoutMs: 30000,
+        runId: name,
+        preparedRunAdmission: admission,
+      }),
+    ).rejects.toThrow("rooted preparation complete");
   } finally {
-    await resetPreparedModelRuntimeSnapshotsForTest();
+    admission.close();
+  }
+  expect(preparation).toHaveBeenCalledTimes(1);
+  for (const reload of reloads) {
+    expect(reload).not.toHaveBeenCalled();
   }
 });
