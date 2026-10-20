@@ -452,6 +452,10 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
   }
   const visibleTurnPreemptsHeartbeat = heartbeatPreemption === "drained";
   const resolveRuntimeAuthProfile = async () => {
+    const binding = opts?.scheduledAutomation?.job.inferenceBinding;
+    if (binding) {
+      return { authProfileId: binding.profileId, authProfileIdSource: binding.source };
+    }
     if (
       useFastReplyRuntime &&
       !params.configuredProfileId &&

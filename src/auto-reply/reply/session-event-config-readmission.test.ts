@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core/expect";
@@ -20,12 +21,17 @@ import { FailoverError } from "../../agents/failover-error.js";
 import { createAgentHarnessHostCapabilities } from "../../agents/harness/host-capability.js";
 import { resolveAttemptWorkspaceSandbox } from "../../agents/workspace-sandbox.js";
 import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
-import { replaceSessionEntry } from "../../config/sessions/session-accessor.js";
+import {
+  patchSessionEntryCore,
+  replaceSessionEntry,
+} from "../../config/sessions/session-accessor.js";
 import { readSessionEntryInWorker } from "../../config/sessions/session-entry-read-writable.js";
 import { makeCronJob } from "../../cron/delivery.test-helpers.js";
+import { captureCronInferenceBinding } from "../../cron/inference-binding.runtime.js";
 import { peekSystemEventEntries, resetSystemEventsForTest } from "../../infra/system-events.js";
 import { drainGlobalSingletonLifecycleState } from "../../shared/global-singleton.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
+import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
 import * as routedReplies from "./route-reply.js";
@@ -150,6 +156,7 @@ it.for([
   "scheduled-gmail-default",
   "scheduled-account-cross-provider",
   "scheduled-account-same-provider",
+  "scheduled-account-bound-unavailable",
 ] as const)(
   "re-admits accepted deferred work after a config publication: %s",
   async (scenario, { signal }) => {
@@ -158,6 +165,7 @@ it.for([
       async (state) => {
         const config = completionConfig(state.workspaceDir);
         const scheduledAccount = scenario.startsWith("scheduled-account-");
+        const boundAccount = scenario === "scheduled-account-bound-unavailable";
         const scheduledProvider =
           scenario === "scheduled-account-cross-provider" ? "mock-other" : "mock-openai";
         const explicitScheduledModel =
@@ -210,6 +218,19 @@ it.for([
             },
           });
         }
+        const inferenceBinding = boundAccount
+          ? expectDefined(
+              await captureCronInferenceBinding({
+                cfg: config,
+                agentId: "main",
+                model: "mock-openai/gpt-5.6-sol@mock-openai:conversation",
+              }),
+              "scheduled inference binding",
+            )
+          : undefined;
+        const missingDestinationProfileId = boundAccount
+          ? `personal:${ensureProfileForEmail("destination@example.test").id}:${randomUUID()}`
+          : undefined;
         const scope = { agentId: "main", sessionKey: "agent:main:config-readmission" };
         await replaceSessionEntry(scope, {
           sessionId: "config-readmission",
@@ -222,7 +243,9 @@ it.for([
                 authProfileOverrideCompactionCount: 2,
               }
             : {}),
-          ...(scenario === "scheduled-subagent-locked" ? { modelSelectionLocked: true } : {}),
+          ...(scenario === "scheduled-subagent-locked" || boundAccount
+            ? { modelSelectionLocked: true }
+            : {}),
           ...(scenario === "scheduled-gmail-default"
             ? {
                 providerOverride: "mock-openai",
@@ -278,6 +301,16 @@ it.for([
                 model: params.model,
               });
             } else {
+              if (boundAccount) {
+                expect((await readSessionEntryInWorker(scope))?.authProfileOverride).toBe(
+                  missingDestinationProfileId,
+                );
+                const binding = expectDefined(params.authProfileBinding, "live scheduled account");
+                expect(binding.profileId).toBe("mock-openai:conversation");
+                await binding.revalidate();
+                binding.assertCurrent();
+                expect(params.allowAuthProfileFallback).toBe(false);
+              }
               await attemptRealWrite(params, filePath, operatorAuthority);
             }
             return { payloads: [{ text: "NO_REPLY" }], meta: { durationMs: 1 } };
@@ -303,6 +336,14 @@ it.for([
           if (scheduledAccount) {
             expect(runEmbeddedAgentMock.mock.calls[0]?.[0].authProfileId).toBe(
               "mock-openai:conversation",
+            );
+          }
+          if (boundAccount) {
+            await patchSessionEntryCore(scope, () => ({
+              authProfileOverride: missingDestinationProfileId,
+            }));
+            expect((await readSessionEntryInWorker(scope))?.authProfileOverride).toBe(
+              missingDestinationProfileId,
             );
           }
           completion = enqueueSessionEventForHost("Background exec completed", {
@@ -345,6 +386,7 @@ it.for([
                           : {}),
                       },
                       state: {},
+                      inferenceBinding,
                     },
                     admissionSource: "operator-schedule" as const,
                     operatorAuthority,
@@ -478,16 +520,17 @@ it.for([
           if (scheduledAccount) {
             expect(runEmbeddedAgentMock.mock.calls[1]?.[0]).toMatchObject({
               provider: scheduledProvider,
-              model: "gpt-5.6-sol",
+              model: boundAccount ? "gpt-5.6-luna" : "gpt-5.6-sol",
               authProfileId:
                 scheduledProvider === "mock-openai"
                   ? "mock-openai:conversation"
                   : "mock-other:automation",
             });
             expect(await readSessionEntryInWorker(scope)).toMatchObject({
-              authProfileOverride: "mock-openai:conversation",
+              authProfileOverride: missingDestinationProfileId ?? "mock-openai:conversation",
               authProfileOverrideSource: "user",
               authProfileOverrideCompactionCount: 2,
+              ...(boundAccount ? { modelSelectionLocked: true } : {}),
             });
           }
           // Final effect: only the unrestricted control reaches the filesystem.
