@@ -1,10 +1,12 @@
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import { beforeEach, expect, it } from "vitest";
+import type { Locator } from "playwright";
+import { expect, it } from "vitest";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import { takeControlUiViewportScreenshot } from "../test-helpers/control-ui-e2e-screenshot.ts";
 import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
-import { requireRecord, requireString } from "./chat-flow.test-support.ts";
+import { composer, sendChat, timedText } from "./chat-flow-fixtures.test-support.ts";
+import { requireString } from "./chat-flow.test-support.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
 const suite = createControlUiE2eSuite({
@@ -12,66 +14,58 @@ const suite = createControlUiE2eSuite({
   trackBrowserContexts: true,
 });
 const captureProof = process.env.OPENCLAW_CAPTURE_UI_PROOF === "1";
-let proofDir: string;
-beforeEach(() => {
-  if (captureProof) {
-    proofDir = createControlUiE2eArtifactDir("codex-guardian-review");
-  }
-});
 const viewport = { height: 900, width: 1280 };
 
 suite.define(() => {
   it("shows and settles a strict Guardian review in the active chat", async () => {
+    const proofDir = captureProof
+      ? createControlUiE2eArtifactDir("codex-guardian-review")
+      : undefined;
     await suite.withPage(
       {
         locale: "en-US",
         serviceWorkers: "block",
         viewport,
-        ...(captureProof ? { recordVideo: { dir: proofDir, size: viewport } } : {}),
+        ...(proofDir ? { recordVideo: { dir: proofDir, size: viewport } } : {}),
       },
       async ({ page }) => {
         const gateway = await installMockGateway(page, {
-          historyMessages: [
-            {
-              content: [{ text: "Ready for a Guardian-reviewed action.", type: "text" }],
-              role: "assistant",
-              timestamp: Date.now(),
-            },
-          ],
+          historyMessages: [timedText("assistant", "Ready for a Guardian-reviewed action.")],
         });
         await page.goto(`${suite.server.baseUrl}chat`);
         await page.getByText("Ready for a Guardian-reviewed action.").waitFor();
-        await page.locator(".agent-chat__composer-combobox textarea").fill("Review this action.");
-        await page.getByRole("button", { name: "Send message" }).click();
-        const request = await gateway.waitForRequest("chat.send");
-        const runId = requireString(requireRecord(request.params).idempotencyKey, "chat run id");
-
-        if (captureProof) {
-          await writeFile(
-            path.join(proofDir, "01-before-review.png"),
-            await takeControlUiViewportScreenshot(page, page.locator(".shell"), [
-              page.locator(".agent-chat__composer-combobox textarea"),
-            ]),
-          );
-        }
-
+        const request = await sendChat(page, gateway, "Review this action.");
+        const runId = requireString(request.idempotencyKey, "chat run id");
+        const capture = async (name: string, target: Locator = composer(page)) => {
+          if (proofDir) {
+            await writeFile(
+              path.join(proofDir, name),
+              await takeControlUiViewportScreenshot(page, page.locator(".shell"), [target]),
+            );
+          }
+        };
+        await capture("01-before-review.png");
         const correlation = {
           reviewId: "guardian-review-1",
           threadId: "codex-thread-1",
           turnId: "codex-turn-1",
         };
-        await gateway.emitGatewayEvent("agent", {
-          data: {
-            ...correlation,
+        const reviewEvent = (data: Record<string, unknown>, seq: number) =>
+          gateway.emitGatewayEvent("agent", {
+            runId,
+            sessionKey: "main",
+            stream: "codex_app_server.guardian",
+            data: { ...correlation, ...data },
+            seq,
+            ts: Date.now(),
+          });
+        await reviewEvent(
+          {
             phase: "strict_review_required",
             startedAtMs: Date.now(),
           },
-          runId,
-          seq: 1,
-          sessionKey: "main",
-          stream: "codex_app_server.guardian",
-          ts: Date.now(),
-        });
+          1,
+        );
 
         const notice = page.getByRole("alert").filter({ hasText: "Guardian review required" });
         await notice.waitFor({ state: "visible" });
@@ -79,31 +73,11 @@ suite.define(() => {
           "Guardian is reviewing this action before it can continue.",
         );
 
-        if (captureProof) {
-          await writeFile(
-            path.join(proofDir, "02-review-required.png"),
-            await takeControlUiViewportScreenshot(page, page.locator(".shell"), [notice]),
-          );
-        }
-
-        await gateway.emitGatewayEvent("agent", {
-          data: { ...correlation, phase: "completed", status: "approved" },
-          runId,
-          seq: 2,
-          sessionKey: "main",
-          stream: "codex_app_server.guardian",
-          ts: Date.now(),
-        });
+        await capture("02-review-required.png", notice);
+        await reviewEvent({ phase: "completed", status: "approved" }, 2);
         await expect.poll(() => notice.count()).toBe(0);
 
-        if (captureProof) {
-          await writeFile(
-            path.join(proofDir, "03-review-approved.png"),
-            await takeControlUiViewportScreenshot(page, page.locator(".shell"), [
-              page.locator(".agent-chat__composer-combobox textarea"),
-            ]),
-          );
-        }
+        await capture("03-review-approved.png");
       },
     );
   });

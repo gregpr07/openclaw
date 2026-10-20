@@ -83,35 +83,31 @@ suite.define(() => {
       await gateway.resolveDeferred("connect");
       await gateway.waitForRequest("users.prefs.get");
       const header = page.locator(".chat-pane-cache__pane--visible .chat-pane__header");
-      await header
+      const parent = header
         .locator(".chat-pane__parent-session")
-        .getByText("Home parent", { exact: true })
-        .waitFor();
+        .getByText("Home parent", { exact: true });
+      const expectConversation = async () => {
+        await parent.waitFor();
+        await page.getByText("Retained conversation.", { exact: true }).waitFor();
+      };
+      const expectPatch = async (field: "sidebarRoot" | "category", value: boolean | string) => {
+        expect(
+          (await waitForPatch(gateway, (params) => params[field] === value)).params,
+        ).toMatchObject({ key: sessionKey, expectedSessionId: session.sessionId, [field]: value });
+      };
+      await parent.waitFor();
       const actions = header.getByRole("button", { name: "Actions for Header lineage" });
       await actions.click();
       const menu = header.locator("openclaw-chat-header-session-menu");
       await page.getByRole("menu", { name: "Actions for Header lineage" }).waitFor();
-      expect(await menu.getByText("Pin session", { exact: true }).count()).toBe(
-        Number(independent),
-      );
-      expect(await menu.getByText("Move to group", { exact: true }).count()).toBe(1);
-      expect(await menu.getByText("Move to top level", { exact: true }).count()).toBe(
-        Number(!independent),
-      );
+      const count = (name: string) => menu.getByText(name, { exact: true }).count();
+      expect(await count("Pin session")).toBe(Number(independent));
+      expect(await count("Move to group")).toBe(1);
+      expect(await count("Move to top level")).toBe(Number(!independent));
       if (!independent) {
         await menu.getByText("Move to top level", { exact: true }).click();
-        expect(
-          (await waitForPatch(gateway, (params) => params.sidebarRoot === true)).params,
-        ).toMatchObject({
-          key: sessionKey,
-          sidebarRoot: true,
-          expectedSessionId: session.sessionId,
-        });
-        await header
-          .locator(".chat-pane__parent-session")
-          .getByText("Home parent", { exact: true })
-          .waitFor();
-        await page.getByText("Retained conversation.", { exact: true }).waitFor();
+        await expectPatch("sidebarRoot", true);
+        await expectConversation();
         return;
       }
 
@@ -135,13 +131,7 @@ suite.define(() => {
       await actions.click();
       await openSessionMenuSubmenu(page, "Move to group");
       await menu.getByRole("menuitemradio", { name: "Projects", exact: true }).click();
-      expect(
-        (await waitForPatch(gateway, (params) => params.category === "Projects")).params,
-      ).toMatchObject({
-        key: sessionKey,
-        category: "Projects",
-        expectedSessionId: session.sessionId,
-      });
+      await expectPatch("category", "Projects");
       await expect
         .poll(() =>
           page
@@ -153,11 +143,7 @@ suite.define(() => {
       expect(new URL(page.url()).pathname).toBe(
         new URL(controlUiSessionUrl(suite.server.baseUrl, sessionKey)).pathname,
       );
-      await header
-        .locator(".chat-pane__parent-session")
-        .getByText("Home parent", { exact: true })
-        .waitFor();
-      await page.getByText("Retained conversation.", { exact: true }).waitFor();
+      await expectConversation();
     } finally {
       await context.close();
     }

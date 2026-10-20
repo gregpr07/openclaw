@@ -1,5 +1,11 @@
+import type { Locator } from "playwright";
 import { expect, it } from "vitest";
-import { createChatFlowE2eSuite, installMockGateway } from "./chat-flow.test-support.ts";
+import {
+  chatMessage,
+  createChatFlowE2eSuite,
+  exactButton,
+  installMockGateway,
+} from "./chat-flow.test-support.ts";
 import { createControlUiE2eContextOptions } from "./control-ui-e2e-suite.test-support.ts";
 
 const suite = createChatFlowE2eSuite();
@@ -32,11 +38,9 @@ suite.define(() => {
           },
         },
         historyMessages: [
-          {
-            role: "user",
-            content: [{ type: "text", text: "Let's keep the launch checklist short." }],
+          chatMessage("user", "Let's keep the launch checklist short.", {
             __openclaw: { id: messageId, seq: 1, senderName: "Riley", senderId: "profile-riley" },
-          },
+          }),
         ],
       });
       await page.goto(`${suite.server.baseUrl}chat`);
@@ -50,49 +54,34 @@ suite.define(() => {
         ".chat-group-footer-actions openclaw-message-reaction-picker",
       );
       const rowPicker = reactions.locator("openclaw-message-reaction-picker");
-      await footerPicker.getByRole("button", { name: "Add reaction", exact: true }).click();
       // Each picker owns its popover; an unscoped lookup can match a sibling
       // popover that is still animating closed.
-      await footerPicker
-        .locator(".chat-reaction-picker")
-        .getByRole("button", { name: "🎉", exact: true })
-        .click();
-      expect((await gateway.waitForRequest("session.reactions.set")).params).toMatchObject({
-        sessionKey,
-        messageId,
-        emoji: "🎉",
-      });
+      const pick = async (picker: Locator, name: string) => {
+        await exactButton(picker, "Add reaction").click();
+        await exactButton(picker.locator(".chat-reaction-picker"), name).click();
+      };
+      const expectSet = async (after: number, fields: Record<string, unknown>) =>
+        expect(
+          (await gateway.waitForRequest("session.reactions.set", { after })).params,
+        ).toMatchObject({ messageId, ...fields });
+      await pick(footerPicker, "🎉");
+      await expectSet(0, { sessionKey, emoji: "🎉" });
       await reactions
         .locator('.chat-reaction-chip[aria-pressed="true"][aria-label="🎉 1"]')
         .waitFor();
       await footerPicker.waitFor({ state: "detached" });
 
       await message.hover();
-      await rowPicker.getByRole("button", { name: "Add reaction", exact: true }).click();
-      await rowPicker
-        .locator(".chat-reaction-picker")
-        .getByRole("button", { name: "More…", exact: true })
-        .click();
+      await pick(rowPicker, "More…");
       // A complete emoji applies on input, so the OS picker needs no extra keystroke.
       await rowPicker.getByRole("searchbox", { name: "Search emoji…", exact: true }).fill("🦞");
-      expect(
-        (await gateway.waitForRequest("session.reactions.set", { after: 1 })).params,
-      ).toMatchObject({
-        messageId,
-        emoji: "🦞",
-      });
+      await expectSet(1, { emoji: "🦞" });
       const ownChip = reactions.locator(
         '.chat-reaction-chip[aria-pressed="true"][aria-label="🦞 1"]',
       );
       await ownChip.waitFor();
       await ownChip.click();
-      expect(
-        (await gateway.waitForRequest("session.reactions.set", { after: 2 })).params,
-      ).toMatchObject({
-        messageId,
-        emoji: "🦞",
-        remove: true,
-      });
+      await expectSet(2, { emoji: "🦞", remove: true });
       await ownChip.waitFor({ state: "detached" });
 
       const listRequests = (await gateway.getRequests("session.reactions.list")).length;

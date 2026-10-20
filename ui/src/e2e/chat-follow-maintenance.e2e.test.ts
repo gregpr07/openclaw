@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { Page } from "playwright";
 import { expect, it } from "vitest";
+import type { MockGatewayWindow } from "../test-helpers/control-ui-e2e-contract.ts";
 import {
   captureUiProofEnabled,
   chatSessionListResponse,
@@ -14,6 +15,10 @@ const suite = createChatFlowE2eSuite();
 const sessionKey = "agent:main:follow-maintenance";
 const otherSessionKey = "agent:main:follow-control";
 const runId = "follow-maintenance-run";
+const streamMessage = (text: string, lines: number) => ({
+  role: "assistant",
+  content: `${text}\n${"Further output.\n".repeat(lines)}`,
+});
 
 async function readPosition(page: Page) {
   return page.locator(".chat-pane-cache__pane--active").evaluate((pane) => {
@@ -62,8 +67,7 @@ suite.define(() => {
         await expect.poll(async () => (await readPosition(page)).distance).toBeLessThanOrEqual(8);
         const thread = page.locator(".chat-pane-cache__pane--active .chat-thread");
 
-        // Reproduce a delayed card/media measurement above the viewport. Force
-        // this overscan row to participate in layout despite content-visibility.
+        // Force a delayed media measurement in an overscan row above the viewport.
         await thread.evaluate((element) => {
           const top = element.getBoundingClientRect().top;
           const row = [...element.querySelectorAll<HTMLElement>(".chat-virtual-row")].find(
@@ -81,18 +85,11 @@ suite.define(() => {
         await waitForChatScrollIdle(page);
         const expanded = await readPosition(page);
 
-        // Both changes must share one task. Separate shrink/growth settles at
-        // the end and does not expose a maintenance offset as reader movement.
+        // One task exposes maintenance offset as reader movement; separate tasks do not.
         await page.evaluate(
-          ({ sessionKey: eventSessionKey, runId: eventRunId }) => {
+          ({ sessionKey: eventSessionKey, runId: eventRunId, message }) => {
             document.getElementById("follow-delayed-measurement")!.remove();
-            const mock = (
-              window as Window & {
-                openclawControlUiE2eGateway?: {
-                  emit: (event: string, payload: unknown) => void;
-                };
-              }
-            ).openclawControlUiE2eGateway;
+            const mock = (window as MockGatewayWindow).openclawControlUiE2eGateway;
             if (!mock) {
               throw new Error("Expected the installed mock Gateway");
             }
@@ -100,13 +97,10 @@ suite.define(() => {
               sessionKey: eventSessionKey,
               runId: eventRunId,
               state: "delta",
-              message: {
-                role: "assistant",
-                content: "Concurrent streaming growth.\n" + "Further output.\n".repeat(70),
-              },
+              message,
             });
           },
-          { sessionKey, runId },
+          { sessionKey, runId, message: streamMessage("Concurrent streaming growth.", 70) },
         );
         await expect.poll(() => thread.textContent()).toContain("Concurrent streaming growth.");
         await expect
@@ -118,10 +112,7 @@ suite.define(() => {
           sessionKey,
           runId,
           state: "delta",
-          message: {
-            role: "assistant",
-            content: "Latest streamed output.\n" + "Further output.\n".repeat(100),
-          },
+          message: streamMessage("Latest streamed output.", 100),
         });
         await expect.poll(() => thread.textContent()).toContain("Latest streamed output.");
         await waitForChatScrollIdle(page);
@@ -135,10 +126,13 @@ suite.define(() => {
           page.locator(
             `.sidebar-recent-session[data-session-key="${key}"] a.sidebar-recent-session__link`,
           );
-        await sessionLink(otherSessionKey).click();
-        await waitForChatScrollIdle(page);
-        await sessionLink(sessionKey).click();
-        await waitForChatScrollIdle(page);
+        const roundTrip = async () => {
+          for (const key of [otherSessionKey, sessionKey]) {
+            await sessionLink(key).click();
+            await waitForChatScrollIdle(page);
+          }
+        };
+        await roundTrip();
         expect((await readPosition(page)).distance).toBeLessThanOrEqual(8);
 
         await thread.hover();
@@ -146,10 +140,7 @@ suite.define(() => {
         await expect.poll(async () => (await readPosition(page)).reading).toBe(true);
         await waitForChatScrollIdle(page);
         const reader = await readPosition(page);
-        await sessionLink(otherSessionKey).click();
-        await waitForChatScrollIdle(page);
-        await sessionLink(sessionKey).click();
-        await waitForChatScrollIdle(page);
+        await roundTrip();
         const restored = await readPosition(page);
         expect(restored).toMatchObject({ locked: true, reading: true });
         expect(Math.abs(restored.top - reader.top)).toBeLessThanOrEqual(2);
