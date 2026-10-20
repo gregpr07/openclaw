@@ -33,6 +33,35 @@ function clientWith(
     },
   };
 }
+const methods = (request: ReturnType<typeof vi.fn>) => request.mock.calls.map(([method]) => method);
+function placementRequest(state: () => string) {
+  return vi.fn(async (method: string) =>
+    method === "agents.list"
+      ? catalog
+      : method === "sessions.describe"
+        ? { session: { placement: { state: state() } } }
+        : { runId: "first-turn", status: "started" },
+  );
+}
+function restore(overrides: Partial<SessionPlacementRecovery>) {
+  const recovery: SessionPlacementRecovery = {
+    sessionKey: params.key,
+    agentId: params.agentId,
+    target,
+    message: params.message,
+    messageId: params.messageId,
+    gatewayUrl: "ws://gateway.example",
+    recoveryScope: "principal",
+    phase: "sending",
+    ...overrides,
+  };
+  expect(writeSessionPlacementRecovery(recovery)).toBe(true);
+  return readSessionPlacementRecovery(
+    recovery.gatewayUrl,
+    recovery.recoveryScope,
+    recovery.sessionKey,
+  )!;
+}
 afterEach(() => {
   vi.useRealTimers();
   sessionStorage.clear();
@@ -41,23 +70,14 @@ afterEach(() => {
 it("waits for server-started placement and sends exactly once without dispatch", async () => {
   vi.useFakeTimers();
   let state = "provisioning";
-  const request = vi.fn(async (method: string) =>
-    method === "agents.list"
-      ? catalog
-      : method === "sessions.describe"
-        ? { session: { placement: { state } } }
-        : { runId: "first-turn", status: "started" },
-  );
+  const request = placementRequest(() => state);
   const pending = startSessionPlacementInitialTurn(clientWith(request), params, () => true);
   await vi.advanceTimersByTimeAsync(0);
-  expect(request.mock.calls.map(([method]) => method)).toEqual([
-    "agents.list",
-    "sessions.describe",
-  ]);
+  expect(methods(request)).toEqual(["agents.list", "sessions.describe"]);
   state = "active";
   await vi.advanceTimersByTimeAsync(250);
   expect(await pending).toEqual({ status: "started", messageId: "first-turn" });
-  expect(request.mock.calls.map(([method]) => method)).toEqual([
+  expect(methods(request)).toEqual([
     "agents.list",
     "sessions.describe",
     "sessions.describe",
@@ -68,25 +88,13 @@ it("waits for server-started placement and sends exactly once without dispatch",
 it.each(["failed", "reclaimed", "local"])(
   "admits explicit Retry from %s through the server run owner, not admin dispatch",
   async (state) => {
-    const request = vi.fn(async (method: string) =>
-      method === "agents.list"
-        ? catalog
-        : method === "sessions.describe"
-          ? { session: { placement: { state } } }
-          : { runId: "first-turn", status: "started" },
-    );
-    expect(
-      await startSessionPlacementInitialTurn(
-        clientWith(request),
-        { ...params, mode: "retry" },
-        () => true,
-      ),
-    ).toEqual({ status: "started", messageId: "first-turn" });
-    expect(request.mock.calls.map(([method]) => method)).toEqual([
-      "agents.list",
-      "sessions.describe",
-      "sessions.send",
-    ]);
+    const request = placementRequest(() => state);
+    const retry = { ...params, mode: "retry" as const };
+    expect(await startSessionPlacementInitialTurn(clientWith(request), retry, () => true)).toEqual({
+      status: "started",
+      messageId: "first-turn",
+    });
+    expect(methods(request)).toEqual(["agents.list", "sessions.describe", "sessions.send"]);
   },
 );
 
@@ -126,30 +134,11 @@ it("Stop fences a late active placement reply and retains the existing reclaim o
   current = false;
   active.resolve({ session: { placement: { state: "active" } } });
   expect(await pending).toEqual({ status: "cancelled" });
-  expect(request.mock.calls.map(([method]) => method)).toEqual([
-    "agents.list",
-    "sessions.describe",
-    "sessions.reclaim",
-  ]);
+  expect(methods(request)).toEqual(["agents.list", "sessions.describe", "sessions.reclaim"]);
 });
 
 it("restores a required target and reconciles uncertain delivery without a duplicate send", async () => {
-  const recovery: SessionPlacementRecovery = {
-    sessionKey: params.key,
-    agentId: params.agentId,
-    target,
-    message: params.message,
-    messageId: params.messageId,
-    gatewayUrl: "ws://gateway.example",
-    recoveryScope: "principal",
-    phase: "sending",
-  };
-  expect(writeSessionPlacementRecovery(recovery)).toBe(true);
-  const restored = readSessionPlacementRecovery(
-    recovery.gatewayUrl,
-    recovery.recoveryScope,
-    recovery.sessionKey,
-  )!;
+  const restored = restore({});
   expect(restored.target).toEqual(target);
   const request = vi.fn(async (_method: string) => ({ messages: [] }));
   const result = await advanceSessionPlacementDraft({
@@ -163,32 +152,18 @@ it("restores a required target and reconciles uncertain delivery without a dupli
     cleanupOnCancellation: () => false,
   });
   expect(result).toMatchObject({ status: "paused", recovery: { reason: "unconfirmed", target } });
-  expect(request.mock.calls.map(([method]) => method)).toEqual(["chat.history"]);
+  expect(methods(request)).toEqual(["chat.history"]);
 });
 
 it("retains an explicit native runtime while a required create is restored", () => {
-  const recovery: SessionPlacementRecovery = {
-    sessionKey: params.key,
+  const createParams: SessionPlacementRecovery["createParams"] = {
+    key: params.key,
     agentId: params.agentId,
-    target,
-    message: params.message,
-    messageId: params.messageId,
-    gatewayUrl: "ws://gateway.example",
-    recoveryScope: "principal",
-    phase: "creating",
-    createParams: {
-      key: params.key,
-      agentId: params.agentId,
-      message: "",
-      model: "openai/available-model",
-      agentRuntime: "openclaw",
-      worktree: true,
-      worktreeSource: "empty",
-    },
+    message: "",
+    model: "openai/available-model",
+    agentRuntime: "openclaw",
+    worktree: true,
+    worktreeSource: "empty",
   };
-  expect(writeSessionPlacementRecovery(recovery)).toBe(true);
-  expect(
-    readSessionPlacementRecovery(recovery.gatewayUrl, recovery.recoveryScope, recovery.sessionKey)
-      ?.createParams,
-  ).toEqual(recovery.createParams);
+  expect(restore({ phase: "creating", createParams }).createParams).toEqual(createParams);
 });

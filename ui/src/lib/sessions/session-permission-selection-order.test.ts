@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
+import { createChangeListeners } from "../../../../src/shared/listeners.ts";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { SessionsListResult } from "../../api/types.ts";
@@ -44,18 +45,15 @@ it.each(["success", "dynamic"] as const)(
     const client = new GatewayBrowserClient({ url: "ws://gateway.example.test" });
     vi.spyOn(client, "request").mockImplementation(request);
     const harness = createGatewayHarness(client);
-    const listeners = new Set<() => void>();
+    const changes = createChangeListeners();
     const state = { selectedId: "main" };
     const sessions = createSessionCapability(harness.gateway, {
       state,
-      subscribe(listener) {
-        listeners.add(listener);
-        return () => listeners.delete(listener);
-      },
+      subscribe: changes.subscribe,
     });
     const select = (agentId: string) => {
       state.selectedId = agentId;
-      listeners.forEach((listener) => listener());
+      changes.publish();
     };
     const pending: Array<Promise<unknown>> = [];
     try {
@@ -78,10 +76,8 @@ it.each(["success", "dynamic"] as const)(
           type: "event",
           event: "session.message",
           payload: {
-            key,
+            ...initial.sessions[0],
             sessionKey: key,
-            kind: "direct",
-            sessionId,
             updatedAt: 3,
             permissionMode: "full",
             archived: false,

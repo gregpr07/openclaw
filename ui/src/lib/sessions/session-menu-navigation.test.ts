@@ -47,7 +47,25 @@ function fixture() {
     sessions: { state: { result: { sessions: [{ ...session, boardFace: "dashboard" }] } } },
   } as unknown as ApplicationContext;
   const params = { context, session, isCurrent: () => true };
-  return { context, params, request };
+  const copy = () => runSessionNavigationAction("copy-markdown", params);
+  const rejectCopy = async (errorMessage = t("sessionsView.copyTranscriptChanged")) => {
+    await copy();
+    expect(copyToClipboard).not.toHaveBeenCalled();
+    expect(showToast).toHaveBeenCalledWith({ message: errorMessage });
+  };
+  const paged = (extra: Partial<ChatHistoryResult> = {}) => {
+    const tail = page([message(3, "Newest")], {
+      hasMore: true,
+      nextOffset: 1,
+      deltaCursor: "stable-cursor",
+      sessionInfo: { activeLeafEntryId: "leaf-3" } as ChatHistoryResult["sessionInfo"],
+      ...extra,
+    });
+    request.mockResolvedValueOnce(tail);
+    request.mockResolvedValueOnce(page([message(1, "Oldest"), message(2, "Middle")]));
+    return tail;
+  };
+  return { params, request, copy, rejectCopy, paged };
 }
 
 function page(messages: unknown[], extra: Partial<ChatHistoryResult> = {}): ChatHistoryResult {
@@ -65,16 +83,11 @@ afterEach(() => {
 });
 
 describe("session menu navigation actions", () => {
-  it.each([
-    [
-      undefined,
-      "wss://gateway.example.test/remote?token=secret",
-      "https://gateway.example.test/remote",
-    ],
-  ])("copies the Gateway session address %s through %s", async (controlUiUrl, gatewayUrl, base) => {
+  it("copies the Gateway session address without credentials", async () => {
     const { params } = fixture();
-    params.context.gateway.connection.gatewayUrl = gatewayUrl;
-    Object.assign(params.context.gateway.snapshot.hello!, { controlUiUrl });
+    const base = "https://gateway.example.test/remote";
+    params.context.gateway.connection.gatewayUrl = "wss://gateway.example.test/remote?token=secret";
+    Object.assign(params.context.gateway.snapshot.hello!, { controlUiUrl: undefined });
     await runSessionNavigationAction("copy-session-link", params);
     expect(copyToClipboard).toHaveBeenCalledWith(
       `${base}/dashboard/research/dashboard/12345678-90ab-cdef-1234-567890abcdef`,
@@ -129,7 +142,7 @@ describe("session menu navigation actions", () => {
   });
 
   it("copies every history page chronologically without duplicating replayed records", async () => {
-    const { params, request } = fixture();
+    const { copy, request } = fixture();
     const first = message(1, "First response");
     const middle = message(2, "Middle response");
     const last = message(3, "Last response");
@@ -137,12 +150,13 @@ describe("session menu navigation actions", () => {
     request.mockResolvedValueOnce(page([first, middle]));
     request.mockResolvedValueOnce(page([last]));
 
-    await runSessionNavigationAction("copy-markdown", params);
+    await copy();
 
+    const historyQuery = { sessionKey: session.key, agentId: "research", maxChars: 500_000 };
     expect(request.mock.calls.map((call) => call[1])).toEqual([
-      { sessionKey: session.key, agentId: "research", limit: 1000, maxChars: 500_000, offset: 0 },
-      { sessionKey: session.key, agentId: "research", limit: 1000, maxChars: 500_000, offset: 1 },
-      { sessionKey: session.key, agentId: "research", limit: 1, maxChars: 500_000, offset: 0 },
+      { ...historyQuery, limit: 1000, offset: 0 },
+      { ...historyQuery, limit: 1000, offset: 1 },
+      { ...historyQuery, limit: 1, offset: 0 },
     ]);
     const copied = vi.mocked(copyToClipboard).mock.calls[0]?.[0] ?? "";
     expect(copied).toContain("# Chat with Research");
@@ -154,17 +168,12 @@ describe("session menu navigation actions", () => {
   it.each([null, "leaf-3"])(
     "copies paged history when only the tail carries leaf %s",
     async (activeLeafEntryId) => {
-      const { params, request } = fixture();
-      const tail = page([message(3, "Newest")], {
-        hasMore: true,
-        nextOffset: 1,
-        deltaCursor: "stable-cursor",
+      const { copy, request, paged } = fixture();
+      const tail = paged({
         sessionInfo: { activeLeafEntryId } as ChatHistoryResult["sessionInfo"],
       });
       request.mockResolvedValueOnce(tail);
-      request.mockResolvedValueOnce(page([message(1, "Oldest"), message(2, "Middle")]));
-      request.mockResolvedValueOnce(tail);
-      await runSessionNavigationAction("copy-markdown", params);
+      await copy();
       expect(copyToClipboard).toHaveBeenCalledWith(
         expect.stringContaining("Oldest"),
         expect.any(Function),
@@ -176,7 +185,7 @@ describe("session menu navigation actions", () => {
   it.each(["operator.read", "operator.sessions.read", "operator.sessions.write"])(
     "copies only visible conversation messages with %s",
     async (scope) => {
-      const { params, request } = fixture();
+      const { params, copy, request } = fixture();
       params.context.gateway.snapshot.hello!.auth!.scopes = [scope];
       request.mockResolvedValueOnce(
         page([
@@ -191,7 +200,7 @@ describe("session menu navigation actions", () => {
           },
         ]),
       );
-      await runSessionNavigationAction("copy-markdown", params);
+      await copy();
       const copied = vi.mocked(copyToClipboard).mock.calls[0]?.[0] ?? "";
       expect(copied).toContain("Visible response");
       expect(copied).toContain("NO_REPLY");
@@ -204,63 +213,44 @@ describe("session menu navigation actions", () => {
     { totalMessages: 4 },
     { hasMore: true, nextOffset: 1 },
   ])("does not copy partial history when paging changes or stalls: %j", async (changed) => {
-    const { params, request } = fixture();
+    const { rejectCopy, request } = fixture();
     request.mockResolvedValueOnce(page([message(3, "Newest")], { hasMore: true, nextOffset: 1 }));
     request.mockResolvedValueOnce(page([message(1, "Older")], changed));
-    await runSessionNavigationAction("copy-markdown", params);
-    expect(copyToClipboard).not.toHaveBeenCalled();
-    expect(showToast).toHaveBeenCalledWith({ message: t("sessionsView.copyTranscriptChanged") });
+    await rejectCopy();
   });
 
   it.each([
     { deltaCursor: "rewritten-cursor" },
     { sessionInfo: { activeLeafEntryId: "different-branch" } as ChatHistoryResult["sessionInfo"] },
   ])("rejects history changed during paging: %j", async (changed) => {
-    const { params, request } = fixture();
-    const tail = page([message(3, "Newest")], {
-      hasMore: true,
-      nextOffset: 1,
-      deltaCursor: "stable-cursor",
-      sessionInfo: { activeLeafEntryId: "leaf-3" } as ChatHistoryResult["sessionInfo"],
-    });
-    request.mockResolvedValueOnce(tail);
-    request.mockResolvedValueOnce(page([message(1, "Oldest"), message(2, "Middle")]));
+    const { rejectCopy, request, paged } = fixture();
+    const tail = paged();
     request.mockResolvedValueOnce({ ...tail, ...changed });
-    await runSessionNavigationAction("copy-markdown", params);
-    expect(copyToClipboard).not.toHaveBeenCalled();
-    expect(showToast).toHaveBeenCalledWith({ message: t("sessionsView.copyTranscriptChanged") });
+    await rejectCopy();
   });
 
   it("retires a pending transcript copy when its source view changes", async () => {
-    const { params, request } = fixture();
+    const { params, rejectCopy, request } = fixture();
     let current = true;
     params.isCurrent = () => current;
     request.mockImplementationOnce(async () => {
       current = false;
       return page([message(1, "Wrong view")]);
     });
-    await runSessionNavigationAction("copy-markdown", params);
-    expect(copyToClipboard).not.toHaveBeenCalled();
-    expect(showToast).toHaveBeenCalledWith({ message: t("sessionsView.copyTranscriptChanged") });
+    await rejectCopy();
   });
 
   it("denies transcript reads without a compatible read scope", async () => {
-    const { params, request } = fixture();
+    const { params, rejectCopy, request } = fixture();
     params.context.gateway.snapshot.hello!.auth!.scopes = [];
-    await runSessionNavigationAction("copy-markdown", params);
+    await rejectCopy(t("sessionsView.actionRequiresScope", { scope: "operator.sessions.read" }));
     expect(request).not.toHaveBeenCalled();
-    expect(copyToClipboard).not.toHaveBeenCalled();
-    expect(showToast).toHaveBeenCalledWith({
-      message: t("sessionsView.actionRequiresScope", { scope: "operator.sessions.read" }),
-    });
   });
 
   it("reports an empty transcript without replacing the clipboard", async () => {
-    const { params, request } = fixture();
+    const { rejectCopy, request } = fixture();
     request.mockResolvedValueOnce(page([], { totalMessages: 0 }));
-    await runSessionNavigationAction("copy-markdown", params);
-    expect(copyToClipboard).not.toHaveBeenCalled();
-    expect(showToast).toHaveBeenCalledWith({ message: t("chat.commandResults.emptyExport") });
+    await rejectCopy(t("chat.commandResults.emptyExport"));
   });
 
   it("uses the mounted chat owner's split capability and requires its handling receipt", async () => {
