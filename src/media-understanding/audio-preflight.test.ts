@@ -4,6 +4,11 @@ import { transcribeFirstAudio } from "./audio-preflight.js";
 
 const runCapabilityMock = vi.hoisted(() => vi.fn());
 const sendTranscriptEchoMock = vi.hoisted(() => vi.fn());
+const voice = { path: "/tmp/voice.ogg", contentType: "audio/ogg" };
+const voiceContext = () => ({ Body: "<media:audio>", media: [{ ...voice }] });
+function transcriptOutput(text: string) {
+  runCapabilityMock.mockResolvedValueOnce({ outputs: [{ kind: "audio.transcription", text }] });
+}
 
 vi.mock("./runner.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./runner.js")>()),
@@ -24,10 +29,7 @@ describe("transcribeFirstAudio", () => {
 
   it.each<{ media: MsgContext["media"] }>([
     {
-      media: [
-        { path: "/tmp/photo.jpg", contentType: "image/jpeg" },
-        { path: "/tmp/voice.ogg", contentType: "audio/ogg" },
-      ],
+      media: [{ path: "/tmp/photo.jpg", contentType: "image/jpeg" }, { ...voice }],
     },
     { media: [{ path: "/tmp/voice.aiff" }] },
     {
@@ -40,9 +42,7 @@ describe("transcribeFirstAudio", () => {
       ],
     },
   ])("recognizes audio in auto mode: $media", async ({ media }) => {
-    runCapabilityMock.mockResolvedValueOnce({
-      outputs: [{ kind: "audio.transcription", text: "voice note transcript" }],
-    });
+    transcriptOutput("voice note transcript");
     const ctx: MsgContext = { Body: "<media:audio>", media };
     await expect(transcribeFirstAudio({ ctx, cfg: {} })).resolves.toBe("voice note transcript");
     expect(runCapabilityMock).toHaveBeenCalledTimes(1);
@@ -55,10 +55,7 @@ describe("transcribeFirstAudio", () => {
 
   it("skips audio preflight when audio config is explicitly disabled", async () => {
     const transcript = await transcribeFirstAudio({
-      ctx: {
-        Body: "<media:audio>",
-        media: [{ path: "/tmp/voice.ogg", contentType: "audio/ogg" }],
-      },
+      ctx: voiceContext(),
       cfg: { tools: { media: { audio: { enabled: false } } } },
     });
 
@@ -68,16 +65,13 @@ describe("transcribeFirstAudio", () => {
   });
 
   it("echoes the preflight transcript when echoTranscript is enabled", async () => {
-    runCapabilityMock.mockResolvedValueOnce({
-      outputs: [{ kind: "audio.transcription", text: "hello from dm audio" }],
-    });
+    transcriptOutput("hello from dm audio");
 
     const ctx = {
-      Body: "<media:audio>",
+      ...voiceContext(),
       Provider: "telegram",
       OriginatingTo: "telegram:42",
       AccountId: "default",
-      media: [{ path: "/tmp/voice.ogg", contentType: "audio/ogg" }],
     };
     const cfg = {
       tools: {

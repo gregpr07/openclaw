@@ -1,27 +1,23 @@
 import { describe, expect, it, vi } from "vitest";
 import type { MediaUnderstandingProvider } from "./types.js";
 
-const mediaMetadataPlugins = vi.hoisted(() => [
-  {
-    contracts: {
-      mediaUnderstandingProviders: ["google", "minimax", "minimax-portal", "openrouter"],
-    },
-    mediaUnderstandingProviderMetadata: {
-      google: { capabilities: ["image"], autoPriority: { image: 30 } },
-      minimax: {
-        capabilities: ["image"],
-        autoPriority: { image: 40 },
-        documentModels: { pdf: { textExtraction: "MiniMax-M2.7", image: false } },
+const mediaMetadataPlugins = vi.hoisted(() => {
+  const pdf = { pdf: { textExtraction: "MiniMax-M2.7", image: false } };
+  const minimax = { capabilities: ["image"], documentModels: pdf };
+  return [
+    {
+      contracts: {
+        mediaUnderstandingProviders: ["google", "minimax", "minimax-portal", "openrouter"],
       },
-      "minimax-portal": {
-        capabilities: ["image"],
-        autoPriority: { image: 50 },
-        documentModels: { pdf: { textExtraction: "MiniMax-M2.7", image: false } },
+      mediaUnderstandingProviderMetadata: {
+        google: { capabilities: ["image"], autoPriority: { image: 30 } },
+        minimax: { ...minimax, autoPriority: { image: 40 } },
+        "minimax-portal": { ...minimax, autoPriority: { image: 50 } },
+        openrouter: { capabilities: ["image"], defaultModels: { image: "auto" } },
       },
-      openrouter: { capabilities: ["image"], defaultModels: { image: "auto" } },
     },
-  },
-]);
+  ];
+});
 
 vi.mock("../plugins/manifest-contract-eligibility.js", () => {
   const manifestRegistry = { plugins: mediaMetadataPlugins, diagnostics: [] };
@@ -53,12 +49,9 @@ describe("media defaults", () => {
     const params = { providerId: "openrouter", capability: "image" as const, cfg };
 
     expect(resolveDefaultMediaModel(params)).toBe("google/gemini-2.5-flash");
-    expect(
-      resolveDefaultMediaModel({
-        ...params,
-        includeConfiguredImageModels: false,
-      }),
-    ).toBe("auto");
+    expect(resolveDefaultMediaModel({ ...params, includeConfiguredImageModels: false })).toBe(
+      "auto",
+    );
   });
   it("orders priorities without conflating declared capabilities and runtime hooks", () => {
     const capability = "video";

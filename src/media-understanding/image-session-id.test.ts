@@ -42,24 +42,19 @@ function capturedStreamOptions(streamFn: ReturnType<typeof stubProviderStream>, 
   if (!call) {
     throw new Error(`Expected provider stream call ${index}`);
   }
-  return call[2] as CapturedStreamOptions;
+  const options = call[2] as CapturedStreamOptions;
+  return { sessionId: options.sessionId, header: options.headers?.[SESSION_HEADER] };
 }
 
 function requestImage(
-  endpoint: { provider: string; model: string; baseUrl: string },
+  { provider, model, baseUrl }: typeof OPENCODE_GO_IMAGE,
   modelExtras: Record<string, unknown> = {},
 ) {
-  mockImageModel({
-    provider: endpoint.provider,
-    id: endpoint.model,
-    api: "openai-completions",
-    baseUrl: endpoint.baseUrl,
-    ...modelExtras,
-  });
+  mockImageModel({ provider, id: model, api: "openai-completions", baseUrl, ...modelExtras });
   return describeImageWithModelCore({
     ...imageRequestDefaults(),
-    provider: endpoint.provider,
-    model: endpoint.model,
+    provider,
+    model,
     prompt: "Describe the image.",
   });
 }
@@ -73,13 +68,11 @@ describe("describeImageWithModelCore OpenCode routing identity", () => {
     await requestImage(OPENCODE_GO_IMAGE);
     await requestImage(OPENCODE_GO_IMAGE);
 
-    const first = capturedStreamOptions(streamFn, 0).headers?.[SESSION_HEADER];
-    const second = capturedStreamOptions(streamFn, 1).headers?.[SESSION_HEADER];
-    expect(first).toMatch(UUID_PATTERN);
-    expect(second).toMatch(UUID_PATTERN);
-    expect(first).not.toBe(second);
-    expect(capturedStreamOptions(streamFn, 0).sessionId).toBeUndefined();
-    expect(capturedStreamOptions(streamFn, 1).sessionId).toBeUndefined();
+    const first = capturedStreamOptions(streamFn, 0);
+    const second = capturedStreamOptions(streamFn, 1);
+    const expected = { sessionId: undefined, header: expect.stringMatching(UUID_PATTERN) };
+    expect([first, second]).toEqual([expected, expected]);
+    expect(first.header).not.toBe(second.header);
   });
 
   it("reuses one routing identity across the reasoning-only retry", async () => {
@@ -102,9 +95,9 @@ describe("describeImageWithModelCore OpenCode routing identity", () => {
     await requestImage(OPENCODE_GO_IMAGE);
 
     expect(streamFn).toHaveBeenCalledTimes(2);
-    const first = capturedStreamOptions(streamFn, 0).headers?.[SESSION_HEADER];
+    const first = capturedStreamOptions(streamFn, 0).header;
     expect(first).toMatch(UUID_PATTERN);
-    expect(capturedStreamOptions(streamFn, 1).headers?.[SESSION_HEADER]).toBe(first);
+    expect(capturedStreamOptions(streamFn, 1).header).toBe(first);
   });
 
   it.each([
@@ -121,8 +114,6 @@ describe("describeImageWithModelCore OpenCode routing identity", () => {
   ] as const)("does not inject routing identity for %s", async (_name, endpoint, extras) => {
     const streamFn = stubProviderStream();
     await requestImage(endpoint, extras);
-    const options = capturedStreamOptions(streamFn, 0);
-    expect(options.sessionId).toBeUndefined();
-    expect(options.headers?.[SESSION_HEADER]).toBeUndefined();
+    expect(capturedStreamOptions(streamFn, 0)).toEqual({ sessionId: undefined, header: undefined });
   });
 });

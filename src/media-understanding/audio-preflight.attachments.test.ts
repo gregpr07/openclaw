@@ -19,6 +19,7 @@ type SelectionOptions = {
 };
 const runExecMock = vi.hoisted(() => vi.fn());
 const caption = "typed caption";
+const captionFields = { RawBody: caption, CommandBody: caption };
 const allAttachments = { mode: "all", maxAttachments: 2 } as const;
 const limitMarker = "[Audio attachment not processed: attachment limit reached]";
 const failedMarker = "[Audio attachment could not be analyzed]";
@@ -63,8 +64,7 @@ describe("audio preflight attachment handoff", () => {
       Body: "transport envelope",
       agentText: "",
       BodyForAgent: "stale alias",
-      RawBody: "typed caption",
-      CommandBody: "typed caption",
+      ...captionFields,
     };
     const before = { ...ctx };
     await applyMediaUnderstanding({ ctx, cfg: { plugins: { enabled: false } } });
@@ -90,14 +90,8 @@ describe("audio preflight attachment handoff", () => {
           },
         },
       };
-      const cfg: OpenClawConfig = {
-        plugins: { enabled: false },
-        tools: { media: { audio: {} } },
-      };
-      const ctx: MsgContext = {
-        Body: "<media:audio>",
-        media,
-      };
+      const cfg: OpenClawConfig = { plugins: { enabled: false }, tools: { media: { audio: {} } } };
+      const ctx: MsgContext = { Body: "<media:audio>", media };
 
       const transcript = await transcribeFirstAudio({
         ctx,
@@ -158,8 +152,7 @@ process.stdout.write(process.argv[3] === "empty" && name === "first.wav" ? "  \\
         } else {
           ctx.agentText = preparedText;
         }
-        ctx.RawBody = caption;
-        ctx.CommandBody = caption;
+        Object.assign(ctx, captionFields);
         await applyMediaUnderstanding({
           ctx,
           cfg,
@@ -181,12 +174,7 @@ process.stdout.write(process.argv[3] === "empty" && name === "first.wav" ? "  \\
         expect(ctx.agentText).toContain("heard second.wav");
         expect(ctx.BodyForAgent).toBe(ctx.agentText);
         expect(ctx.agentText).not.toContain("stale alias");
-        expect([ctx.RawBody, ctx.CommandBody, ctx.rawText, ctx.commandText]).toEqual([
-          caption,
-          caption,
-          caption,
-          caption,
-        ]);
+        expect(ctx).toMatchObject({ ...captionFields, rawText: caption, commandText: caption });
         if (textField !== "Body") {
           expect(ctx.Body).toContain("transport envelope");
           expect(ctx.agentText).not.toContain("transport envelope");
@@ -251,8 +239,7 @@ process.stdout.write(process.argv[3] === "empty" && name === "first.wav" ? "  \\
         });
         const ctx: MsgContext = {
           Body: caption,
-          RawBody: caption,
-          CommandBody: caption,
+          ...captionFields,
           Surface: "webchat",
           From: "fixture-user",
           media: [{}, ...media],
@@ -273,15 +260,12 @@ process.stdout.write(process.argv[3] === "empty" && name === "first.wav" ? "  \\
           ];
         }
         const transcript = await transcribeAudioAttachments({ ctx, cfg });
-        expect(transcript).toBe(
-          emptyFirst
-            ? expected.length === 1
-              ? undefined
-              : "heard second.wav"
-            : expected.length === 1
-              ? "heard " + expected[0]
-              : "Audio 1:\nheard first.wav\n\nAudio 2:\nheard second.wav",
-        );
+        const heard = expected.filter((name) => !emptyFirst || name !== "first.wav");
+        const expectedTranscript =
+          heard.length > 1
+            ? heard.map((name, index) => `Audio ${index + 1}:\nheard ${name}`).join("\n\n")
+            : heard[0] && `heard ${heard[0]}`;
+        expect(transcript).toBe(expectedTranscript);
         expect(ctx.media?.map((fact) => fact.transcribed === true)).toEqual([
           false,
           ...media.map(
@@ -291,8 +275,7 @@ process.stdout.write(process.argv[3] === "empty" && name === "first.wav" ? "  \\
           ),
         ]);
         const preparedText = transcript ? formatAudioTranscriptForAgent(transcript) : caption;
-        ctx.agentText = preparedText;
-        ctx.BodyForAgent = preparedText;
+        Object.assign(ctx, { agentText: preparedText, BodyForAgent: preparedText });
         await applyMediaUnderstanding({
           ctx,
           cfg,
@@ -300,9 +283,8 @@ process.stdout.write(process.argv[3] === "empty" && name === "first.wav" ? "  \\
           processingMode: "audio-only",
         });
         expect(calls).toEqual(expected);
-        const expectedAgentText = [preparedText, ...markers].join("\n\n");
-        expect([ctx.agentText, ctx.BodyForAgent]).toEqual([expectedAgentText, expectedAgentText]);
-        expect([ctx.RawBody, ctx.CommandBody]).toEqual([caption, caption]);
+        const agentText = [preparedText, ...markers].join("\n\n");
+        expect(ctx).toMatchObject({ ...captionFields, agentText, BodyForAgent: agentText });
         expect(ctx.MediaUnderstanding).toBeUndefined();
       });
     },
