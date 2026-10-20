@@ -12,55 +12,17 @@ import {
 } from "../embedded-agent-runner/model.js";
 import { resolveSessionAuthSelection } from "./session-override.js";
 
+const directEndpoint = "https://api.arcee.ai/api/v1";
+const routerEndpoint = "https://openrouter.ai/api/v1";
 it.each([
-  {
-    name: "preserves the user account",
-    source: "user",
-    pin: "arcee:work",
-    modelEndpoint: "https://api.arcee.ai/api/v1",
-    expectedPin: "arcee:work",
-    expectedSource: "user",
-    agentId: "main",
-  },
-  {
-    name: "preserves a person-linked account",
-    source: "user-link",
-    pin: "arcee:work",
-    modelEndpoint: "https://api.arcee.ai/api/v1",
-    expectedPin: "arcee:work",
-    expectedSource: "user-link",
-    agentId: "writer",
-  },
-  {
-    name: "rejects a truly incompatible pin",
-    source: "user",
-    pin: "openrouter:default",
-    modelEndpoint: "https://api.arcee.ai/api/v1",
-    expectedPin: "arcee:other",
-    expectedSource: "auto",
-    agentId: "main",
-  },
-  {
-    name: "honors configured order for automatic selection",
-    source: "auto",
-    pin: "arcee:work",
-    modelEndpoint: "https://api.arcee.ai/api/v1",
-    expectedPin: "arcee:other",
-    expectedSource: "auto",
-    agentId: "main",
-  },
-  {
-    name: "keeps ordinary OpenRouter ownership",
-    source: "user",
-    pin: "openrouter:default",
-    modelEndpoint: "https://openrouter.ai/api/v1",
-    expectedPin: "openrouter:default",
-    expectedSource: "user",
-    agentId: "main",
-  },
+  ["user", "arcee:work", directEndpoint, "arcee:work", "user", "main"],
+  ["user-link", "arcee:work", directEndpoint, "arcee:work", "user-link", "writer"],
+  ["user", "openrouter:default", directEndpoint, "arcee:other", "auto", "main"],
+  ["auto", "arcee:work", directEndpoint, "arcee:other", "auto", "main"],
+  ["user", "openrouter:default", routerEndpoint, "openrouter:default", "user", "main"],
 ] as const)(
-  "$name for a configured model endpoint before session mutation",
-  async ({ source, pin, modelEndpoint, expectedPin, expectedSource, agentId }) => {
+  "resolves %s pin %s at %s to %s (%s) for %s before session mutation",
+  async (source, pin, modelEndpoint, expectedPin, expectedSource, agentId) => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "session-endpoint-pin-" },
       async (state) => {
@@ -77,7 +39,7 @@ it.each([
           models: {
             providers: {
               arcee: {
-                baseUrl: "https://openrouter.ai/api/v1",
+                baseUrl: routerEndpoint,
                 api: "openai-completions",
                 models: [
                   {
@@ -166,8 +128,10 @@ it.each([
             currentProvider: "arcee",
             selection: { provider: "arcee", model: "trinity-large-thinking" },
           });
-          expect(sessionEntry.authProfileOverride).toBe("arcee:work");
-          expect(sessionEntry.authProfileOverrideSource).toBe("user");
+          expect(sessionEntry).toMatchObject({
+            authProfileOverride: "arcee:work",
+            authProfileOverrideSource: "user",
+          });
         }
       },
     );

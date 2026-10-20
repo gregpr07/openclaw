@@ -21,6 +21,32 @@ import type { AuthProfileStore, OAuthCredential } from "./types.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
+function trackSettlement(promise: Promise<unknown>) {
+  let settled = false;
+  return {
+    get settled() {
+      return settled;
+    },
+    outcome: promise.then(
+      (value) => {
+        settled = true;
+        return { value };
+      },
+      (error: unknown) => {
+        settled = true;
+        return { error };
+      },
+    ),
+  };
+}
+
+const expectTimeout = (outcome: unknown) =>
+  expect(outcome).toEqual({
+    error: expect.objectContaining({
+      message: expect.stringContaining("exceeded hard timeout (100ms)"),
+    }),
+  });
+
 describe("awaited OAuth persistence", () => {
   it.each([
     { label: "Error", rejection: new Error("synthetic backend failure") },
@@ -147,7 +173,6 @@ describe("awaited OAuth persistence", () => {
         const settlementRelease = createDeferredCore();
         const providerError = new Error("synthetic provider rejection");
         let operations = 0;
-        let settled = false;
         const commit = vi.fn();
         const refresh = vi.fn(async () => {
           const current = readPersistedAuthProfileStoreRaw(agentDir) as AuthProfileStore;
@@ -207,24 +232,16 @@ describe("awaited OAuth persistence", () => {
           resolve: async (credential) => ({ apiKey: credential.access, credential }),
           commit,
         });
-        const observed = running.then(
-          (value) => {
-            settled = true;
-            return { value };
-          },
-          (error: unknown) => {
-            settled = true;
-            return { error };
-          },
-        );
+        const tracked = trackSettlement(running);
+        const observed = tracked.outcome;
         try {
           await Promise.race([claimEntered.promise, observed]);
-          expect(settled).toBe(false);
+          expect(tracked.settled).toBe(false);
           expect(refresh).not.toHaveBeenCalled();
           expect(commit).not.toHaveBeenCalled();
           claimRelease.resolve();
           await Promise.race([settlementEntered.promise, observed]);
-          expect(settled).toBe(false);
+          expect(tracked.settled).toBe(false);
           expect(refresh).toHaveBeenCalledOnce();
           expect(commit).toHaveBeenCalledTimes(1);
           settlementRelease.resolve();
@@ -290,29 +307,16 @@ describe("awaited OAuth persistence", () => {
               isPending: (snapshot) => snapshot.pending,
               resolve,
             });
-      let settled = false;
-      const outcome = observing.then(
-        (value) => {
-          settled = true;
-          return { value };
-        },
-        (error: unknown) => {
-          settled = true;
-          return { error };
-        },
-      );
+      const tracked = trackSettlement(observing);
+      const outcome = tracked.outcome;
       try {
         await vi.advanceTimersByTimeAsync(0);
         vi.setSystemTime(Date.now() + wallStep);
         await vi.advanceTimersByTimeAsync(99);
-        expect(settled).toBe(false);
+        expect(tracked.settled).toBe(false);
         await vi.advanceTimersByTimeAsync(1);
-        expect(settled).toBe(true);
-        expect(await outcome).toEqual({
-          error: expect.objectContaining({
-            message: expect.stringContaining("exceeded hard timeout (100ms)"),
-          }),
-        });
+        expect(tracked.settled).toBe(true);
+        expectTimeout(await outcome);
         reading.resolve({ pending: false });
         await vi.advanceTimersByTimeAsync(100);
         expect(resolve).not.toHaveBeenCalled();
@@ -366,27 +370,14 @@ describe("awaited OAuth persistence", () => {
               isPending: (value) => value === "pending",
               resolve: async (value) => value,
             });
-      let settled = false;
-      const outcome = observing.then(
-        (value) => {
-          settled = true;
-          return { value };
-        },
-        (error: unknown) => {
-          settled = true;
-          return { error };
-        },
-      );
+      const tracked = trackSettlement(observing);
+      const outcome = tracked.outcome;
       try {
         await vi.advanceTimersByTimeAsync(99);
-        expect(settled).toBe(false);
+        expect(tracked.settled).toBe(false);
         if (kind === "polling") {
           await vi.advanceTimersByTimeAsync(1);
-          expect(await outcome).toEqual({
-            error: expect.objectContaining({
-              message: expect.stringContaining("exceeded hard timeout (100ms)"),
-            }),
-          });
+          expectTimeout(await outcome);
         } else {
           reading.resolve("settled before deadline");
           expect(await outcome).toEqual({ value: "settled before deadline" });

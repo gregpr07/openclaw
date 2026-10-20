@@ -1,8 +1,3 @@
-/**
- * Tests auth profile portability decisions.
- * Verifies static credential copy, OAuth opt-in behavior, and explicit
- * copy-to-agent opt-outs.
- */
 import { describe, expect, it } from "vitest";
 import { createApiKeyCredential } from "./credential-fixtures.test-support.js";
 import {
@@ -10,6 +5,14 @@ import {
   resolveAuthProfilePortability,
 } from "./portability.js";
 import type { AuthProfileCredential, AuthProfileStore } from "./types.js";
+
+const oauth = {
+  type: "oauth",
+  provider: "openai",
+  access: "access-token",
+  refresh: "refresh-token",
+  expires: Date.now() + 60_000,
+} satisfies AuthProfileCredential;
 
 describe("auth profile portability", () => {
   it("copies static credentials but skips OAuth refresh tokens by default", () => {
@@ -22,13 +25,7 @@ describe("auth profile portability", () => {
           provider: "github-copilot",
           token: "gho-test",
         },
-        "openai:default": {
-          type: "oauth",
-          provider: "openai",
-          access: "access-token",
-          refresh: "refresh-token",
-          expires: Date.now() + 60_000,
-        },
+        "openai:default": oauth,
       },
       order: {
         openai: ["openai:default", "openai:api-key"],
@@ -40,31 +37,24 @@ describe("auth profile portability", () => {
 
     const portable = buildPortableAuthProfileStoreForAgentCopy(store);
 
-    expect(portable.copiedProfileIds).toEqual(["openai:api-key", "github-copilot:default"]);
-    expect(portable.skippedProfileIds).toEqual(["openai:default"]);
-    expect(portable.store.profiles).toEqual({
-      "openai:api-key": store.profiles["openai:api-key"],
-      "github-copilot:default": store.profiles["github-copilot:default"],
+    expect(portable).toEqual({
+      copiedProfileIds: ["openai:api-key", "github-copilot:default"],
+      skippedProfileIds: ["openai:default"],
+      store: {
+        version: 1,
+        profiles: {
+          "openai:api-key": store.profiles["openai:api-key"],
+          "github-copilot:default": store.profiles["github-copilot:default"],
+        },
+        order: { openai: ["openai:api-key"], "github-copilot": ["github-copilot:default"] },
+      },
     });
-    expect(portable.store.order).toEqual({
-      openai: ["openai:api-key"],
-      "github-copilot": ["github-copilot:default"],
-    });
-    expect(portable.store.lastGood).toBeUndefined();
-    expect(portable.store.usageStats).toBeUndefined();
   });
 
   it("allows provider-owned OAuth profiles to opt in explicitly", () => {
-    const credential: AuthProfileCredential = {
-      type: "oauth",
-      provider: "demo",
-      access: "access-token",
-      refresh: "refresh-token",
-      expires: Date.now() + 60_000,
-      copyToAgents: true,
-    };
-
-    expect(resolveAuthProfilePortability(credential)).toEqual({
+    expect(
+      resolveAuthProfilePortability({ ...oauth, provider: "demo", copyToAgents: true }),
+    ).toEqual({
       portable: true,
       reason: "oauth-provider-opted-in",
     });

@@ -141,29 +141,21 @@ it("does not invoke a withdrawn model build after its display worker read", asyn
       },
       consume,
     );
-    const result = reading.then(
-      (value) => ({ ok: true as const, value }),
-      (error: unknown) => ({ ok: false as const, error }),
-    );
+    const rejected = expect(reading).rejects.toBe(withdrawn);
     try {
       await Promise.race([
         entered.promise,
-        result.then(() => {
+        rejected.then(() => {
           throw new Error("Display preparation settled before its worker read gate");
         }),
       ]);
       current = false;
       resume.resolve();
-      const outcome = await result;
-      expect(outcome.ok).toBe(false);
+      await rejected;
       expect(consume).not.toHaveBeenCalled();
-      if (outcome.ok) {
-        throw new Error("Withdrawn source produced a display path");
-      }
-      expect(outcome.error).toBe(withdrawn);
     } finally {
       resume.resolve();
-      await result;
+      await reading.catch(() => {});
       held.mockRestore();
     }
   });
