@@ -88,16 +88,6 @@ describe("Ollama provider usage integration", () => {
     );
   });
 
-  it("does not query a local daemon for hosted-only credentials", async () => {
-    const fetchFn = vi.fn();
-    const summary = await load({
-      config: hostedOnlyConfig(),
-      fetch: fetchFn,
-    });
-    expect(summary.providers).toEqual([]);
-    expect(fetchFn).not.toHaveBeenCalled();
-  });
-
   it.each([
     [undefined, {}],
     [undefined, { OLLAMA_API_KEY: "ambient-cloud-key" }],
@@ -122,39 +112,29 @@ describe("Ollama provider usage integration", () => {
     expectRequest(fetchFn, "http://10.0.0.5:11434", "endpoint-key");
   });
 
-  it("does not treat an ambient Cloud key alone as local-daemon ownership", async () => {
-    const fetchFn = vi.fn();
-    const summary = await load({
-      config: { plugins: { allow: ["ollama"], entries: { ollama: { enabled: true } } } },
-      env: { OLLAMA_API_KEY: "ambient-cloud-key" },
-      fetch: fetchFn,
-    });
-    expect(summary.providers).toEqual([]);
-    expect(fetchFn).not.toHaveBeenCalled();
-  });
-
-  it("keeps an implicit local marker usable alongside hosted configuration", async () => {
-    const fetchFn = balanceFetch();
-    const summary = await load({
-      config: hostedOnlyConfig(),
-      env: { OLLAMA_API_KEY: "ollama-local" },
-      fetch: fetchFn,
-    });
-    expect(summary.providers[0]?.windows).toEqual([{ label: "Session", usedPercent: 20 }]);
-    expectRequest(fetchFn, "http://127.0.0.1:11434");
-  });
-
-  it("recognizes an explicitly selected local model beside hosted credentials", async () => {
-    const fetchFn = balanceFetch();
-    const summary = await load({
-      config: {
+  it.each([
+    ["hosted-only credentials", hostedOnlyConfig(), undefined, false],
+    ["ambient Cloud key alone", { plugins: configFor("").plugins }, "ambient-cloud-key", false],
+    ["implicit local marker", hostedOnlyConfig(), "ollama-local", true],
+    [
+      "selected local model",
+      {
         ...hostedOnlyConfig(),
         agents: { defaults: { model: { primary: "ollama/test" } } },
       },
-      env: { OLLAMA_API_KEY: "ambient-cloud-key" },
-      fetch: fetchFn,
-    });
-    expect(summary.providers[0]?.windows).toEqual([{ label: "Session", usedPercent: 20 }]);
-    expectRequest(fetchFn, "http://127.0.0.1:11434");
+      "ambient-cloud-key",
+      true,
+    ],
+  ] as const)("resolves local-daemon ownership for %s", async (_name, config, apiKey, local) => {
+    const fetchFn = local ? balanceFetch() : vi.fn();
+    const env = apiKey ? { OLLAMA_API_KEY: apiKey } : {};
+    const summary = await load({ config, env, fetch: fetchFn });
+    if (local) {
+      expect(summary.providers[0]?.windows).toEqual([{ label: "Session", usedPercent: 20 }]);
+      expectRequest(fetchFn, "http://127.0.0.1:11434");
+    } else {
+      expect(summary.providers).toEqual([]);
+      expect(fetchFn).not.toHaveBeenCalled();
+    }
   });
 });

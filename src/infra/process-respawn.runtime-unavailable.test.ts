@@ -44,6 +44,7 @@ vi.mock("../logging/subsystem.js", () => ({
 
 type RuntimeOwner = typeof import("./child-runtime-viability.js");
 type RecoveryOwner = typeof import("./process-respawn.js");
+type RecoveryDecision = Parameters<RecoveryOwner["registerGatewayRuntimeRecovery"]>[0]["decision"];
 let runtime: RuntimeOwner;
 let recovery: RecoveryOwner;
 let finished: ReturnType<typeof createDeferredCore<void>>;
@@ -74,6 +75,14 @@ const loadedLaunchAgent = {
     environment: serviceEnvironment,
   },
 };
+const probeResult = (stdout: string, stderr = "", status = 0) => ({
+  pid: 123,
+  output: [null, stdout, stderr],
+  stdout,
+  stderr,
+  status,
+  signal: null,
+});
 
 beforeEach(async () => {
   vi.resetModules();
@@ -89,14 +98,7 @@ beforeEach(async () => {
   io.loadedLaunchAgent.mockResolvedValue(loadedLaunchAgent);
   io.correspondingLaunchAgent.mockResolvedValue(serviceState.command);
   io.restart.mockReturnValue({ status: "emitted" });
-  io.probe.mockReturnValue({
-    pid: 123,
-    output: [null, "v24.20.0\n", ""],
-    stdout: "v24.20.0\n",
-    stderr: "",
-    status: 0,
-    signal: null,
-  });
+  io.probe.mockReturnValue(probeResult("v24.20.0\n"));
   runtime = await import("./child-runtime-viability.js");
   recovery = await import("./process-respawn.js");
 });
@@ -117,9 +119,7 @@ function diagnose() {
 }
 
 function register(
-  decision: Parameters<
-    RecoveryOwner["registerGatewayRuntimeRecovery"]
-  >[0]["decision"] = runningUnderService,
+  decision: RecoveryDecision = runningUnderService,
   ownsProcessLifecycle = true,
   isCurrent = () => true,
 ) {
@@ -156,67 +156,66 @@ function expectReported(reason: RegExp, noService = false, noProbe = false) {
   expect(io.warn).toHaveBeenCalledWith(expect.stringMatching(reason));
 }
 
-it("requests one graceful lifecycle restart after the service's Node proves it can start", async () => {
-  register();
-  // The history reader must run before the first broken-runtime classification.
-  await Promise.resolve();
-  expect(io.history).toHaveBeenCalledOnce();
-  const failure = diagnose();
-  expect(failure).toMatchObject({ code: "NODE_RUNTIME_UNAVAILABLE" });
-  expect(diagnose()).toBe(failure);
-  expectUnavailable();
-  expect(io.restart).not.toHaveBeenCalled();
-  await finished.promise;
-  expect(io.service).toHaveBeenCalledOnce();
-  expect(io.service).toHaveBeenCalledWith(expect.anything(), {
-    env: process.env,
-    requireEffective: true,
-    requireLoadedCommand: true,
-    timeoutMs: 5_000,
-  });
-  expect(io.probe).toHaveBeenCalledExactlyOnceWith(serviceRuntime, ["--version"], {
-    encoding: "utf8",
-    cwd: "/fixture/service",
-    env: serviceEnvironment,
-    timeout: 1_000,
-    maxBuffer: 8_192,
-  });
-  expect(io.restart).toHaveBeenCalledExactlyOnceWith("gateway.runtime-unavailable");
-  expectUnavailable();
-  expect(io.warn).toHaveBeenCalledWith(expect.stringMatching(/^restart-requested: .*graceful/));
-  expect(diagnose()).toBe(failure);
-  await Promise.resolve();
-  expect(io.restart).toHaveBeenCalledOnce();
-  expect(io.warn).toHaveBeenCalledOnce();
-});
+it.each(["systemd", "launchd"] as const)(
+  "requests one graceful restart after %s Node proves viable",
+  async (supervisor) => {
+    register({ mode: "supervised", supervisor });
+    // The history reader must run before the first broken-runtime classification.
+    await Promise.resolve();
+    expect(io.history).toHaveBeenCalledOnce();
+    const failure = diagnose();
+    expect(failure).toMatchObject({ code: "NODE_RUNTIME_UNAVAILABLE" });
+    expect(diagnose()).toBe(failure);
+    expectUnavailable();
+    expect(io.restart).not.toHaveBeenCalled();
+    await finished.promise;
+    if (supervisor === "systemd") {
+      expect(io.service).toHaveBeenCalledExactlyOnceWith(expect.anything(), {
+        env: process.env,
+        requireEffective: true,
+        requireLoadedCommand: true,
+        timeoutMs: 5_000,
+      });
+    } else {
+      expect(io.correspondingLaunchAgent).toHaveBeenCalledWith(
+        process.env,
+        loadedLaunchAgent.launchAgent,
+        5_000,
+      );
+      expect(io.service).not.toHaveBeenCalled();
+    }
+    expect(io.probe).toHaveBeenCalledExactlyOnceWith(serviceRuntime, ["--version"], {
+      encoding: "utf8",
+      cwd: "/fixture/service",
+      env:
+        supervisor === "systemd" ? serviceEnvironment : expect.objectContaining(serviceEnvironment),
+      timeout: 1_000,
+      maxBuffer: 8_192,
+    });
+    expect(io.restart).toHaveBeenCalledExactlyOnceWith("gateway.runtime-unavailable");
+    expectUnavailable();
+    expect(io.warn).toHaveBeenCalledWith(expect.stringMatching(/^restart-requested: .*graceful/));
+    expect(diagnose()).toBe(failure);
+    await Promise.resolve();
+    expect(io.restart).toHaveBeenCalledOnce();
+    expect(io.warn).toHaveBeenCalledOnce();
+  },
+);
 
 it("stays up and reports the unusable service runtime without requesting restart", async () => {
-  io.probe.mockReturnValueOnce({
-    pid: 0,
-    output: [null, "", "error while loading shared libraries: libnode.so"],
-    stdout: "",
-    stderr: "error while loading shared libraries: libnode.so",
-    status: 127,
-    signal: null,
-  });
+  io.probe.mockReturnValueOnce(
+    probeResult("", "error while loading shared libraries: libnode.so", 127),
+  );
   await recover();
   expectReported(/service Node cannot start/);
 });
 
 it.each([
-  {
-    name: "unmanaged",
-    decision: { mode: "disabled", reason: "unmanaged", detail: "foreground" },
-    owns: true,
-  },
-  { name: "respawn disabled", decision: { mode: "disabled", reason: "no-respawn" }, owns: true },
-  {
-    name: "external supervisor without a known command",
-    decision: { mode: "supervised", supervisor: "external" },
-    owns: true,
-  },
-  { name: "embedded lifecycle", decision: runningUnderService, owns: false },
-] as const)("keeps $name report-only", async ({ decision, owns }) => {
+  ["unmanaged", { mode: "disabled", reason: "unmanaged", detail: "foreground" }, true],
+  ["respawn disabled", { mode: "disabled", reason: "no-respawn" }, true],
+  ["external supervisor", { mode: "supervised", supervisor: "external" }, true],
+  ["embedded lifecycle", runningUnderService, false],
+] as const)("keeps %s report-only", async (_name, decision, owns) => {
   await recover(decision, owns);
   expectReported(/no verified native service/, true, true);
 });
@@ -267,25 +266,4 @@ it("keeps a rewritten launchd plist report-only when it does not match the loade
   expect(io.loadedLaunchAgent).toHaveBeenCalledOnce();
   expect(io.correspondingLaunchAgent).toHaveBeenCalledOnce();
   expectReported(/no verified Node command/, true, true);
-});
-
-it("requests restart after the loaded launchd job matches its viable on-disk command", async () => {
-  await recover({ mode: "supervised", supervisor: "launchd" });
-  expect(io.correspondingLaunchAgent).toHaveBeenCalledWith(
-    process.env,
-    loadedLaunchAgent.launchAgent,
-    5_000,
-  );
-  expect(io.service).not.toHaveBeenCalled();
-  expect(io.probe).toHaveBeenCalledWith(
-    serviceRuntime,
-    ["--version"],
-    expect.objectContaining({
-      cwd: "/fixture/service",
-      env: expect.objectContaining(serviceEnvironment),
-    }),
-  );
-  expect(io.restart).toHaveBeenCalledExactlyOnceWith("gateway.runtime-unavailable");
-  expect(io.warn).toHaveBeenCalledWith(expect.stringMatching(/^restart-requested:/));
-  expectUnavailable();
 });

@@ -89,38 +89,37 @@ describe("mergeProcessEnv", () => {
 });
 
 describe("resolveDiagnosticProcessEnv", () => {
-  it("keeps native POSIX routing and known locale categories without arbitrary namespaces", () => {
-    const native = routingEnv(
+  it.each([
+    [
+      "linux",
       "PATH Path HOME USER LOGNAME TMPDIR LANG LANGUAGE TZ LC_ALL LC_CTYPE LC_MESSAGES LC_COLLATE LC_MONETARY LC_NUMERIC LC_TIME",
-    );
-    const source = Object.freeze({
-      ...native,
-      path: "/unexpected",
-      LC_UNKNOWN_CATEGORY: "synthetic",
-      NEUTRAL_FLAG: "synthetic",
-      NODE_OPTIONS: "--no-warnings",
-      PSModulePath: "/fixture/modules",
-      OPENAI_API_KEY: "synthetic",
-    });
-    expect(resolveDiagnosticProcessEnv(source, "linux")).toEqual(native);
-  });
-
-  it("preserves Windows bootstrap, profile, DLL and PowerShell cache routing with source casing", () => {
-    const native = routingEnv(
+      {
+        path: "/unexpected",
+        LC_UNKNOWN_CATEGORY: "synthetic",
+        NEUTRAL_FLAG: "synthetic",
+        NODE_OPTIONS: "--no-warnings",
+        PSModulePath: "/fixture/modules",
+        OPENAI_API_KEY: "synthetic",
+      },
+    ],
+    [
+      "win32",
       "Path systemRoot windir comSpec pathExt systemDrive userProfile homeDrive homePath userName userDomain temp tmp appData localAppData programData allUsersProfile programFiles programFiles(x86) programW6432 commonProgramFiles commonProgramFiles(x86) commonProgramW6432 PSModuleAnalysisCachePath",
-    );
-    expect(
-      resolveDiagnosticProcessEnv(
-        {
-          ...native,
-          PSModulePath: "C:\\ExtraModules",
-          OPENCLAW_GATEWAY_TOKEN: "synthetic",
-          https_proxy: "http://proxy.invalid",
-        },
-        "win32",
-      ),
-    ).toEqual(native);
-  });
+      {
+        PSModulePath: "C:\\ExtraModules",
+        OPENCLAW_GATEWAY_TOKEN: "synthetic",
+        https_proxy: "http://proxy.invalid",
+      },
+    ],
+  ] as const)(
+    "preserves only native %s routing, with original values and casing",
+    (platform, keys, rejected) => {
+      const native = routingEnv(keys);
+      expect(
+        resolveDiagnosticProcessEnv(Object.freeze({ ...native, ...rejected }), platform),
+      ).toEqual(native);
+    },
+  );
 
   it("uses canonical Windows duplicate precedence, including undefined masking", () => {
     expect(

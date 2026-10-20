@@ -28,24 +28,12 @@ const format = (
   });
 
 describe("plugin install path warnings", () => {
-  it("ignores non-path installs and blank path candidates", async () => {
-    expect(
-      await detectPluginInstallPathIssue({
-        pluginId: "matrix",
-        install: null,
-      }),
-    ).toBeNull();
-    expect(
-      await detectPluginInstallPathIssue({
-        pluginId: "matrix",
-        install: {
-          source: "npm",
-          sourcePath: " ",
-          installPath: " ",
-        },
-      }),
-    ).toBeNull();
-  });
+  it.each([null, { source: "npm", sourcePath: " ", installPath: " " }] as const)(
+    "ignores non-path install %j",
+    async (install) => {
+      expect(await detectPluginInstallPathIssue({ pluginId: "matrix", install })).toBeNull();
+    },
+  );
 
   it("detects stale custom plugin install paths", async () => {
     const issue = await detect(missingPath);

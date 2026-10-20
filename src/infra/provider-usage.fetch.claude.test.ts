@@ -125,8 +125,11 @@ describe("fetchClaudeUsage", () => {
     expect(result.windows).toEqual([]);
   });
 
-  it("falls back to web usage for missing OAuth scope", async () => {
-    vi.stubEnv("CLAUDE_AI_SESSION_KEY", "sk-ant-session");
+  it.each([
+    ["CLAUDE_AI_SESSION_KEY", "sk-ant-session"],
+    ["CLAUDE_WEB_COOKIE", "Cookie: foo=bar; sessionKey=sk-ant-session"],
+  ])("falls back to web usage with %s", async (name, value) => {
+    vi.stubEnv(name, value);
     const fetch = fallbackFetch(
       makeResponse(200, [{ uuid: "org-a" }]),
       makeResponse(200, {
@@ -143,17 +146,6 @@ describe("fetchClaudeUsage", () => {
       { label: "Extra usage", usedPercent: 25 },
     ]);
     expect(result.billing).toBeUndefined();
-  });
-
-  it("extracts a session key from a Cookie-prefixed header", async () => {
-    vi.stubEnv("CLAUDE_WEB_COOKIE", "Cookie: foo=bar; sessionKey=sk-ant-session");
-    const fetch = fallbackFetch(
-      makeResponse(200, [{ uuid: "org-a" }]),
-      makeResponse(200, { five_hour: { utilization: 9 } }),
-    );
-    expect((await run(fetch)).windows).toEqual([
-      { label: "5h", usedPercent: 9, resetAt: undefined },
-    ]);
     expect(fetch).toHaveBeenCalledTimes(3);
   });
 
