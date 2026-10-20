@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -68,15 +69,10 @@ it.skipIf(process.platform === "win32")(
       OPENCLAW_WRAPPER: undefined,
     };
     await fs.mkdir(path.join(sourceRoot, "dist"), { recursive: true });
-    await fs.writeFile(
-      path.join(sourceRoot, "package.json"),
-      JSON.stringify({ name: "openclaw", version: "2026.3.1" }),
-    );
-    await fs.writeFile(path.join(sourceRoot, "openclaw.mjs"), 'import "./dist/index.js";');
-    await fs.writeFile(
-      path.join(sourceRoot, "dist", "index.js"),
-      'console.log("node service fixture");',
-    );
+    const write = (file: string, text: string) => fs.writeFile(path.join(sourceRoot, file), text);
+    await write("package.json", JSON.stringify({ name: "openclaw", version: "2026.3.1" }));
+    await write("openclaw.mjs", 'import "./dist/index.js";');
+    await write("dist/index.js", 'console.log("node service fixture");');
     process.argv = [nodePath, path.join(sourceRoot, "dist", "index.js")];
     const durableRoot = path.join(state, "npm", "lib", "node_modules", "openclaw");
     await fs.cp(sourceRoot, durableRoot, { recursive: true });
@@ -91,18 +87,8 @@ it.skipIf(process.platform === "win32")(
       }),
     );
     const plan = serviceInstall.mock.calls[0]?.[0];
-    if (!plan) {
-      throw new Error("Node service was not installed");
-    }
-    const expectedEntrypoint = path.join(
-      state,
-      "npm",
-      "lib",
-      "node_modules",
-      "openclaw",
-      "openclaw.mjs",
-    );
-    expect(plan.programArguments[1]).toBe(expectedEntrypoint);
+    assert(plan, "Node service was not installed");
+    expect(plan.programArguments[1]).toBe(path.join(durableRoot, "openclaw.mjs"));
     expect(writeJson).toHaveBeenCalledWith(
       expect.objectContaining({
         ok: true,
@@ -124,18 +110,14 @@ it.skipIf(process.platform === "win32")(
     if (process.platform === "darwin") {
       const launchd = await stageLaunchAgent({ ...plan, env, stdout: new PassThrough() });
       const launchdCommand = await readLaunchAgentProgramArgumentsFromFile(launchd.plistPath);
-      if (!launchdCommand) {
-        throw new Error("Could not read the generated LaunchAgent command");
-      }
+      assert(launchdCommand, "Could not read the generated LaunchAgent command");
       expect(launchdCommand.programArguments).toEqual(plan.programArguments);
       commands.push(launchdCommand.programArguments);
     }
     await fs.rm(path.join(home, ".npm"), { recursive: true });
     for (const command of commands) {
       const [program, ...args] = command;
-      if (!program) {
-        throw new Error("Generated node service command has no executable");
-      }
+      assert(program, "Generated node service command has no executable");
       const result = spawnSync(program, args, { encoding: "utf8" });
       expect(result.status, result.stderr).toBe(0);
       expect(result.stdout.trim()).toBe("node service fixture");

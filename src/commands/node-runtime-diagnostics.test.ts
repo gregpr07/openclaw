@@ -114,22 +114,17 @@ describe("Node runtime diagnostics command surfaces", () => {
     useInvalidConfig();
     mockCliRuntime("22.23.2", false);
     const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-    try {
-      expect(await runDoctorLintCli(runtime, { json: true })).toBe(1);
-      const payload = JSON.parse(String(stdout.mock.calls.at(-1)?.[0]));
-      expect(payload.findings).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ checkId: "core/doctor/final-config-validation" }),
-          expect.objectContaining({
-            checkId: "core/doctor/node-runtime",
-            fixHint: expect.stringContaining("nvm install 26"),
-          }),
-        ]),
-      );
-    } finally {
-      stdout.mockRestore();
-      vi.unstubAllGlobals();
-    }
+    expect(await runDoctorLintCli(runtime, { json: true })).toBe(1);
+    const payload = JSON.parse(String(stdout.mock.calls.at(-1)?.[0]));
+    expect(payload.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ checkId: "core/doctor/final-config-validation" }),
+        expect.objectContaining({
+          checkId: "core/doctor/node-runtime",
+          fixHint: expect.stringContaining("nvm install 26"),
+        }),
+      ]),
+    );
   });
 
   it("registers canonical Doctor findings for CLI and recorded service runtimes", async () => {

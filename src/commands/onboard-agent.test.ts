@@ -19,6 +19,16 @@ vi.mock("../config/sessions/legacy-main-session-migration.js", () => ({
 }));
 
 const { ensureOnboardingAgent } = await import("./onboard-agent.js");
+type AgentOptions = Parameters<typeof ensureOnboardingAgent>[0];
+const ensureAgent = (options: Partial<AgentOptions> = {}) =>
+  ensureOnboardingAgent({ config: {}, workspace: "/tmp/work", ...options });
+const snapshot = (config: AgentOptions["config"], exists: boolean, hash?: string) => ({
+  exists,
+  valid: true,
+  hash,
+  sourceConfig: config,
+  config,
+});
 
 describe("onboarding main-agent creation", () => {
   beforeEach(() => {
@@ -34,34 +44,22 @@ describe("onboarding main-agent creation", () => {
     });
     mocks.migrateLegacyMainSessionKeys.mockResolvedValue({ warnings: [] });
     mocks.readConfigFileSnapshot
-      .mockResolvedValueOnce({
-        exists: false,
-        valid: true,
-        sourceConfig: { agents: { entries: { main: {} } }, gateway: {} },
-        config: { agents: { entries: { main: {} } }, gateway: {} },
-      })
-      .mockResolvedValueOnce({
-        exists: true,
-        valid: true,
-        hash: "hash-after-create",
-        sourceConfig: {
-          agents: { entries: { main: {} } },
-          gateway: { controlUi: { enabled: true } },
-        },
-        config: {
-          agents: { entries: { main: {} } },
-          gateway: { controlUi: { enabled: true } },
-        },
-      });
+      .mockResolvedValueOnce(snapshot({ agents: { entries: { main: {} } }, gateway: {} }, false))
+      .mockResolvedValueOnce(
+        snapshot(
+          { agents: { entries: { main: {} } }, gateway: { controlUi: { enabled: true } } },
+          true,
+          "hash-after-create",
+        ),
+      );
   });
 
   it("provisions explicit main through createAgent on a fresh install", async () => {
-    const result = await ensureOnboardingAgent({
+    const result = await ensureAgent({
       config: {
         agents: { defaults: { model: "openai/gpt-5.5" } },
         gateway: { mode: "local" },
       },
-      workspace: "/tmp/work",
     });
 
     expect(mocks.createAgent).toHaveBeenCalledWith(
@@ -88,13 +86,7 @@ describe("onboarding main-agent creation", () => {
   it("preserves an explicit imported candidate roster", async () => {
     const config = { agents: { entries: { main: {} } } };
 
-    await expect(
-      ensureOnboardingAgent({
-        config,
-        workspace: "/tmp/work",
-        preserveCandidateRoster: true,
-      }),
-    ).resolves.toEqual({
+    await expect(ensureAgent({ config, preserveCandidateRoster: true })).resolves.toEqual({
       config,
       configBase: config,
       agentId: "main",
@@ -105,13 +97,9 @@ describe("onboarding main-agent creation", () => {
     expect(mocks.createAgent).not.toHaveBeenCalled();
   });
   it("rejects a whitespace-only explicit first-agent name instead of defaulting to main", async () => {
-    await expect(
-      ensureOnboardingAgent({
-        config: {},
-        workspace: "/tmp/work",
-        firstAgent: { name: "   " },
-      }),
-    ).rejects.toThrow("Agent name is required");
+    await expect(ensureAgent({ firstAgent: { name: "   " } })).rejects.toThrow(
+      "Agent name is required",
+    );
 
     expect(mocks.readConfigFileSnapshot).not.toHaveBeenCalled();
     expect(mocks.createAgent).not.toHaveBeenCalled();
@@ -124,11 +112,7 @@ describe("onboarding main-agent creation", () => {
       warnings: ["retained legacy main sessions require repair; run openclaw doctor --fix"],
     });
 
-    const result = await ensureOnboardingAgent({
-      config: {},
-      workspace: "/tmp/work",
-      firstAgent: { name: "robby" },
-    });
+    const result = await ensureAgent({ firstAgent: { name: "robby" } });
 
     expect(result.sessionMigrationWarnings).toEqual([
       expect.stringContaining(
@@ -147,9 +131,7 @@ describe("onboarding main-agent creation", () => {
     });
 
     await expect(
-      ensureOnboardingAgent({
-        config: {},
-        workspace: "/tmp/work",
+      ensureAgent({
         firstAgent: { name: "robby" },
         expectedConfigHash: "approved",
       }),

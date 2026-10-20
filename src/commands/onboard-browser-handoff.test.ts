@@ -101,37 +101,35 @@ function displayedNotes(prompter: ReturnType<typeof createWizardPrompter>) {
     .join("\n");
 }
 
-async function runHandoff(params: Parameters<typeof runBrowserHatchHandoff>[0], advanceMs = 0) {
-  const result = runBrowserHatchHandoff(params);
+async function runHandoff(
+  params: Partial<Parameters<typeof runBrowserHatchHandoff>[0]> = {},
+  advanceMs = 0,
+) {
+  const result = runBrowserHatchHandoff({
+    config: {},
+    ...params,
+    prompter: params.prompter ?? createWizardPrompter(),
+  });
   await vi.advanceTimersByTimeAsync(advanceMs);
   return await result;
 }
 
 describe("runBrowserHatchHandoff", () => {
-  it.each([true])(
-    "opens utility-only setup on the custodian route (browser=%s)",
-    async (opened) => {
-      const prompter = createWizardPrompter();
-      sharedMocks.detectBrowserOpenSupport.mockResolvedValue({ ok: true });
-      sharedMocks.openUrlPrivately.mockResolvedValue(opened);
-      const result = await runHandoff({
-        config: {
-          meta: { migrations: { utilityModelSeparation: true } },
-          agents: { defaults: { utilityModel: "fixture/small" } },
-        },
-        prompter,
-      });
-      expect(result).toBe(true);
-      const url = new URL(sharedMocks.openUrlPrivately.mock.calls[0]![0]);
-      expect(url.pathname).toBe("/custodian");
-      expect(url.searchParams.get("onboarding")).toBe("1");
-      expect(url.searchParams.has("session")).toBe(false);
-      expect(url.hash).toContain("bootstrapToken=one-time-bootstrap");
-      if (!opened) {
-        expect(displayedNotes(prompter)).toContain("/custodian?onboarding=1");
-      }
-    },
-  );
+  it("opens utility-only setup on the custodian route", async () => {
+    sharedMocks.detectBrowserOpenSupport.mockResolvedValue({ ok: true });
+    const result = await runHandoff({
+      config: {
+        meta: { migrations: { utilityModelSeparation: true } },
+        agents: { defaults: { utilityModel: "fixture/small" } },
+      },
+    });
+    expect(result).toBe(true);
+    const url = new URL(sharedMocks.openUrlPrivately.mock.calls[0]![0]);
+    expect(url.pathname).toBe("/custodian");
+    expect(url.searchParams.get("onboarding")).toBe("1");
+    expect(url.searchParams.has("session")).toBe(false);
+    expect(url.hash).toContain("bootstrapToken=one-time-bootstrap");
+  });
 
   it.each(["heartbeat", "disconnect", "new-tab"] as const)(
     "uses connection identity rather than presence freshness: %s",
@@ -149,7 +147,7 @@ describe("runBrowserHatchHandoff", () => {
           },
         ]);
       const prompter = createWizardPrompter();
-      const result = await runHandoff({ config: {}, prompter }, change === "new-tab" ? 0 : 60_000);
+      const result = await runHandoff({ prompter }, change === "new-tab" ? 0 : 60_000);
       expect(result).toBe(change === "new-tab");
       expect(Date.now()).toBe(change === "new-tab" ? 0 : 60_000);
       if (change !== "new-tab") {
@@ -161,21 +159,11 @@ describe("runBrowserHatchHandoff", () => {
     },
   );
 
-  it.each([false])(
-    "preserves the coordinator target in the browser handoff (GUI: %s)",
-    async (gui) => {
-      sharedMocks.detectBrowserOpenSupport.mockResolvedValue({ ok: gui });
-      const prompter = createWizardPrompter();
-      expect(await runHandoff({ config: {}, prompter, agentId: "coordinator" })).toBe(true);
-      if (gui) {
-        expect(sharedMocks.openUrlPrivately).toHaveBeenCalledWith(
-          expect.stringContaining("?session=agent%3Acoordinator%3Amain#bootstrapToken="),
-        );
-      } else {
-        expect(displayedNotes(prompter)).toContain("?session=agent%3Acoordinator%3Amain#");
-      }
-    },
-  );
+  it("preserves the coordinator target in the headless browser handoff", async () => {
+    const prompter = createWizardPrompter();
+    expect(await runHandoff({ prompter, agentId: "coordinator" })).toBe(true);
+    expect(displayedNotes(prompter)).toContain("?session=agent%3Acoordinator%3Amain#");
+  });
 
   it("prints an HTTPS tunnel destination for a headless loopback TLS Gateway", async () => {
     const prompter = createWizardPrompter();
@@ -196,98 +184,87 @@ describe("runBrowserHatchHandoff", () => {
     expect(displayed).toContain("#bootstrapToken=one-time-bootstrap");
   });
 
-  it.each(["rejects"])(
-    "falls back to the SSH hint and manual timeout when the browser opener %s",
-    async (outcome) => {
-      sharedMocks.detectBrowserOpenSupport.mockResolvedValue({ ok: true });
-      if (outcome === "rejects") {
-        sharedMocks.openUrlPrivately.mockRejectedValue(new Error("browser command failed"));
-      } else {
-        sharedMocks.openUrlPrivately.mockResolvedValue(false);
-      }
-      sharedMocks.callGateway.mockReset().mockResolvedValue([]);
-      vi.stubEnv("SSH_CONNECTION", "192.0.2.1 12345 192.0.2.2 22");
-      const prompter = createWizardPrompter();
-      expect(await runHandoff({ config: {}, prompter }, 300_000)).toBe(false);
-      expect(Date.now()).toBe(300_000);
-      expect(sharedMocks.openUrlPrivately).toHaveBeenCalledWith(browserUrl);
-      expect(displayedNotes(prompter)).toContain("ssh -N -L 18789:127.0.0.1:18789");
-      expect(displayedNotes(prompter)).toContain("#bootstrapToken=one-time-bootstrap");
-    },
-  );
+  it("falls back to the SSH hint and manual timeout when the browser opener rejects", async () => {
+    sharedMocks.detectBrowserOpenSupport.mockResolvedValue({ ok: true });
+    sharedMocks.openUrlPrivately.mockRejectedValue(new Error("browser command failed"));
+    sharedMocks.callGateway.mockReset().mockResolvedValue([]);
+    vi.stubEnv("SSH_CONNECTION", "192.0.2.1 12345 192.0.2.2 22");
+    const prompter = createWizardPrompter();
+    expect(await runHandoff({ prompter }, 300_000)).toBe(false);
+    expect(Date.now()).toBe(300_000);
+    expect(sharedMocks.openUrlPrivately).toHaveBeenCalledWith(browserUrl);
+    expect(displayedNotes(prompter)).toContain("ssh -N -L 18789:127.0.0.1:18789");
+    expect(displayedNotes(prompter)).toContain("#bootstrapToken=one-time-bootstrap");
+  });
 
-  it.each([{ bind: "custom" as const, host: "10.211.55.4" }])(
-    "tunnels headless plaintext $bind binds through secure localhost",
-    async ({ bind, host }) => {
-      const prompter = createWizardPrompter();
-      await runHandoff({
-        config: {
-          gateway: {
-            bind,
-            ...(bind === "custom" ? { customBindHost: host } : {}),
-            controlUi: { basePath: "/dashboard" },
-            auth: { token: "test-token" },
-          },
+  it("tunnels headless plaintext custom binds through secure localhost", async () => {
+    const host = "10.211.55.4";
+    const prompter = createWizardPrompter();
+    await runHandoff({
+      config: {
+        gateway: {
+          bind: "custom",
+          customBindHost: host,
+          controlUi: { basePath: "/dashboard" },
+          auth: { token: "test-token" },
         },
-        prompter,
-      });
-      const displayed = displayedNotes(prompter);
-      expect(displayed).toContain("http://127.0.0.1:18789/dashboard/");
-      expect(displayed).toContain("ssh -N -L 18789:127.0.0.1:18789");
-      expect(displayed).toContain("http://localhost:18789/dashboard/");
-      expect(displayed).not.toContain(`http://${host}:18789`);
-      expect(displayed).not.toContain("openclaw devices approve <requestId>");
-      expect(displayed).not.toContain("test-token");
-      expect(displayed).not.toContain("#token=");
-      expect(displayed).toContain("#bootstrapToken=one-time-bootstrap");
-      expect(sharedMocks.resolveAdvertisedControlUiLinks).not.toHaveBeenCalled();
-      expect(sharedMocks.issueControlUiBrowserHandoff).toHaveBeenCalledWith({
-        httpUrl: "http://127.0.0.1:18789/dashboard/",
-        wsUrl: "ws://127.0.0.1:18789/dashboard",
-      });
-    },
-  );
+      },
+      prompter,
+    });
+    const displayed = displayedNotes(prompter);
+    expect(displayed).toContain("http://127.0.0.1:18789/dashboard/");
+    expect(displayed).toContain("ssh -N -L 18789:127.0.0.1:18789");
+    expect(displayed).toContain("http://localhost:18789/dashboard/");
+    expect(displayed).not.toContain(`http://${host}:18789`);
+    expect(displayed).not.toContain("openclaw devices approve <requestId>");
+    expect(displayed).not.toContain("test-token");
+    expect(displayed).not.toContain("#token=");
+    expect(displayed).toContain("#bootstrapToken=one-time-bootstrap");
+    expect(sharedMocks.resolveAdvertisedControlUiLinks).not.toHaveBeenCalled();
+    expect(sharedMocks.issueControlUiBrowserHandoff).toHaveBeenCalledWith({
+      httpUrl: "http://127.0.0.1:18789/dashboard/",
+      wsUrl: "ws://127.0.0.1:18789/dashboard",
+    });
+  });
 
-  it.each([{ bind: "custom" as const, host: "10.211.55.4" }])(
-    "prints the secure advertised URL for headless TLS $bind binds",
-    async ({ bind, host }) => {
-      const prompter = createWizardPrompter();
-      sharedMocks.resolveAdvertisedControlUiLinks.mockResolvedValue({
-        httpUrl: `https://${host}:18789/dashboard/`,
-        wsUrl: `wss://${host}:18789/dashboard`,
-      });
-      await runHandoff({
-        config: {
-          gateway: {
-            bind,
-            ...(bind === "custom" ? { customBindHost: host } : {}),
-            controlUi: { basePath: "/dashboard" },
-            tls: { enabled: true },
-            auth: { token: "test-token" },
-          },
+  it("prints the secure advertised URL for headless TLS custom binds", async () => {
+    const host = "10.211.55.4";
+    const prompter = createWizardPrompter();
+    sharedMocks.resolveAdvertisedControlUiLinks.mockResolvedValue({
+      httpUrl: `https://${host}:18789/dashboard/`,
+      wsUrl: `wss://${host}:18789/dashboard`,
+    });
+    await runHandoff({
+      config: {
+        gateway: {
+          bind: "custom",
+          customBindHost: host,
+          controlUi: { basePath: "/dashboard" },
+          tls: { enabled: true },
+          auth: { token: "test-token" },
         },
-        prompter,
-      });
-      const displayed = displayedNotes(prompter);
-      expect(displayed).toContain(
-        `https://${host}:18789/dashboard/#bootstrapToken=one-time-bootstrap`,
-      );
-      expect(displayed).toContain(
-        `gatewayUrl=${encodeURIComponent(`wss://${host}:18789/dashboard`)}`,
-      );
-      expect(displayed).not.toContain("ssh -N -L");
-      expect(displayed).not.toContain("test-token");
-      expect(displayed).not.toContain("#token=");
-      expect(displayed).not.toContain("openclaw devices approve <requestId>");
-      expect(sharedMocks.resolveAdvertisedControlUiLinks).toHaveBeenCalledWith({
-        bind,
-        port: 18789,
-        customBindHost: bind === "custom" ? host : undefined,
-        basePath: "/dashboard",
-        tlsEnabled: true,
-      });
-    },
-  );
+      },
+      prompter,
+    });
+    const displayed = displayedNotes(prompter);
+    expect(displayed).toContain(
+      `https://${host}:18789/dashboard/#bootstrapToken=one-time-bootstrap`,
+    );
+    expect(displayed).toContain(
+      `gatewayUrl=${encodeURIComponent(`wss://${host}:18789/dashboard`)}`,
+    );
+    expect(displayed).not.toContain("ssh -N -L");
+    expect(displayed).not.toContain("test-token");
+    expect(displayed).not.toContain("#token=");
+    expect(displayed).not.toContain("openclaw devices approve <requestId>");
+    expect(sharedMocks.resolveAdvertisedControlUiLinks).toHaveBeenCalledWith({
+      bind: "custom",
+      port: 18789,
+      customBindHost: host,
+      basePath: "/dashboard",
+      tlsEnabled: true,
+    });
+  });
 
   it("keeps resolved password SecretRefs inside the Gateway presence request", async () => {
     const prompter = createWizardPrompter();
@@ -319,7 +296,6 @@ describe("runBrowserHatchHandoff", () => {
     async (reason) => {
       const result = await runHandoff({
         config: reason === "disabled" ? { gateway: { controlUi: { enabled: false } } } : {},
-        prompter: createWizardPrompter(),
         suppressTokenOutput: reason === "suppressed",
       });
       expect(result).toBe(false);
@@ -336,7 +312,7 @@ describe("runBrowserHatchHandoff", () => {
       reason: "Control UI build failed.",
       status: 503,
     });
-    expect(await runHandoff({ config: {}, prompter: createWizardPrompter() })).toBe(false);
+    expect(await runHandoff()).toBe(false);
     expect(sharedMocks.callGateway).not.toHaveBeenCalled();
     expect(sharedMocks.issueControlUiBrowserHandoff).not.toHaveBeenCalled();
     expect(sharedMocks.openUrlPrivately).not.toHaveBeenCalled();
@@ -344,7 +320,7 @@ describe("runBrowserHatchHandoff", () => {
 
   it("does not issue browser credentials when the presence request fails", async () => {
     sharedMocks.callGateway.mockReset().mockRejectedValue(new Error("gateway unavailable"));
-    expect(await runHandoff({ config: {}, prompter: createWizardPrompter() })).toBe(false);
+    expect(await runHandoff()).toBe(false);
     expect(sharedMocks.issueControlUiBrowserHandoff).not.toHaveBeenCalled();
     expect(sharedMocks.openUrlPrivately).not.toHaveBeenCalled();
   });
@@ -356,7 +332,7 @@ describe("runBrowserHatchHandoff", () => {
       onPending?.();
       return { ready: true };
     });
-    await runHandoff({ config: {}, prompter });
+    await runHandoff({ prompter });
     expect(prompter.progress).toHaveBeenCalledWith("Preparing the Control UI…");
     expect(stop).toHaveBeenCalledOnce();
   });
@@ -365,7 +341,7 @@ describe("runBrowserHatchHandoff", () => {
     sharedMocks.detectBrowserOpenSupport.mockResolvedValue({ ok: true });
     sharedMocks.issueControlUiBrowserHandoff.mockRejectedValue(new Error("state unavailable"));
     const prompter = createWizardPrompter();
-    expect(await runHandoff({ config: {}, prompter })).toBe(false);
+    expect(await runHandoff({ prompter })).toBe(false);
     expect(sharedMocks.openUrlPrivately).not.toHaveBeenCalled();
     expect(prompter.note).not.toHaveBeenCalled();
   });
