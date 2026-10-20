@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from "vitest";
+import { expect, it, onTestFinished } from "vitest";
 import { resolvePromptBuildHookResult } from "../../agents/embedded-agent-runner/run/attempt-prompt-helpers.js";
 import {
   loadSessionEntryReadOnly,
@@ -7,19 +7,12 @@ import {
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { withPluginRuntimeRegistryScope } from "../../plugins/runtime/gateway-request-scope.js";
 import { createPluginRecord } from "../../plugins/status.test-helpers.js";
-import {
-  createOpenClawTestState,
-  type OpenClawTestState,
-} from "../../test-utils/openclaw-test-state.js";
-
-let state: OpenClawTestState | undefined;
-afterEach(async () => {
-  await state?.cleanup();
-});
+import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 
 it("consumes only work global next-turn context during prompt preparation", async () => {
   const agentId = "work";
-  state = await createOpenClawTestState({ label: "explicit-reply" });
+  const state = await createOpenClawTestState({ label: "explicit-reply" });
+  onTestFinished(() => state.cleanup());
   const cfg = {
     agents: {
       ownership: "explicit",

@@ -4,10 +4,7 @@ import type { TemplateContext } from "../templating.js";
 import { clearInlineDirectives } from "./get-reply-directives-utils.js";
 import { handleInlineActions } from "./get-reply-inline-actions.js";
 import { buildTestCtx } from "./test-ctx.js";
-import {
-  createTypingController as createNoopTypingController,
-  type TypingController,
-} from "./typing.js";
+import { createTypingController as createNoopTypingController } from "./typing.js";
 
 const { createOpenClawToolsMock } = vi.hoisted(() => ({
   createOpenClawToolsMock: vi.fn(),
@@ -22,14 +19,14 @@ vi.mock("../../agents/openclaw-tools.js", () => ({
 
 export type HandleInlineActionsInput = Parameters<typeof handleInlineActions>[0];
 
-export const createTypingController = (): TypingController => ({
+export const createTypingController = () => ({
   ...createNoopTypingController({}),
   cleanup: vi.fn(),
 });
 
 export const createHandleInlineActionsInput = (params: {
   ctx: ReturnType<typeof buildTestCtx>;
-  typing: TypingController;
+  typing: HandleInlineActionsInput["typing"];
   cleanedBody: string;
   command?: Partial<HandleInlineActionsInput["command"]>;
   overrides?: Partial<Omit<HandleInlineActionsInput, "ctx" | "sessionCtx" | "typing" | "command">>;
@@ -83,11 +80,7 @@ export function runTestInlineActions(params: Parameters<typeof createHandleInlin
   return handleInlineActions(createHandleInlineActionsInput(params));
 }
 
-export function mockCallArgs(
-  mock: ReturnType<typeof vi.fn>,
-  label: string,
-  callIndex = 0,
-): unknown[] {
+export function mockCallArgs(mock: ReturnType<typeof vi.fn>, label: string, callIndex = 0) {
   const call = mock.mock.calls[callIndex] as unknown[] | undefined;
   if (!call) {
     throw new Error(`expected ${label} mock call ${callIndex}`);

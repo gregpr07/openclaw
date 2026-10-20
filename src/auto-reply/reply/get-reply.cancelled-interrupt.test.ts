@@ -1,12 +1,9 @@
-import { afterEach, expect, it, vi } from "vitest";
-import { createDeferred } from "../../../test/helpers/promise.js";
+import { expect, it, onTestFinished, vi } from "vitest";
+import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
 import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { withSessionTurn } from "../../sessions/session-controller.admission.js";
-import {
-  createOpenClawTestState,
-  type OpenClawTestState,
-} from "../../test-utils/openclaw-test-state.js";
+import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { withFullRuntimeReplyConfig } from "./get-reply-fast-path.js";
 import { getReplyFromConfig } from "./get-reply.js";
 import { finalizeInboundContext } from "./inbound-context.js";
@@ -36,16 +33,14 @@ vi.mock("../../agents/embedded-agent.js", async (importOriginal) => ({
   })),
 }));
 
-let state: OpenClawTestState | undefined;
-afterEach(async () => {
-  preparation.hold = undefined;
-  await state?.cleanup();
-});
-
 it("preserves a queued successor when interrupt input is canceled during runtime preparation", async () => {
-  state = await createOpenClawTestState({
+  const state = await createOpenClawTestState({
     label: "cancelled-interrupt",
     env: { OPENCLAW_TEST_FAST: "0" },
+  });
+  onTestFinished(async () => {
+    preparation.hold = undefined;
+    await state.cleanup();
   });
   const cfg = withFullRuntimeReplyConfig({
     agents: {
@@ -63,12 +58,13 @@ it("preserves a queued successor when interrupt input is canceled during runtime
   setRuntimeConfigSnapshot(cfg);
 
   const sessionKey = "agent:main:dashboard:cancelled-interrupt";
+  const queuedCancellation = new AbortController();
   const admission = {
     sessionKey,
     agentId: "main",
     storePath: resolveSessionStorePathCore(undefined, { agentId: "main" }),
+    abortSignal: queuedCancellation.signal,
   };
-  const queuedCancellation = new AbortController();
   const enteredPreparation = createDeferred();
   const releasePreparation = createDeferred();
   const enteredBlocker = createDeferred();
@@ -93,24 +89,20 @@ it("preserves a queued successor when interrupt input is canceled during runtime
   let blocker: Promise<void> | undefined;
   let successor: Promise<PromiseSettledResult<string>[]> | undefined;
   try {
-    await Promise.race([
+    await awaitGateBeforeSettlement(
       enteredPreparation.promise,
-      canceledReply.then((result) => {
-        throw new Error("Reply ended before reaching runtime preparation", { cause: result });
-      }),
-    ]);
-    controller.abort(new Error("Input canceled by the user"));
-    blocker = withSessionTurn(
-      { ...admission, abortSignal: queuedCancellation.signal },
-      async () => {
-        enteredBlocker.resolve();
-        await releaseBlocker.promise;
-      },
+      canceledReply,
+      "Reply ended before reaching runtime preparation",
     );
+    controller.abort(new Error("Input canceled by the user"));
+    blocker = withSessionTurn(admission, async () => {
+      enteredBlocker.resolve();
+      await releaseBlocker.promise;
+    });
     await enteredBlocker.promise;
     successor = Promise.allSettled([
       withSessionTurn(
-        { ...admission, sessionId: "successor-session", abortSignal: queuedCancellation.signal },
+        { ...admission, sessionId: "successor-session" },
         async () => "successor completed",
       ),
     ]);

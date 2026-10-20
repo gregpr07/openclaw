@@ -75,38 +75,27 @@ export async function expectContinueResult(
 }
 
 export function parseInlineDirectivesForTargetSessionTest(body: string) {
-  const base = {
-    cleaned: body,
+  const normalized = body.trim();
+  const modelDirective = normalized.match(/(?:^|\n)\/model\s+(\S+)/)?.[1];
+  const reasoning = !modelDirective && normalized === "/reasoning stream";
+  return {
+    cleaned: modelDirective
+      ? normalized.replace(/(?:^|\n)\/model\s+\S+/, "").trim()
+      : reasoning
+        ? ""
+        : body,
     hasThinkDirective: false,
     hasVerboseDirective: false,
     hasTraceDirective: false,
     hasFastDirective: false,
-    hasReasoningDirective: false,
+    hasReasoningDirective: reasoning,
     hasElevatedDirective: false,
     hasExecDirective: false,
-    hasModelDirective: false,
+    hasModelDirective: Boolean(modelDirective),
     hasQueueDirective: false,
     hasStatusDirective: false,
     queueReset: false,
+    ...(modelDirective ? { rawModelDirective: modelDirective } : {}),
+    ...(reasoning ? { reasoningLevel: "stream", rawReasoningLevel: "stream" } : {}),
   };
-  const normalized = body.trim();
-  const modelDirective = normalized.match(/(?:^|\n)\/model\s+(\S+)/)?.[1];
-  if (modelDirective) {
-    return {
-      ...base,
-      cleaned: normalized.replace(/(?:^|\n)\/model\s+\S+/, "").trim(),
-      hasModelDirective: true,
-      rawModelDirective: modelDirective,
-    };
-  }
-  if (normalized === "/reasoning stream") {
-    return {
-      ...base,
-      cleaned: "",
-      hasReasoningDirective: true,
-      reasoningLevel: "stream",
-      rawReasoningLevel: "stream",
-    };
-  }
-  return base;
 }

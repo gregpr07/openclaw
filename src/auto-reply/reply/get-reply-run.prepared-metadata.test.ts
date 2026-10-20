@@ -6,8 +6,9 @@ import { resolveInstalledPluginIndexPolicyHash } from "../../plugins/installed-p
 import { getPluginExecutionFrame } from "../../plugins/plugin-instance-invocation.js";
 import { getPluginRuntimeGenerationRegistry } from "../../plugins/runtime/generation-scope.js";
 import { runPreparedReply } from "./get-reply-run.js";
-import type { RunPreparedReplyParams } from "./get-reply-run.types.js";
+import { baseParams } from "./get-reply-run.test-support.js";
 import { bindPreparedReplyDispatchRuntime } from "./prepared-reply-dispatch-context.js";
+import { expectCallCounts } from "./reply-contract.test-support.js";
 
 const mocks = vi.hoisted(() => ({
   acquireRuntime: vi.fn(),
@@ -44,10 +45,7 @@ it("keeps the admitted Gateway generation active through a different reply works
   } as never;
   const pluginGeneration = {
     remoteCatalog: null,
-    configuredCatalogEntries: [],
-    inlineProviderModels: [],
     pluginMetadataSnapshot: metadataSnapshot,
-    pluginRegistry: {} as never,
   };
   const release = vi.fn(async () => {});
   const selectedGeneration = { ...pluginGeneration, pluginRegistry: { selected: true } };
@@ -67,21 +65,19 @@ it("keeps the admitted Gateway generation active through a different reply works
     [Symbol.asyncDispose]: release,
     pluginGeneration: selectedGeneration,
   }));
-  const inSelectedScope =
-    <T>(result: T) =>
-    async () => {
-      expect(getPluginExecutionFrame()?.retentionOwner).toMatchObject({
-        agentId: "main",
-        sessionKey: "fixture-session",
-      });
-      expect(getCurrentPluginMetadataSnapshot({ config, workspaceDir })).toBe(metadataSnapshot);
-      expect(getPluginRuntimeGenerationRegistry()).toBe(selectedGeneration.pluginRegistry);
-      expect(getPreparedModelRuntimePluginGeneration()).toBe(selectedGeneration);
-      return result;
-    };
-  mocks.prepareAdmission.mockImplementation(inSelectedScope({ kind: "ready" }));
-  mocks.execute.mockImplementation(inSelectedScope({ text: "ok" }));
-  const preparedInput = {
+  const inSelectedScope = async <T>(result: T) => {
+    expect(getPluginExecutionFrame()?.retentionOwner).toMatchObject({
+      agentId: "main",
+      sessionKey: "fixture-session",
+    });
+    expect(getCurrentPluginMetadataSnapshot({ config, workspaceDir })).toBe(metadataSnapshot);
+    expect(getPluginRuntimeGenerationRegistry()).toBe(selectedGeneration.pluginRegistry);
+    expect(getPreparedModelRuntimePluginGeneration()).toBe(selectedGeneration);
+    return result;
+  };
+  mocks.prepareAdmission.mockImplementation(() => inSelectedScope({ kind: "ready" }));
+  mocks.execute.mockImplementation(() => inSelectedScope({ text: "ok" }));
+  const preparedInput = baseParams({
     cfg: config,
     sessionCtx: {},
     ctx: {},
@@ -89,10 +85,7 @@ it("keeps the admitted Gateway generation active through a different reply works
     sessionKey: "fixture-session",
     workspaceDir,
     ...model,
-  } satisfies Pick<
-    RunPreparedReplyParams,
-    "cfg" | "sessionCtx" | "ctx" | "agentId" | "sessionKey" | "workspaceDir" | "provider" | "model"
-  >;
+  });
 
   const run = bindPreparedReplyDispatchRuntime(
     {
@@ -101,7 +94,7 @@ it("keeps the admitted Gateway generation active through a different reply works
       config,
       pluginGeneration,
     } as never,
-    () => runPreparedReply(preparedInput as RunPreparedReplyParams),
+    () => runPreparedReply(preparedInput),
   );
 
   await expect(run()).resolves.toEqual({ text: "ok" });
@@ -117,9 +110,7 @@ it("keeps the admitted Gateway generation active through a different reply works
     },
     { catalogMode: "static", pluginGeneration },
   );
-  expect(mocks.prepareAdmission).toHaveBeenCalledOnce();
-  expect(mocks.execute).toHaveBeenCalledOnce();
-  expect(release).toHaveBeenCalledOnce();
+  expectCallCounts(1, mocks.prepareAdmission, mocks.execute, release);
   expect(getCurrentPluginMetadataSnapshot({ config, workspaceDir })).toBeUndefined();
   expect(getPluginRuntimeGenerationRegistry()).toBeUndefined();
   expect(getPreparedModelRuntimePluginGeneration()).toBeUndefined();
