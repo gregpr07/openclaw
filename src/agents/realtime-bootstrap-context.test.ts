@@ -14,13 +14,19 @@ import { REALTIME_VOICE_AGENT_CONTEXT_INSTRUCTIONS as framing } from "./realtime
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 let workspaceDir: string;
 let config: OpenClawConfig;
-let params: { config: OpenClawConfig; agentId: string };
+type ContextOptions = Omit<
+  Parameters<typeof resolveRealtimeVoiceAgentContextInstructions>[0],
+  "config" | "agentId"
+>;
+const bootstrap = (options: ContextOptions = {}) =>
+  resolveRealtimeBootstrapContextInstructions({ config, agentId: "main", ...options });
+const voice = (options: ContextOptions = {}) =>
+  resolveRealtimeVoiceAgentContextInstructions({ config, agentId: "main", ...options });
 beforeEach(() => {
   workspaceDir = tempDirs.make("openclaw-realtime-bootstrap-");
   config = {
     agents: { defaults: { workspace: workspaceDir }, entries: { main: {} } },
   };
-  params = { config, agentId: "main" };
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -42,19 +48,15 @@ describe("resolveRealtimeBootstrapContextInstructions", () => {
         "SOUL.md": "Warm and dry.\n",
         "AGENTS.md": "Do not load me here.\n",
       });
-      const instructions = await resolveRealtimeBootstrapContextInstructions({
-        ...params,
+      const instructions = await bootstrap({
         sessionKey: "agent:main:discord:channel:1001",
         files: lines === 1 ? undefined : ["IDENTITY.md", "USER.md", "SOUL.md"],
       });
       for (const text of [
         "OpenClaw realtime voice profile context",
-        "### IDENTITY.md",
-        "Name: Wilfred",
-        "### USER.md",
-        "User likes concise answers.",
-        "### SOUL.md",
-        "Warm and dry.",
+        "### IDENTITY.md\nName: Wilfred",
+        "### USER.md\nUser likes concise answers.",
+        "### SOUL.md\nWarm and dry.",
       ]) {
         expect(instructions).toContain(text);
       }
@@ -78,8 +80,7 @@ describe("resolveRealtimeBootstrapContextInstructions", () => {
     await fs.writeFile(path.join(parentDir, "x"), "Outside context must stay private.");
     await writeFiles({ "IDENTITY.md": "Name: Wilfred", "context/brief.md": "Project briefing." });
     const warnings: string[] = [];
-    const instructions = await resolveRealtimeBootstrapContextInstructions({
-      ...params,
+    const instructions = await bootstrap({
       files: ["context/brief.md", "../x", "missing.md", "IDENTITY.md"],
       warn: (message) => warnings.push(message),
     });
@@ -96,9 +97,7 @@ describe("resolveRealtimeBootstrapContextInstructions", () => {
   });
 
   it("returns undefined when no requested profile files exist", async () => {
-    await expect(
-      resolveRealtimeBootstrapContextInstructions({ ...params, files: ["IDENTITY.md", "USER.md"] }),
-    ).resolves.toBeUndefined();
+    await expect(bootstrap({ files: ["IDENTITY.md", "USER.md"] })).resolves.toBeUndefined();
   });
 });
 
@@ -120,11 +119,7 @@ describe("resolveRealtimeVoiceAgentContextInstructions", () => {
         };
       });
       const warn = vi.fn();
-      const instructions = await resolveRealtimeVoiceAgentContextInstructions({
-        ...params,
-        includeIdentity: true,
-        warn,
-      });
+      const instructions = await voice({ includeIdentity: true, warn });
       expect(instructions.startsWith(framing)).toBe(true);
       expect(instructions.split(framing)).toHaveLength(2);
       expect(instructions).toContain("### SOUL.md\nWarm and dry.");
@@ -152,25 +147,14 @@ describe("resolveRealtimeVoiceAgentContextInstructions", () => {
         );
       }
       config.agents!.entries!.main!.identity = { name: "Wilfred" };
-      expect(await resolveRealtimeVoiceAgentContextInstructions({ ...params, files, warn })).toBe(
-        framing,
-      );
+      expect(await voice({ files, warn })).toBe(framing);
       if (profile === "unavailable") {
         expect(warn).toHaveBeenCalledWith(expect.stringContaining("profile unavailable"));
       } else {
         config.agents!.entries!.main!.identity = { name: " ", emoji: "" };
-        await expect(
-          resolveRealtimeBootstrapContextInstructions({ ...params, files }),
-        ).resolves.toBeUndefined();
+        await expect(bootstrap({ files })).resolves.toBeUndefined();
       }
-      expect(
-        await resolveRealtimeVoiceAgentContextInstructions({
-          ...params,
-          files,
-          includeIdentity: true,
-          warn,
-        }),
-      ).toBe(
+      expect(await voice({ files, includeIdentity: true, warn })).toBe(
         profile === "disabled" ? framing : `${framing}\n\nConfigured identity:\n- Name: Wilfred`,
       );
     },
@@ -178,11 +162,7 @@ describe("resolveRealtimeVoiceAgentContextInstructions", () => {
 
   it("bounds the complete profile block without cutting the paragraph or UTF-16 pairs", async () => {
     await writeFiles({ "brief.md": "🚀".repeat(1_000) });
-    const instructions = await resolveRealtimeVoiceAgentContextInstructions({
-      ...params,
-      files: ["brief.md"],
-      maxChars: 400,
-    });
+    const instructions = await voice({ files: ["brief.md"], maxChars: 400 });
     expect(instructions.startsWith(`${framing}\n\n`)).toBe(true);
     const profile = instructions.slice(framing.length + 2);
     expect(profile).toContain("### brief.md");
