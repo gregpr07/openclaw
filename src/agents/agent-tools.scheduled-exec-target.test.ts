@@ -47,6 +47,12 @@ const scheduledToolPolicy = {
   mode: "trusted",
   execTarget: { host: "gateway", ask: "always" },
 } as const;
+const command = { command: "echo hi" };
+const pinnedTarget = scheduledToolPolicy.execTarget;
+const pinnedArgs = { ...command, ...pinnedTarget };
+function expectExecution(id: string, args: object) {
+  expect(shellSpies.exec).toHaveBeenCalledWith(id, args, undefined, undefined);
+}
 function scheduledExec(options: Parameters<typeof createOpenClawCodingTools>[0] = {}) {
   return expectDefined(
     createOpenClawCodingTools({ scheduledToolPolicy, ...options }).find(
@@ -69,20 +75,9 @@ describe("createOpenClawCodingTools scheduled exec target", () => {
       expect(properties).not.toContain(name);
     }
 
-    await execTool.execute("call-1", {
-      command: "echo hi",
-      security: "full",
-      ask: "off",
-    });
-    expect(shellSpies.defaults).toHaveBeenCalledWith(
-      expect.objectContaining({ host: "gateway", ask: "always" }),
-    );
-    expect(shellSpies.exec).toHaveBeenCalledWith(
-      "call-1",
-      { command: "echo hi", host: "gateway", ask: "always" },
-      undefined,
-      undefined,
-    );
+    await execTool.execute("call-1", { ...command, security: "full", ask: "off" });
+    expect(shellSpies.defaults).toHaveBeenCalledWith(expect.objectContaining(pinnedTarget));
+    expectExecution("call-1", pinnedArgs);
   });
 
   it.each([
@@ -93,7 +88,7 @@ describe("createOpenClawCodingTools scheduled exec target", () => {
   ])("refuses a conflicting scheduled exec target before execution: %j", async (target) => {
     const execTool = scheduledExec();
     await expect(async () =>
-      execTool.execute("call-conflict", { command: "echo hi", ...target }),
+      execTool.execute("call-conflict", { ...command, ...target }),
     ).rejects.toThrow(/pinned to host=gateway;.*host or node is not allowed for this job/);
     expect(shellSpies.exec).not.toHaveBeenCalled();
   });
@@ -101,7 +96,6 @@ describe("createOpenClawCodingTools scheduled exec target", () => {
   it("pins the whole tool lifecycle, including execution preparation", async () => {
     const prepare = vi.fn(async (args: unknown) => args);
     const finalize = vi.fn((params: unknown) => params);
-    const execute = vi.fn(async () => ({ content: [], details: {} }));
     const source: AnyAgentTool = {
       name: "exec",
       label: "Exec",
@@ -109,57 +103,44 @@ describe("createOpenClawCodingTools scheduled exec target", () => {
       parameters: { type: "object", properties: {} },
       prepareBeforeToolCallParams: prepare,
       finalizeBeforeToolCallParams: finalize,
-      execute,
+      execute: shellSpies.exec,
     };
 
-    const pinned = pinExecToolTarget(source, { host: "gateway", ask: "always" });
+    const pinned = pinExecToolTarget(source, pinnedTarget);
     expect(() =>
       pinned.prepareBeforeToolCallParams?.(
-        { command: "echo hi", host: "node", node: "remote" },
+        { ...command, host: "node", node: "remote" },
         { hookContext: undefined },
       ),
     ).toThrow("pinned to host=gateway");
     expect(prepare).not.toHaveBeenCalled();
     await pinned.prepareBeforeToolCallParams?.(
-      { command: "echo hi", security: "full", ask: "off" },
+      { ...command, security: "full", ask: "off" },
       { hookContext: undefined },
     );
-    expect(() =>
-      pinned.finalizeBeforeToolCallParams?.({ command: "echo hi", host: "node" }, {}),
-    ).toThrow("pinned to host=gateway");
+    expect(() => pinned.finalizeBeforeToolCallParams?.({ ...command, host: "node" }, {})).toThrow(
+      "pinned to host=gateway",
+    );
     expect(finalize).not.toHaveBeenCalled();
-    pinned.finalizeBeforeToolCallParams?.({ command: "echo hi", host: "gateway", ask: "off" }, {});
+    pinned.finalizeBeforeToolCallParams?.({ ...command, host: "gateway", ask: "off" }, {});
 
-    expect(prepare).toHaveBeenCalledWith(
-      { command: "echo hi", host: "gateway", ask: "always" },
-      { hookContext: undefined },
-    );
-    expect(finalize).toHaveBeenCalledWith(
-      { command: "echo hi", host: "gateway", ask: "always" },
-      {},
-    );
+    expect(prepare).toHaveBeenCalledWith(pinnedArgs, { hookContext: undefined });
+    expect(finalize).toHaveBeenCalledWith(pinnedArgs, {});
   });
 
   it("keeps the scheduled approval floor in a reused full-permission session", async () => {
     const exec = scheduledExec({ sessionPermissionPolicy: { root: process.cwd(), mode: "full" } });
-    await exec.execute("call-full-session", { command: "echo hi" });
+    await exec.execute("call-full-session", command);
+    const overrides = { ...pinnedTarget, mode: undefined, security: "full" };
     expect(shellSpies.defaults).toHaveBeenCalledWith(
       expect.objectContaining({
-        host: "gateway",
-        mode: undefined,
-        security: "full",
-        ask: "always",
+        ...overrides,
         bypassHostApprovalFloors: false,
       }),
     );
     expect(createOpenClawTools).toHaveBeenCalledWith(
       expect.objectContaining({
-        execOverrides: expect.objectContaining({
-          host: "gateway",
-          mode: undefined,
-          security: "full",
-          ask: "always",
-        }),
+        execOverrides: expect.objectContaining(overrides),
       }),
     );
   });
@@ -186,14 +167,9 @@ describe("createOpenClawCodingTools scheduled exec target", () => {
           execTarget: { host: "gateway" },
         },
       });
-      await exec.execute("call-restricted-host", { command: "echo hi" });
+      await exec.execute("call-restricted-host", command);
       expect(shellSpies.defaults.mock.lastCall?.[0]?.host).toBe(host);
-      expect(shellSpies.exec).toHaveBeenCalledWith(
-        "call-restricted-host",
-        { command: "echo hi", host: "gateway" },
-        undefined,
-        undefined,
-      );
+      expectExecution("call-restricted-host", { ...command, host: "gateway" });
     },
   );
 });

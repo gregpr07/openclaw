@@ -56,6 +56,12 @@ function selectedTools(
 function toolNames(tools: { name: string }[]): string[] {
   return tools.map((tool) => tool.name);
 }
+const leanConfig: OpenClawConfig = {
+  agents: {
+    defaults: { experimental: { localModelLean: true } },
+    entries: { main: { experimental: { localModelLean: false } }, gemma: {} },
+  },
+};
 
 describe("applyModelProviderToolPolicy", () => {
   it("keeps web_search for OpenRouter xAI model ids so OpenClaw tool routing stays authoritative", () => {
@@ -73,25 +79,22 @@ describe("applyModelProviderToolPolicy", () => {
     label: string;
     baseUrl: string;
     modelBaseUrl?: string;
-    native: boolean;
     plugins?: OpenClawConfig["plugins"];
   }>([
     {
       label: "resolved custom endpoint",
       baseUrl: "https://api.openai.com/v1",
       modelBaseUrl: "https://proxy.example/v1",
-      native: false,
     },
 
     {
       label: "disabled plugin",
       plugins: { entries: { openai: { enabled: false } } },
       baseUrl: "https://api.openai.com/v1",
-      native: false,
     },
   ])(
     "uses one search route before tool discovery for OpenAI $label",
-    ({ baseUrl, modelBaseUrl, native, plugins }) => {
+    ({ baseUrl, modelBaseUrl, plugins }) => {
       const filtered = selectedTools(baseTools, {
         config: {
           plugins,
@@ -104,34 +107,17 @@ describe("applyModelProviderToolPolicy", () => {
         modelId: "gpt-5.4",
       });
 
-      expect(toolNames(filtered)).toEqual(
-        native ? ["read", "exec"] : ["read", "web_search", "exec"],
-      );
+      expect(toolNames(filtered)).toEqual(baseTools);
       const catalogRef = createToolSearchCatalogRef();
       registerHeadlessToolSearchCatalog({ catalogRef, tools: filtered });
       const projection = createCodeModeCatalogProjection(catalogRef.current?.entries ?? []);
-      expect(projection.byCallableName.has("web_search")).toBe(!native);
+      expect(projection.byCallableName.has("web_search")).toBe(true);
     },
   );
 
-  it.each([
-    {
-      name: "authenticated direct",
-      modelProvider: "openai",
-      auth: true,
-      suppressManagedWebSearch: undefined,
-      native: true,
-    },
-    {
-      name: "direct without auth-profile metadata",
-      modelProvider: "openai",
-      auth: false,
-      suppressManagedWebSearch: undefined,
-      native: true,
-    },
-  ])(
-    "selects the admitted Codex transport's search route for $name",
-    ({ modelProvider, auth, suppressManagedWebSearch, native }) => {
+  it.each([true, false])(
+    "selects the admitted Codex transport's search route (auth metadata: %s)",
+    (auth) => {
       const filtered = selectedTools(baseTools, {
         config: {
           tools: {
@@ -141,25 +127,17 @@ describe("applyModelProviderToolPolicy", () => {
             ? { auth: { profiles: { "openai:default": { provider: "openai", mode: "oauth" } } } }
             : {}),
         },
-        modelProvider,
-        suppressManagedWebSearch,
+        modelProvider: "openai",
         modelApi: "openai-chatgpt-responses",
         modelId: "gpt-5.4",
       });
-      expect(toolNames(filtered)).toEqual(
-        native ? ["read", "exec"] : ["read", "web_search", "exec"],
-      );
+      expect(toolNames(filtered)).toEqual(["read", "exec"]);
     },
   );
 
   it("applies inherited lean mode to the session agent", () => {
     const filtered = selectedTools(["read", "browser", "automations", "message", "exec"], {
-      config: {
-        agents: {
-          defaults: { experimental: { localModelLean: true } },
-          entries: { main: { experimental: { localModelLean: false } }, gemma: {} },
-        },
-      },
+      config: leanConfig,
       sessionKey: "agent:gemma:main",
       modelProvider: "lmstudio",
       modelApi: "openai-compatible",
@@ -171,22 +149,7 @@ describe("applyModelProviderToolPolicy", () => {
 
   it("lets a current agent disable inherited lean local-model mode", () => {
     const filtered = selectedTools(["read", "browser", "automations", "message", "exec"], {
-      config: {
-        agents: {
-          defaults: {
-            experimental: {
-              localModelLean: true,
-            },
-          },
-          entries: {
-            main: {
-              experimental: {
-                localModelLean: false,
-              },
-            },
-          },
-        },
-      },
+      config: leanConfig,
       agentId: "main",
       modelProvider: "openai",
       modelApi: "openai-responses",

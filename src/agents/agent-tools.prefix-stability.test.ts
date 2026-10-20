@@ -1,6 +1,4 @@
-// Prompt-cache invariant: within one session, every turn kind offers the same tool surface.
-// Provider prefix caches key on the tool definitions first, so a per-turn difference in a
-// tool's name, description or schema misses the cache for the whole request.
+// Prompt-cache invariant: per-turn facts must not change tool definitions.
 import path from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
@@ -33,55 +31,43 @@ const session: ToolOptions = {
   workspaceDir: "/tmp/openclaw-prefix-stability",
   messageProvider: "telegram",
   messageTo: "telegram:owner",
+  trigger: "user",
+  senderIsOwner: false,
+  sourceReplyDeliveryMode: "automatic",
 };
 
 // Per-turn facts, as each caller sets them today.
+function completionTurn(sourceTool: string): ToolOptions {
+  return {
+    ...session,
+    runId: `run-${sourceTool}`,
+    inputProvenance: { kind: "inter_session", sourceChannel: "internal", sourceTool },
+  };
+}
 const turns: Record<string, ToolOptions> = {
   user: {
     ...session,
     runId: "run-user",
-    trigger: "user",
     senderId: "owner",
     senderIsOwner: true,
-    sourceReplyDeliveryMode: "automatic",
   },
   subagentCompletion: {
-    ...session,
-    runId: "run-subagent-completion",
-    trigger: "user",
-    senderIsOwner: false,
-    inputProvenance: {
-      kind: "inter_session",
-      sourceChannel: "internal",
-      sourceTool: "subagent_announce",
-    },
+    ...completionTurn("subagent_announce"),
     sourceReplyDeliveryMode: "message_tool_only",
   },
-  mediaCompletion: {
-    ...session,
-    runId: "run-media-completion",
-    trigger: "user",
-    senderIsOwner: false,
-    inputProvenance: {
-      kind: "inter_session",
-      sourceChannel: "internal",
-      sourceTool: "image_generate",
-    },
-    sourceReplyDeliveryMode: "automatic",
-  },
+  mediaCompletion: completionTurn("image_generate"),
   heartbeat: {
     ...session,
     runId: "run-heartbeat",
     trigger: "heartbeat",
-    senderIsOwner: false,
     enableHeartbeatTool: true,
     forceHeartbeatTool: true,
     sourceReplyDeliveryMode: "message_tool_only",
   },
 };
 
-function toolSurface(options: ToolOptions) {
-  return createOpenClawCodingTools(options).map((tool) =>
+function surface(tools: ReturnType<typeof createOpenClawCodingTools>) {
+  return tools.map((tool) =>
     JSON.stringify({ name: tool.name, description: tool.description, parameters: tool.parameters }),
   );
 }
@@ -93,25 +79,12 @@ beforeEach(() => {
 afterEach(() => clearRuntimeConfigSnapshot());
 
 describe("session tool surface", () => {
-  const baseline = () => toolSurface(turns.user!);
+  const baseline = () => surface(createOpenClawCodingTools(turns.user!));
 
   it.each(Object.keys(turns).filter((kind) => kind !== "user"))(
     "offers the user turn's exact tool definitions on a %s turn",
     (kind) => {
-      const surface = toolSurface(turns[kind]!);
-      const expected = baseline();
-      const names = (list: string[]) => list.map((entry) => JSON.parse(entry).name as string);
-      const changed = names(expected).filter(
-        (name) =>
-          !surface.includes(expected[names(expected).indexOf(name)]!) &&
-          names(surface).includes(name),
-      );
-      expect({
-        missing: names(expected).filter((name) => !names(surface).includes(name)),
-        extra: names(surface).filter((name) => !names(expected).includes(name)),
-        changed,
-      }).toEqual({ missing: [], extra: [], changed: [] });
-      expect(surface).toEqual(expected);
+      expect(surface(createOpenClawCodingTools(turns[kind]!))).toEqual(baseline());
     },
   );
 });
@@ -119,17 +92,13 @@ describe("session tool surface", () => {
 describe("source-bound completion tool surface", () => {
   // A completion handoff is source-bound; the message tool enforces that per call.
   const assemble = (sourceReplyOnly: boolean) =>
-    createOpenClawTools({
-      config,
-      agentSessionKey: session.sessionKey,
-      agentChannel: "telegram",
-      agentTo: "telegram:owner",
-      sourceReplyOnly,
-    }).map((tool) =>
-      JSON.stringify({
-        name: tool.name,
-        description: tool.description,
-        parameters: tool.parameters,
+    surface(
+      createOpenClawTools({
+        config,
+        agentSessionKey: session.sessionKey,
+        agentChannel: "telegram",
+        agentTo: "telegram:owner",
+        sourceReplyOnly,
       }),
     );
 
@@ -199,14 +168,6 @@ describe("verified subagent completion handoff tool surface", () => {
       config: handoffConfig,
       sessionId: "requester-session",
     });
-    const surface = (tools: typeof user) =>
-      tools.map((tool) =>
-        JSON.stringify({
-          name: tool.name,
-          description: tool.description,
-          parameters: tool.parameters,
-        }),
-      );
     expect(surface(completion)).toEqual(surface(user));
     const refused = await completion
       .find((tool) => tool.name === "write")!

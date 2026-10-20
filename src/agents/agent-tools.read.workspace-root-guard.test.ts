@@ -28,7 +28,19 @@ function createToolHarness() {
     parameters: Type.Object({}),
     execute,
   };
-  return { tool, execute };
+  return {
+    tool,
+    execute,
+    guard: (options?: Parameters<typeof wrapToolWorkspaceRootGuardWithOptions>[2]) =>
+      wrapToolWorkspaceRootGuardWithOptions(tool, root, options),
+  };
+}
+function expectGuard(filePath: string, guardRoot = root) {
+  expect(mocks.assertSandboxPath).toHaveBeenCalledWith({
+    filePath,
+    cwd: guardRoot,
+    root: guardRoot,
+  });
 }
 beforeEach(() => {
   mocks.assertSandboxPath.mockReset().mockImplementation(async ({ filePath }) => ({
@@ -48,65 +60,53 @@ describe("workspace root guard", () => {
     ["file:///workspace/%2FREADME.md", "file:///workspace/%2FREADME.md"],
     ["/workspace-two/secret.txt", "/workspace-two/secret.txt"],
   ])("guards normalized path %s", async (input, expected) => {
-    const { tool, execute } = createToolHarness();
-    const wrapped = wrapToolWorkspaceRootGuardWithOptions(tool, root, {
+    const { guard, execute } = createToolHarness();
+    const wrapped = guard({
       containerWorkdir: "/workspace",
       normalizeGuardedPathParams: true,
     });
     await wrapped.execute("path", { path: input });
-    expect(mocks.assertSandboxPath).toHaveBeenCalledWith({ filePath: expected, cwd: root, root });
+    expectGuard(expected);
     expect(execute).toHaveBeenCalledWith("path", { path: expected }, undefined, undefined);
   });
 
   it("adds a workspace-safe hint without executing a rejected path", async () => {
-    const { tool, execute } = createToolHarness();
+    const { guard, execute } = createToolHarness();
     mocks.assertSandboxPath.mockRejectedValueOnce(
       new Error("Path escapes sandbox root (/tmp/root): /tmp/meta.jsonl"),
     );
-    await expect(
-      wrapToolWorkspaceRootGuardWithOptions(tool, root).execute("escape", {
-        path: "/tmp/meta.jsonl",
-      }),
-    ).rejects.toThrow(
+    await expect(guard().execute("escape", { path: "/tmp/meta.jsonl" })).rejects.toThrow(
       /Path escapes sandbox root .* Use a relative path under `.openclaw\/tmp\/` inside the workspace/,
     );
     expect(execute).not.toHaveBeenCalled();
   });
 
   it("normalizes traversal before selecting an overlapping mount", async () => {
-    const { tool } = createToolHarness();
-    await wrapToolWorkspaceRootGuardWithOptions(tool, root, {
+    const { guard } = createToolHarness();
+    await guard({
       containerMounts: [
         { containerRoot: "/workspace/skills", hostRoot: path.resolve("/tmp/skill-root") },
         { containerRoot: "/workspace", hostRoot: root },
       ],
       containerWorkdir: "/workspace",
     }).execute("traverse", { path: "/workspace/skills/../README.md" });
-    expect(mocks.assertSandboxPath).toHaveBeenCalledWith({
-      filePath: path.resolve(root, "README.md"),
-      cwd: root,
-      root,
-    });
+    expectGuard(path.resolve(root, "README.md"));
   });
 
   it("guards a file URL against its additional mount root", async () => {
-    const { tool } = createToolHarness();
+    const { guard } = createToolHarness();
     const agentRoot = path.resolve("/tmp/agent-root");
-    await wrapToolWorkspaceRootGuardWithOptions(tool, root, {
+    await guard({
       containerMounts: [{ containerRoot: "/agent", hostRoot: agentRoot }],
       containerWorkdir: "/workspace",
     }).execute("mount", { path: "file:///agent/docs/readme.md" });
-    expect(mocks.assertSandboxPath).toHaveBeenCalledWith({
-      filePath: path.resolve(agentRoot, "docs/readme.md"),
-      cwd: agentRoot,
-      root: agentRoot,
-    });
+    expectGuard(path.resolve(agentRoot, "docs/readme.md"), agentRoot);
   });
 
   it.each(["legacy", "miss", "mapped"] as const)(
     "honors %s bridge admission without inferring a namespace",
     async (mode) => {
-      const { execute, tool } = createToolHarness();
+      const { execute, guard } = createToolHarness();
       const mapping = { hostRoot: root, containerRoot: "C:\\NativeWorkspace" };
       const pathMappings = mode === "legacy" ? undefined : [mapping];
       const containerPath =
@@ -119,7 +119,7 @@ describe("workspace root guard", () => {
         }),
         pathMappings,
       );
-      const wrapped = wrapToolWorkspaceRootGuardWithOptions(tool, root, {
+      const wrapped = guard({
         bridge,
         containerWorkdir: "C:\\NativeWorkspace",
         normalizeGuardedPathParams: true,
@@ -133,11 +133,7 @@ describe("workspace root guard", () => {
         return;
       }
       await wrapped.execute("admission", { path: "note.txt" });
-      expect(mocks.assertSandboxPath).toHaveBeenCalledWith({
-        filePath: mode === "legacy" ? "note.txt" : path.join(root, "note.txt"),
-        cwd: root,
-        root,
-      });
+      expectGuard(mode === "legacy" ? "note.txt" : path.join(root, "note.txt"));
       expect(execute).toHaveBeenCalledWith(
         "admission",
         {
@@ -150,12 +146,9 @@ describe("workspace root guard", () => {
   );
 
   it("rejects custom paths emptied by suffix stripping", async () => {
-    const { tool, execute } = createToolHarness();
+    const { guard, execute } = createToolHarness();
     await expect(
-      wrapToolWorkspaceRootGuardWithOptions(tool, root, { pathParamKeys: ["outPath"] }).execute(
-        "empty",
-        { outPath: "</arg_value>>" },
-      ),
+      guard({ pathParamKeys: ["outPath"] }).execute("empty", { outPath: "</arg_value>>" }),
     ).rejects.toThrow(/Malformed path parameter: outPath/);
     expect(mocks.assertSandboxPath).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();
