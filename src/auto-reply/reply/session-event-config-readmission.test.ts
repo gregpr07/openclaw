@@ -143,6 +143,7 @@ it.for([
   "scheduled-control",
   "scheduled-revoked",
   "scheduled-model-revoked",
+  "scheduled-model-malformed",
 ] as const)(
   "re-admits accepted deferred work after a config publication: %s",
   async (scenario, { signal }) => {
@@ -151,7 +152,7 @@ it.for([
       async (state) => {
         const config = completionConfig(state.workspaceDir);
         const explicitScheduledModel =
-          scenario === "scheduled-control" || scenario === "scheduled-model-revoked";
+          scenario === "scheduled-control" || scenario.startsWith("scheduled-model-");
         if (explicitScheduledModel) {
           config.agents = {
             ...config.agents,
@@ -258,7 +259,14 @@ it.for([
                       payload: {
                         kind: "agentTurn" as const,
                         message: "Background exec completed",
-                        ...(explicitScheduledModel ? { model: "mock-openai/gpt-5.6-sol" } : {}),
+                        ...(explicitScheduledModel
+                          ? {
+                              model:
+                                scenario === "scheduled-model-malformed"
+                                  ? "openai/"
+                                  : "mock-openai/gpt-5.6-sol",
+                            }
+                          : {}),
                       },
                       state: {},
                     },
@@ -286,8 +294,12 @@ it.for([
             },
           });
           sourceReferences--;
-          // The active turn accepts the completion as a deferred follow-up.
-          await expect(completion.accepted).resolves.toEqual({ ok: true });
+          // Invalid explicit models fail before even becoming a deferred follow-up.
+          if (scenario === "scheduled-model-malformed") {
+            await expect(completion.accepted).resolves.toMatchObject({ ok: false });
+          } else {
+            await expect(completion.accepted).resolves.toEqual({ ok: true });
+          }
           setRuntimeConfigSnapshot({
             ...config,
             ...(scenario === "scheduled-model-revoked"
@@ -309,7 +321,9 @@ it.for([
           releaseFirst.resolve();
           await expect(first.settled).resolves.toMatchObject({ status: "completed" });
           const executes =
-            scenario !== "publication-storm" && scenario !== "scheduled-model-revoked" && !revoked;
+            scenario !== "publication-storm" &&
+            !scenario.startsWith("scheduled-model-") &&
+            !revoked;
           const completedOutcome = await completion.settled;
           expect(completedOutcome, completedOutcome.error).toMatchObject({
             status: executes ? "completed" : "failed",
@@ -320,6 +334,9 @@ it.for([
             expect(completedOutcome.error).toContain(
               'Scheduled model "mock-openai/gpt-5.6-sol" is not allowed',
             );
+          }
+          if (scenario === "scheduled-model-malformed") {
+            expect(completedOutcome.error).toContain('Invalid model override "openai/"');
           }
           if (executes) {
             expect(prompts[1]).toContain("Background exec completed");

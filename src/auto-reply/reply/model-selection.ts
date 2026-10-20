@@ -117,8 +117,9 @@ export function resolveTurnModelSelection(params: {
   >;
 }) {
   const { options } = params;
+  const explicitModel = normalizeOptionalString(options?.modelOverride);
   const raw =
-    normalizeOptionalString(options?.modelOverride) ??
+    explicitModel ??
     (options?.isHeartbeat
       ? (normalizeOptionalString(options.heartbeatModelOverride) ??
         normalizeOptionalString(params.configuredHeartbeatModel))
@@ -134,6 +135,11 @@ export function resolveTurnModelSelection(params: {
     aliasIndex: params.aliasIndex,
   });
   if (!resolved) {
+    if (explicitModel) {
+      throw new Error(
+        `Invalid model override "${explicitModel}". Use a valid provider/model or model alias.`,
+      );
+    }
     return undefined;
   }
   const profileId = splitTrailingAuthProfile(raw).profile;
