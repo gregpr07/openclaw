@@ -577,7 +577,9 @@ try {
     const pathname = new URL(route.request().url()).pathname;
     const asset = assets.get(pathname);
     if (asset && values["dashboard-widget"] && pathname.startsWith("/__openclaw__/board/")) {
-      await new Promise((resolve) => setTimeout(resolve, latencyMs));
+      await new Promise((resolve) => {
+        setTimeout(resolve, latencyMs);
+      });
     }
     return asset
       ? route.fulfill({
@@ -804,7 +806,9 @@ try {
     }
     await page.route(/\/assets\/history-state-[^/]+\.js(?:\?.*)?$/u, async (route) => {
       historyValidatorRequests++;
-      await new Promise((resolve) => setTimeout(resolve, historyValidatorDelayMs));
+      await new Promise((resolve) => {
+        setTimeout(resolve, historyValidatorDelayMs);
+      });
       await route.fallback();
     });
   }
@@ -939,11 +943,11 @@ try {
           ? [{ ts: event.ts, data: event.args.snapshot }]
           : [],
       )
-      .sort((a, b) => a.ts - b.ts);
-    const navigationStartUs = trace.find(
+      .toSorted((a, b) => a.ts - b.ts);
+    const traceNavigationStartUs = trace.find(
       (event) => event.name === "navigationStart" && event.args?.data?.isLoadingMainFrame === true,
     )?.ts;
-    if (values["filmstrip-only"] && navigationStartUs === undefined) {
+    if (values["filmstrip-only"] && traceNavigationStartUs === undefined) {
       throw new Error("Filmstrip has no main-frame navigation timestamp");
     }
     if (values["warm-reload"] && screenshots.length) {
@@ -1026,7 +1030,11 @@ try {
           navigationStartUs,
         };
       },
-      { frames: screenshots, navigationStartUs, marker: values["dashboard-paint-marker"] },
+      {
+        frames: screenshots,
+        navigationStartUs: traceNavigationStartUs,
+        marker: values["dashboard-paint-marker"],
+      },
     );
     if (
       captureTrace &&

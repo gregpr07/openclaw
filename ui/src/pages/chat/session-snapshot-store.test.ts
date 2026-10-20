@@ -180,7 +180,7 @@ describe("persistent chat session snapshots", () => {
     const sessionKey = key("agent:main:retired-dashboard");
     await persist(writer, sessionKey, {
       ...snapshot("retired conversation"),
-      historyState: { stateRevision: {}, commands: [], models: [] },
+      historyState: { stateRevision: {}, commands: [] },
       board: {
         snapshot: { sessionKey: rawKey(sessionKey), revision: 1, tabs: [], widgets: [] },
         receivedAtMs: 100,

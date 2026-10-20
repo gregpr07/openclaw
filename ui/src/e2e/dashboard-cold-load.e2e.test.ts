@@ -230,7 +230,9 @@ suite.define(() => {
             const savedHistory = await page.evaluate(async (expectedSessionKey) => {
               const open = indexedDB.open("openclaw-chat-snapshots");
               return await new Promise<unknown>((resolve, reject) => {
-                open.addEventListener("error", () => reject(open.error));
+                open.addEventListener("error", () =>
+                  reject(open.error ?? new Error("Boot snapshot open failed")),
+                );
                 open.addEventListener("success", () => {
                   const db = open.result;
                   const transaction = db.transaction("snapshots", "readonly");
