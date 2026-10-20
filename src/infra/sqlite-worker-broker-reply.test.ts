@@ -8,9 +8,22 @@ import { createDeferredCore } from "../shared/deferred.js";
 import { encodeOpenClawStateWorkerError } from "../state/openclaw-state-worker-error.js";
 import { receiveSqliteWorkerReply } from "./sqlite-worker-broker-reply.js";
 import type { Actor, Job } from "./sqlite-worker-broker.types.js";
-import type { SqliteWorkerCloseReceipt } from "./sqlite-worker-contract.js";
+import type { SqliteWorkerCloseReceipt, SqliteWorkerReply } from "./sqlite-worker-contract.js";
 import { SqliteWorkerSlotCustody } from "./sqlite-worker-request-custody.js";
 import { createSqliteWorkerTransferOwner } from "./sqlite-worker-transfer.js";
+
+function createJob(request: Job["request"], unexpected: () => never): Job {
+  return {
+    request,
+    custody: new SqliteWorkerSlotCustody().createRequest(),
+    observation: { started() {}, completed() {} },
+    bytes: 0,
+    result: createDeferredCore().promise,
+    resolve: unexpected,
+    reject: unexpected,
+    detach: unexpected,
+  };
+}
 
 it.each(["valid", "framed", "close", "mismatched", "unsafe", "malformed"])(
   "publishes worker receipts before settling its %s reply",
@@ -56,19 +69,12 @@ it.each(["valid", "framed", "close", "mismatched", "unsafe", "malformed"])(
           },
         },
       };
-      const job: Job = {
-        custody: new SqliteWorkerSlotCustody().createRequest(),
-        observation: { started() {}, completed() {} },
-        request:
-          kind === "close"
-            ? { type: "close", id: 1, actor: 1 }
-            : { type: "execute", id: 1, actor: 1, input: new Uint8Array() },
-        bytes: 0,
-        result: createDeferredCore().promise,
-        resolve: unexpected,
-        reject: unexpected,
-        detach: unexpected,
-      };
+      const job = createJob(
+        kind === "close"
+          ? { type: "close", id: 1, actor: 1 }
+          : { type: "execute", id: 1, actor: 1, input: new Uint8Array() },
+        unexpected,
+      );
       const finish = vi.fn(() => {
         expect(getEnvironmentData(key)).toEqual(
           kind === "valid" || kind === "framed" || kind === "close" ? receipt : undefined,
@@ -83,37 +89,26 @@ it.each(["valid", "framed", "close", "mismatched", "unsafe", "malformed"])(
       const postMessage = vi.fn();
       const slot = { actors: new Set([actor]), current: job, worker: { postMessage } };
       const owner = { fail: unexpected, finish, dispatch() {} };
+      const reply = (
+        value: unknown,
+        extra: Partial<Extract<SqliteWorkerReply, { ok: true }>> = {},
+      ) =>
+        receiveSqliteWorkerReply(
+          slot,
+          { id: 1, ok: true, value: serialize(value), nativeRuntimeAdmission: forwarded, ...extra },
+          owner,
+        );
       if (kind === "framed") {
         const producer = createSqliteWorkerTransferOwner();
         const handle = producer.start([{ kind: "result", value: "committed" }].values(), {
           kinds: ["result"],
         });
-        receiveSqliteWorkerReply(
-          slot,
-          {
-            id: 1,
-            ok: true,
-            value: serialize(handle),
-            transfer: "start",
-            nativeRuntimeAdmission: forwarded,
-          },
-          owner,
-        );
+        reply(handle, { transfer: "start" });
         expect(getEnvironmentData(key)).toBeUndefined();
         let frame;
         do {
           frame = producer.next(handle.id);
-          receiveSqliteWorkerReply(
-            slot,
-            {
-              id: 1,
-              ok: true,
-              value: serialize(frame),
-              transfer: "frame",
-              nativeRuntimeAdmission: forwarded,
-            },
-            owner,
-          );
+          reply(frame, { transfer: "frame" });
           if (!frame.done) {
             expect(getEnvironmentData(key)).toBeUndefined();
             expect(finish).not.toHaveBeenCalled();
@@ -122,17 +117,7 @@ it.each(["valid", "framed", "close", "mismatched", "unsafe", "malformed"])(
         producer.end(handle.id);
         expect(postMessage).toHaveBeenCalledTimes(2);
       } else {
-        receiveSqliteWorkerReply(
-          slot,
-          {
-            id: 1,
-            ok: true,
-            value: serialize("committed"),
-            nativeRuntimeAdmission: forwarded,
-            ...(kind === "close" ? { closeReceipt } : {}),
-          },
-          owner,
-        );
+        reply("committed", kind === "close" ? { closeReceipt } : {});
         expect(postMessage).not.toHaveBeenCalled();
       }
       expect(finish).toHaveBeenCalledWith(job, undefined, "committed");
@@ -154,16 +139,10 @@ it("hydrates cached-context execute-frame errors without an explicit request con
   const unexpected = () => {
     throw new Error("Failed continuation must not dispatch or finish successfully");
   };
-  const job: Job = {
-    custody: new SqliteWorkerSlotCustody().createRequest(),
-    observation: { started() {}, completed() {} },
-    request: { type: "execute-frame", id: 1, actor: 1, input: new Uint8Array() },
-    bytes: 0,
-    result: createDeferredCore().promise,
-    resolve: unexpected,
-    reject: unexpected,
-    detach: unexpected,
-  };
+  const job = createJob(
+    { type: "execute-frame", id: 1, actor: 1, input: new Uint8Array() },
+    unexpected,
+  );
   let failure: unknown;
 
   receiveSqliteWorkerReply(

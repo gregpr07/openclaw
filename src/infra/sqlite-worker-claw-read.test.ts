@@ -30,38 +30,24 @@ function context() {
   });
 }
 
+const emptyInventory = {
+  installs: [],
+  packages: [],
+  workspaceFiles: [],
+  mcpServers: [],
+  cronJobs: [],
+};
+
 describe("Claw read-only worker", () => {
-  it("does not create shared state for a missing Claw inventory", async () => {
+  it.each([false, true])("reads an empty inventory (existing database: %s)", async (existing) => {
     const captured = context();
-    await expect(
-      readClawInventory({ path: captured.admission.databasePath, env: captured.environment }),
-    ).resolves.toEqual({
-      installs: [],
-      packages: [],
-      workspaceFiles: [],
-      mcpServers: [],
-      cronJobs: [],
-    });
-    expect(existsSync(captured.admission.databasePath)).toBe(false);
-  });
-
-  it("reads an empty Claw inventory through the independent read-only worker", async () => {
-    const initial = context();
-    openOpenClawStateDatabase({
-      path: initial.admission.databasePath,
-      env: initial.environment,
-    });
-    await closeOpenClawStateDatabaseAsync();
-
-    await expect(
-      readClawInventory({ path: initial.admission.databasePath, env: initial.environment }),
-    ).resolves.toEqual({
-      installs: [],
-      packages: [],
-      workspaceFiles: [],
-      mcpServers: [],
-      cronJobs: [],
-    });
+    const options = { path: captured.admission.databasePath, env: captured.environment };
+    if (existing) {
+      openOpenClawStateDatabase(options);
+      await closeOpenClawStateDatabaseAsync();
+    }
+    await expect(readClawInventory(options)).resolves.toEqual(emptyInventory);
+    expect(existsSync(options.path)).toBe(existing);
   });
 
   it("preserves installed Claw and plugin extension facts through the read-only worker", async () => {
@@ -131,11 +117,9 @@ describe("Claw read-only worker", () => {
     await closeOpenClawStateDatabaseAsync();
 
     await expect(readClawInventory({ env })).resolves.toEqual({
+      ...emptyInventory,
       installs: [install],
       packages: [pkg],
-      workspaceFiles: [],
-      mcpServers: [],
-      cronJobs: [],
     });
   });
 });

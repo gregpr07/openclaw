@@ -19,6 +19,17 @@ import { useSqliteWorkerStoreFixture } from "./sqlite-worker-fixture.test-suppor
 import { SqliteWorkerInputAdmission } from "./sqlite-worker-input-admission.js";
 import type { FixtureOperations } from "./sqlite-worker-store.test-support.js";
 
+function inputAdmission() {
+  return new SqliteWorkerInputAdmission({
+    queuedBytes: () => 0,
+    isClosing: () => false,
+    maxQueuedBytes: 1024,
+    maxQueuedInputBytes: 1024,
+    maxMessageBytes: 1024,
+    maxPendingOpens: 2,
+  });
+}
+
 function capacityFixture() {
   const reservations = new Set<object>();
   const retirement = createDeferredCore();
@@ -101,14 +112,7 @@ it("propagates retirement failure without admitting a replacement", async () => 
 });
 
 it.each(["queued", "reused"] as const)("bounds and drains pending %s opens", async (kind) => {
-  const admission = new SqliteWorkerInputAdmission({
-    queuedBytes: () => 0,
-    isClosing: () => false,
-    maxQueuedBytes: 1024,
-    maxQueuedInputBytes: 1024,
-    maxMessageBytes: 1024,
-    maxPendingOpens: 2,
-  });
+  const admission = inputAdmission();
   const finish = createDeferredCore();
   let finished = false;
   const open = async () => {
@@ -136,14 +140,7 @@ it.each(["queued", "reused"] as const)("bounds and drains pending %s opens", asy
 });
 
 it("admits cold shared state while an agent opens, with one shared input budget", async () => {
-  const admission = new SqliteWorkerInputAdmission({
-    queuedBytes: () => 0,
-    isClosing: () => false,
-    maxQueuedBytes: 1024,
-    maxQueuedInputBytes: 1024,
-    maxMessageBytes: 1024,
-    maxPendingOpens: 2,
-  });
+  const admission = inputAdmission();
   const finishAgent = createDeferredCore();
   const sharedStarted = createDeferredCore();
   const finishShared = createDeferredCore();

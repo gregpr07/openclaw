@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { SqliteWorkerBroker } from "./sqlite-worker-broker.js";
+import { readWorkerRows } from "./sqlite-worker-fixture.test-support.js";
 import type { FixtureOperations } from "./sqlite-worker-store.test-support.js";
 
 const MIB = 1024 * 1024;
@@ -41,12 +42,20 @@ function reserveConcurrentInputs(broker: SqliteWorkerBroker) {
   }
 }
 
-async function open(broker: SqliteWorkerBroker) {
-  const store = await broker.open<FixtureOperations>({
+function storeOptions(input?: string) {
+  return {
     moduleUrl: new URL("./sqlite-worker-store.test-support.ts", import.meta.url),
     databasePath: path.join(dirs.make("sqlite-input-preparation-"), "store.sqlite"),
-    input: undefined,
-  });
+    input,
+  };
+}
+
+function expectOverloaded(run: () => unknown) {
+  expect(run).toThrow(expect.objectContaining({ code: "overloaded" }));
+}
+
+async function open(broker: SqliteWorkerBroker) {
+  const store = await broker.open<FixtureOperations>(storeOptions());
   if (!store) {
     throw new Error("Fixture store did not open");
   }
@@ -82,9 +91,7 @@ it.each(["manual release", "handoff", "serialization failure"] as const)(
       await expect(result).rejects.toBeInstanceOf(Error);
     } else {
       // A dispatched command retains its byte charge until the worker replies.
-      expect(() => broker.reserveInputPreparation(64 * MIB)).toThrow(
-        expect.objectContaining({ code: "overloaded" }),
-      );
+      expectOverloaded(() => broker.reserveInputPreparation(64 * MIB));
       await expect(result).resolves.toMatchObject({ writes: 1 });
     }
     prepared.release();
@@ -95,7 +102,7 @@ it.each(["manual release", "handoff", "serialization failure"] as const)(
       expect.objectContaining({ code: "closed" }),
     );
     expect(dispatchAgain).not.toHaveBeenCalled();
-    expect(await store.execute({ type: "read", input: undefined })).toEqual(
+    expect(await readWorkerRows(store)).toEqual(
       mode === "serialization failure" ? [] : ["captured at handoff"],
     );
   },
@@ -109,20 +116,15 @@ it.each([
   async ({ reservedMiB, inputMiB, preparationMiB }) => {
     const broker = createBroker();
     reserveConcurrentInputs(broker);
-    const databasePath = path.join(dirs.make("sqlite-opening-budget-"), "store.sqlite");
     const prepared = reserveInput(broker, reservedMiB);
-    const options = {
-      moduleUrl: new URL("./sqlite-worker-store.test-support.ts", import.meta.url),
-      databasePath,
-      input: "x".repeat(inputMiB * MIB),
-    };
+    const options = storeOptions("x".repeat(inputMiB * MIB));
     try {
       await expect(
         broker.open<FixtureOperations>(options, undefined, undefined, {
           preparation: "y".repeat(preparationMiB * MIB),
         }),
       ).rejects.toMatchObject({ code: "overloaded" });
-      expect(existsSync(databasePath)).toBe(false);
+      expect(existsSync(options.databasePath)).toBe(false);
     } finally {
       prepared.release();
     }
@@ -140,14 +142,12 @@ it.each(["stream", "snapshot"] as const)(
     const first = reserveInput(broker, 100, retention === "snapshot" ? retention : undefined);
     const second = reserve(100);
     if (retention === "snapshot") {
-      expect(() => reserve(100)).toThrow(expect.objectContaining({ code: "overloaded" }));
+      expectOverloaded(() => reserve(100));
       reserve(56);
     } else {
       reserveConcurrentInputs(broker);
     }
-    expect(() => broker.reserveInputPreparation(1)).toThrow(
-      expect.objectContaining({ code: "overloaded" }),
-    );
+    expectOverloaded(() => broker.reserveInputPreparation(1));
     if (retention === "snapshot") {
       const reason = new Error("snapshot canceled before dispatch");
       await expect(first.handoff(() => Promise.reject(reason))).rejects.toBe(reason);
@@ -156,15 +156,11 @@ it.each(["stream", "snapshot"] as const)(
     first.release();
     const charge = retention === "snapshot" ? 100 : 32;
     reserve(charge);
-    expect(() => broker.reserveInputPreparation(1)).toThrow(
-      expect.objectContaining({ code: "overloaded" }),
-    );
+    expectOverloaded(() => broker.reserveInputPreparation(1));
     second.release();
     second.release();
     reserve(charge);
-    expect(() => broker.reserveInputPreparation(1)).toThrow(
-      expect.objectContaining({ code: "overloaded" }),
-    );
+    expectOverloaded(() => broker.reserveInputPreparation(1));
   },
 );
 
