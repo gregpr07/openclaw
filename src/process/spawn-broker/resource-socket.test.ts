@@ -1,7 +1,7 @@
 import { once } from "node:events";
 import { connect, createServer, type Socket } from "node:net";
 import { serialize } from "node:v8";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { reserveTestPortListener } from "../../test-utils/port-claims.js";
 import { MAX_PENDING_BYTES } from "./ipc.js";
@@ -55,6 +55,17 @@ function packet(value: unknown) {
   return Buffer.concat([header, payload]);
 }
 
+function recordSocket(socket: Socket) {
+  const closed = createDeferredCore<Error | undefined>();
+  const messages: unknown[] = [];
+  const close = vi.fn(closed.resolve);
+  const transport = createBrokerResourceSocket(socket, {
+    message: (value) => messages.push(value),
+    close,
+  });
+  return { closed: closed.promise, messages, close, transport };
+}
+
 describe("spawn broker resource socket", () => {
   it("reassembles large broker messages in order and preserves undefined in both directions", async () => {
     const { client, peer } = await socketPair();
@@ -87,16 +98,7 @@ describe("spawn broker resource socket", () => {
 
   it("accepts split headers and coalesced records, then reports actual peer EOF once", async () => {
     const { client, peer } = await socketPair();
-    const closed = createDeferredCore<Error | undefined>();
-    const messages: unknown[] = [];
-    let closes = 0;
-    const transport = createBrokerResourceSocket(client, {
-      message: (value) => messages.push(value),
-      close: (error) => {
-        closes++;
-        closed.resolve(error);
-      },
-    });
+    const { closed, messages, close, transport } = recordSocket(client);
     const bytes = Buffer.concat([packet("first"), packet(undefined), packet({ last: true })]);
     for (const part of [bytes.subarray(0, 2), bytes.subarray(2, 9), bytes.subarray(9)]) {
       const received = once(client, "data");
@@ -106,27 +108,22 @@ describe("spawn broker resource socket", () => {
       await received;
     }
     peer.end();
-    expect(await closed.promise).toBeUndefined();
+    expect(await closed).toBeUndefined();
     expect(messages).toEqual(["first", undefined, { last: true }]);
     await expect(transport.send("too late")).rejects.toThrow("socket closed");
     transport.close();
-    expect(closes).toBe(1);
+    expect(close).toHaveBeenCalledOnce();
   });
 
   it.each(["zero", "oversized", "truncated"] as const)(
     "rejects a %s byte frame without publishing a resource message",
     async (kind) => {
       const { client, peer } = await socketPair();
-      const closed = createDeferredCore<Error | undefined>();
-      const messages: unknown[] = [];
-      const transport = createBrokerResourceSocket(client, {
-        message: (value) => messages.push(value),
-        close: closed.resolve,
-      });
+      const { closed, messages, transport } = recordSocket(client);
       const bytes = Buffer.alloc(4);
       bytes.writeUInt32BE(kind === "zero" ? 0 : kind === "oversized" ? MAX_PENDING_BYTES + 1 : 8);
       peer.end(bytes);
-      expect(await closed.promise).toBeInstanceOf(Error);
+      expect(await closed).toBeInstanceOf(Error);
       expect(messages).toEqual([]);
       await expect(transport.send("after failure")).rejects.toThrow();
     },
@@ -135,16 +132,12 @@ describe("spawn broker resource socket", () => {
   it("rejects queued writes when the peer closes without reading them", async () => {
     const { client, peer } = await socketPair();
     peer.pause();
-    const closed = createDeferredCore();
-    const transport = createBrokerResourceSocket(client, {
-      message: () => {},
-      close: () => closed.resolve(),
-    });
+    const { closed, transport } = recordSocket(client);
     const writes = Promise.allSettled(
       [1, 2, 3].map((id) => transport.send({ id, bytes: Buffer.alloc(8 * 1024 * 1024) })),
     );
     peer.destroy();
-    await closed.promise;
+    await closed;
     expect((await writes).map((result) => result.status)).toEqual([
       "rejected",
       "rejected",

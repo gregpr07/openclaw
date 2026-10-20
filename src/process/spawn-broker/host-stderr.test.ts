@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { chmod, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -84,18 +85,13 @@ it.each([undefined, true] as const)(
     try {
       await host.ready();
       const error: unknown = await host.close().catch((failure: unknown) => failure);
-      expect(error).toBeInstanceOf(AggregateError);
-      if (!(error instanceof AggregateError)) {
-        throw new Error("Expected recorded broker shutdown failure");
-      }
+      assert(error instanceof AggregateError, "Expected recorded broker shutdown failure");
       const failure = error.errors.find(
         (entry: unknown): entry is SpawnBrokerError => entry instanceof SpawnBrokerError,
       );
       expect(failure?.message).toBe("Spawn broker shutdown failed");
       const cause = failure?.cause;
-      if (!(cause instanceof Error)) {
-        throw new Error("Expected broker exit error as shutdown cause");
-      }
+      assert(cause instanceof Error, "Expected broker exit error as shutdown cause");
       const message = cause.message;
       expect(message).toContain("exited with code=1 signal=none");
       expect(message).toContain("🦞 Spawn broker cleanup failed: synthetic cleanup failure");

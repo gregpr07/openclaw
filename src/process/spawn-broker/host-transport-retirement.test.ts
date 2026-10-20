@@ -73,7 +73,6 @@ function brokerFixture(bootstrapFailure?: SendFailure) {
   let exited = false;
   let exitCode: number | null = null;
   let signalCode: NodeJS.Signals | null = null;
-  let closed = false;
   const disconnect = vi.fn(() => {
     connected = false;
     worker.emit("disconnect");
@@ -134,12 +133,7 @@ function brokerFixture(bootstrapFailure?: SendFailure) {
         worker.emit("exit", code, signal);
       }
     },
-    close: () => {
-      if (!closed) {
-        closed = true;
-        output.destroy();
-      }
-    },
+    close: () => output.destroy(),
   };
   fixtures.push(fixture);
   return fixture;
