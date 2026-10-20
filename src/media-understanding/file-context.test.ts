@@ -11,60 +11,53 @@ import { extractFileContext, renderInboundDocumentContext } from "./file-context
 import { resolveFileExtractionLimits } from "./file-extraction-limits.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const greeting = "Привет €";
+const legacyText = "Café notes: résumé et météo pour demain.";
+
+async function localDocument(
+  text: string | Buffer,
+  fileName: string,
+  contentType: string,
+  named = false,
+) {
+  const workspaceDir = tempDirs.make("openclaw-document-context-");
+  const mediaPath = path.join(workspaceDir, fileName);
+  await fs.writeFile(mediaPath, text);
+  const ctx: MsgContext = {
+    Body: "see attached",
+    media: [{ path: mediaPath, contentType, ...(named ? { fileName } : {}) }],
+  };
+  return { ctx, workspaceDir, cfg: {} };
+}
 
 describe("remote document charset", () => {
   const cyrillic = Buffer.from([0xcf, 0xf0, 0xe8, 0xe2, 0xe5, 0xf2, 0x20, 0x88]);
-  const cases = [
-    {
-      name: "transport charset",
-      buffer: cyrillic,
-      header: "text/plain; charset=windows-1251",
-      expected: "Привет €",
-    },
-    {
-      name: "quoted transport alias",
-      buffer: cyrillic,
-      header: 'text/plain; charset="cp1251"',
-      expected: "Привет €",
-    },
-    {
-      name: "channel type without charset",
-      buffer: cyrillic,
-      header: "text/plain; charset=windows-1251",
-      mime: "text/plain",
-      expected: "Привет €",
-    },
-    {
-      name: "channel charset precedence",
-      buffer: cyrillic,
-      header: "text/plain; charset=windows-1251",
-      mime: "text/plain; charset=windows-1252",
-      expected: "Ïðèâåò ˆ",
-    },
-    {
-      name: "byte-detected UTF-16",
-      buffer: Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from("Привет €", "utf16le")]),
-      header: "text/plain; charset=windows-1251",
-      expected: "Привет €",
-    },
-    {
-      name: "UTF-8 default",
-      buffer: Buffer.from("Привет €"),
-      header: "text/plain",
-      expected: "Привет €",
-    },
-    {
-      name: "unknown charset fallback",
-      buffer: Buffer.from("Привет €"),
-      header: "text/plain; charset=not-an-encoding",
-      expected: "Привет €",
-    },
-    {
-      name: "inferred legacy text",
-      buffer: Buffer.from("Café notes: résumé et météo pour demain.", "latin1"),
-      header: "text/plain",
-      expected: "Café notes: résumé et météo pour demain.",
-    },
+  const transportCharset = "text/plain; charset=windows-1251";
+  const cases: [string, Buffer, string, string, string?][] = [
+    ["transport charset", cyrillic, transportCharset, greeting],
+    ["quoted transport alias", cyrillic, 'text/plain; charset="cp1251"', greeting],
+    ["channel type without charset", cyrillic, transportCharset, greeting, "text/plain"],
+    [
+      "channel charset precedence",
+      cyrillic,
+      transportCharset,
+      "Ïðèâåò ˆ",
+      "text/plain; charset=windows-1252",
+    ],
+    [
+      "byte-detected UTF-16",
+      Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(greeting, "utf16le")]),
+      transportCharset,
+      greeting,
+    ],
+    ["UTF-8 default", Buffer.from(greeting), "text/plain", greeting],
+    [
+      "unknown charset fallback",
+      Buffer.from(greeting),
+      "text/plain; charset=not-an-encoding",
+      greeting,
+    ],
+    ["inferred legacy text", Buffer.from(legacyText, "latin1"), "text/plain", legacyText],
   ];
   let fixture: Awaited<ReturnType<typeof reserveTestPortListener<ReturnType<typeof createServer>>>>;
 
@@ -79,8 +72,8 @@ describe("remote document charset", () => {
             response.writeHead(404).end();
             return;
           }
-          response.writeHead(200, { "Content-Type": entry.header });
-          response.end(entry.buffer);
+          response.writeHead(200, { "Content-Type": entry[2] });
+          response.end(entry[1]);
         }),
     });
   });
@@ -94,55 +87,52 @@ describe("remote document charset", () => {
     }
   });
 
-  it.each(cases)("decodes $name through the real remote attachment owner", async (entry) => {
-    const attachment = {
-      index: 0,
-      url: `http://127.0.0.1:${fixture.claim.port}/${cases.indexOf(entry)}.txt`,
-      mime: entry.mime,
-    };
-    const cache = new MediaAttachmentCache([attachment], {
-      includeDefaultLocalPathRoots: false,
-      ssrfPolicy: { allowPrivateNetwork: true },
-    });
-    try {
-      const result = await extractFileContext({
-        attachments: [attachment],
-        cache,
-        cfg: {},
-        limits: resolveFileExtractionLimits({}),
-        selfServePathsEnabled: false,
+  it.each(cases)(
+    "decodes %s through the real remote attachment owner",
+    async (name, _buffer, _header, expected, mime) => {
+      const attachment = {
+        index: 0,
+        url: `http://127.0.0.1:${fixture.claim.port}/${cases.findIndex((entry) => entry[0] === name)}.txt`,
+        mime,
+      };
+      const cache = new MediaAttachmentCache([attachment], {
+        includeDefaultLocalPathRoots: false,
+        ssrfPolicy: { allowPrivateNetwork: true },
       });
-      expect(result.blocks).toHaveLength(1);
-      expect(result.blocks[0]?.text).toContain(`\n---\n${entry.expected}\n`);
-      expect(result.images).toEqual([]);
-    } finally {
-      await cache.cleanup();
-    }
-  });
+      try {
+        const result = await extractFileContext({
+          attachments: [attachment],
+          cache,
+          cfg: {},
+          limits: resolveFileExtractionLimits({}),
+          selfServePathsEnabled: false,
+        });
+        expect(result.blocks).toHaveLength(1);
+        expect(result.blocks[0]?.text).toContain(`\n---\n${expected}\n`);
+        expect(result.images).toEqual([]);
+      } finally {
+        await cache.cleanup();
+      }
+    },
+  );
 });
 
 describe("renderInboundDocumentContext", () => {
   it.each(["", " Application/Octet-Stream; charset=binary "])(
     "retains inferred legacy encoding through prepared content type %j",
     async (mime) => {
-      const workspaceDir = tempDirs.make("openclaw-prepared-document-");
-      const mediaPath = path.join(workspaceDir, "notes.txt");
-      const text = "Café notes: résumé et météo pour demain.";
-      const buffer = Buffer.from(text, "latin1");
+      const buffer = Buffer.from(legacyText, "latin1");
       const prepared = await prepareAttachment({
         base64: buffer.toString("base64"),
         label: "notes.txt",
         mime,
       });
-      await fs.writeFile(mediaPath, buffer);
-      const ctx: MsgContext = {
-        media: [{ path: mediaPath, contentType: prepared.mime, fileName: "notes.txt" }],
-      };
-
-      const context = await renderInboundDocumentContext({ ctx, cfg: {}, workspaceDir });
+      const context = await renderInboundDocumentContext(
+        await localDocument(buffer, "notes.txt", prepared.mime, true),
+      );
 
       expect(prepared.mime).toBe("text/plain; charset=windows-1252");
-      expect(context.text).toContain(text);
+      expect(context.text).toContain(legacyText);
       expect(context.text).not.toContain("\uFFFD");
     },
   );
@@ -153,9 +143,7 @@ describe("renderInboundDocumentContext", () => {
     { encoding: "latin1", mime: "text/plain; charset=utf-8", expectedMime: "text/plain" },
   ] as const)("keeps existing prepared MIME for $encoding with $mime", async (input) => {
     const prepared = await prepareAttachment({
-      base64: Buffer.from("Café notes: résumé et météo pour demain.", input.encoding).toString(
-        "base64",
-      ),
+      base64: Buffer.from(legacyText, input.encoding).toString("base64"),
       label: "notes.txt",
       mime: input.mime,
     });
@@ -163,37 +151,22 @@ describe("renderInboundDocumentContext", () => {
     expect(prepared.mime).toBe(input.expectedMime);
   });
 
-  it.each([
-    {
-      text: "document body for the steered run",
-      maxChars: undefined,
-      expected: "document body for the steered run",
-      truncated: false,
-    },
-    {
-      text: "document body for the steered run",
-      maxChars: 13,
-      expected: "document body",
-      truncated: true,
-    },
-    { text: "雪🙂", maxChars: 4, expected: "雪🙂", truncated: false },
-    { text: "雪🙂!", maxChars: 4, expected: "雪🙂!", truncated: false },
-    { text: "雪🙂!tail", maxChars: 4, expected: "雪🙂!", truncated: true },
-    { text: "雪🙂tail", maxChars: 2, expected: "雪", truncated: true },
-    { text: "not empty", maxChars: 0, expected: "", truncated: true },
+  it.each<[string, number | undefined, string, boolean]>([
+    ["document body for the steered run", undefined, "document body for the steered run", false],
+    ["document body for the steered run", 13, "document body", true],
+    ["雪🙂", 4, "雪🙂", false],
+    ["雪🙂!", 4, "雪🙂!", false],
+    ["雪🙂!tail", 4, "雪🙂!", true],
+    ["雪🙂tail", 2, "雪", true],
+    ["not empty", 0, "", true],
   ])(
-    "renders actual attachment text without mutating input at limit $maxChars for $text",
-    async ({ text, maxChars, expected, truncated }) => {
-      const workspaceDir = tempDirs.make("openclaw-document-context-");
-      const mediaPath = path.join(workspaceDir, "steer-note.txt");
-      await fs.writeFile(mediaPath, text);
-      const ctx: MsgContext = {
-        Body: "see attached",
-        media: [{ path: mediaPath, contentType: "text/plain" }],
-      };
+    "renders %s without mutating input at limit %s",
+    async (text, maxChars, expected, truncated) => {
+      const params = await localDocument(text, "steer-note.txt", "text/plain");
+      const { ctx } = params;
       const original = structuredClone(ctx);
 
-      const context = await renderInboundDocumentContext({ ctx, cfg: {}, workspaceDir, maxChars });
+      const context = await renderInboundDocumentContext({ ...params, maxChars });
 
       expect(context.text).toContain('<file name="steer-note.txt" mime="text/plain">');
       expect(context.text).toContain(`\n---\n${expected}\n`);
@@ -209,7 +182,6 @@ describe("renderInboundDocumentContext", () => {
         );
       }
       expect(context.images).toEqual([]);
-      // Rejected steering must leave the original input available for normal dispatch.
       expect(ctx).toEqual(original);
     },
   );

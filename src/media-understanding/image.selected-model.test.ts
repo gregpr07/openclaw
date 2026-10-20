@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createEmptyPreparedModelRuntimeFixture } from "../agents/embedded-agent-runner/model.fixture.test-support.js";
 import { createEmptyAgentDiscoveryStores } from "../agents/embedded-agent-runner/model.js";
 import { createPreparedConfiguredRuntimeModelLookup } from "../agents/embedded-agent-runner/model.static-id.js";
 import type { PreparedModelRuntimeSnapshot } from "../agents/prepared-model-runtime.js";
@@ -12,6 +13,17 @@ import { resolveImageRuntime } from "./image-model-runtime.js";
 
 const provider = "image-selected-model";
 const baseUrl = "https://image-selected-model.example/v1";
+function metadata(aliases: Record<string, string>) {
+  return createPluginMetadataSnapshotFixture({
+    plugins: [
+      {
+        id: provider,
+        providers: [provider],
+        modelIdNormalization: { providers: { [provider]: { aliases } } },
+      },
+    ],
+  });
+}
 
 describe("image model selection ownership", () => {
   it("uses supplied alias metadata exactly once despite conflicting ambient hooks", async () => {
@@ -20,41 +32,13 @@ describe("image model selection ownership", () => {
         agents: { defaults: { workspace: state.workspaceDir } },
         models: {
           providers: {
-            [provider]: {
-              baseUrl,
-              apiKey: "synthetic-fixture",
-              models: [],
-            },
+            [provider]: { baseUrl, apiKey: "synthetic-fixture", models: [] },
           },
         },
       };
       await state.writeConfig(cfg);
-      const metadataSnapshot = createPluginMetadataSnapshotFixture({
-        plugins: [
-          {
-            id: provider,
-            providers: [provider],
-            modelIdNormalization: {
-              providers: {
-                [provider]: {
-                  aliases: { entry: "middle", middle: "final", hooked: "wrong" },
-                },
-              },
-            },
-          },
-        ],
-      });
-      const ambientMetadata = createPluginMetadataSnapshotFixture({
-        plugins: [
-          {
-            id: provider,
-            providers: [provider],
-            modelIdNormalization: {
-              providers: { [provider]: { aliases: { entry: "wrong" } } },
-            },
-          },
-        ],
-      });
+      const metadataSnapshot = metadata({ entry: "middle", middle: "final", hooked: "wrong" });
+      const ambientMetadata = metadata({ entry: "wrong" });
       const normalizeModelId = vi.fn(({ modelId }: { modelId: string }) =>
         modelId === "middle" ? "hooked" : modelId,
       );
@@ -66,16 +50,13 @@ describe("image model selection ownership", () => {
       });
       const stores = createEmptyAgentDiscoveryStores();
       const rows = ["final", "middle", "plain", "hooked", "wrong"].map((id) =>
-        Object.assign(
-          makeProviderModelFixture({
-            provider,
-            id,
-            api: "openai-completions",
-            baseUrl,
-            input: ["text", "image"],
-          }),
-          { contextWindow: 16_000, maxTokens: 4_096 },
-        ),
+        makeProviderModelFixture({
+          provider,
+          id,
+          api: "openai-completions",
+          baseUrl,
+          input: ["text", "image"],
+        }),
       );
       stores.modelRegistry.registerProvider(provider, {
         api: "openai-completions",
@@ -88,56 +69,49 @@ describe("image model selection ownership", () => {
         model,
       }));
       const snapshot: PreparedModelRuntimeSnapshot = {
-        catalogOwner: undefined,
+        ...createEmptyPreparedModelRuntimeFixture({
+          agentDir: state.agentDir(),
+          config: cfg,
+          metadataSnapshot,
+          createStores: () => stores,
+        }),
         agentId: "main",
-        agentDir: state.agentDir(),
         workspaceDir: state.workspaceDir,
-        activeProjectKeys: [],
-        config: cfg,
-        observationConfig: cfg,
-        isCurrent: () => true,
-        authModes: {},
-        metadataSnapshot,
         pluginRegistry,
-        allowGatewaySubagentBinding: false,
-        modelCatalog: { entries: [], routeVariants: [] },
         configuredRuntimeModels,
         findConfiguredRuntimeModel: createPreparedConfiguredRuntimeModelLookup(
           configuredRuntimeModels,
           metadataSnapshot,
         ),
-        inlineProviderModels: [],
-        createStores: () => stores,
-      };
-      const run = async () => {
-        let runtimeResources: AsyncDisposable | undefined;
-        try {
-          const runtime = await resolveImageRuntime(
-            {
-              cfg,
-              agentDir: state.agentDir(),
-              provider,
-              model: "entry",
-              authStore: { version: 1, profiles: {} },
-              preparedModelRuntime: snapshot,
-            },
-            (resources) => {
-              runtimeResources = resources;
-            },
-          );
-          expect(runtime.model).toMatchObject({
-            id: "hooked",
-            provider,
-            api: "openai-completions",
-            baseUrl,
-          });
-        } finally {
-          await runtimeResources?.[Symbol.asyncDispose]();
-        }
       };
       await withPluginRuntimeGenerationScope(
         { metadataSnapshot: ambientMetadata, pluginRegistry },
-        run,
+        async () => {
+          let runtimeResources: AsyncDisposable | undefined;
+          try {
+            const runtime = await resolveImageRuntime(
+              {
+                cfg,
+                agentDir: state.agentDir(),
+                provider,
+                model: "entry",
+                authStore: { version: 1, profiles: {} },
+                preparedModelRuntime: snapshot,
+              },
+              (resources) => {
+                runtimeResources = resources;
+              },
+            );
+            expect(runtime.model).toMatchObject({
+              id: "hooked",
+              provider,
+              api: "openai-completions",
+              baseUrl,
+            });
+          } finally {
+            await runtimeResources?.[Symbol.asyncDispose]();
+          }
+        },
       );
       expect(normalizeModelId).toHaveBeenCalledExactlyOnceWith({
         provider,

@@ -6,9 +6,8 @@ import { setActivePluginRegistry } from "../plugins/runtime.js";
 
 type TestCatalogEntry = { id: string; name: string; provider: string; input: readonly string[] };
 
-const baseCatalog: TestCatalogEntry[] = [
-  { id: "gpt-5.4", name: "GPT-5.4", provider: "usage-proxy", input: ["text", "image"] as const },
-];
+const model = { id: "gpt-5.4", name: "GPT-5.4", provider: "usage-proxy" };
+const baseCatalog: TestCatalogEntry[] = [{ ...model, input: ["text", "image"] }];
 let catalog: TestCatalogEntry[] = [...baseCatalog];
 
 const loadModelCatalog = vi.hoisted(() => vi.fn(async (_params: unknown) => catalog));
@@ -23,8 +22,6 @@ vi.mock("../agents/model-auth.js", async () => {
   return createAvailableModelAuthMockModule();
 });
 
-// A "mediaUnderstandingProviders" lookup is the registry build these tests
-// assert on; other keys are ignored, as in runner.vision-skip.test.ts.
 vi.mock("../plugins/capability-provider-runtime.js", () => ({
   resolvePluginCapabilityProviders: (params: { key: string }) => {
     if (params.key === "mediaUnderstandingProviders") {
@@ -48,8 +45,8 @@ const visionConfig: OpenClawConfig = {
         baseUrl: "https://example.test/v1",
         models: [
           {
-            id: "gpt-5.4",
-            name: "GPT-5.4",
+            id: model.id,
+            name: model.name,
             input: ["text", "image"],
             reasoning: false,
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -62,6 +59,21 @@ const visionConfig: OpenClawConfig = {
   },
 };
 
+function configWithModels(capabilities?: ("image" | "audio" | "video")[]): OpenClawConfig {
+  return capabilities
+    ? {
+        ...visionConfig,
+        tools: { media: { models: [{ provider: model.provider, capabilities }] } },
+      }
+    : { ...visionConfig };
+}
+
+function breakRegistry() {
+  resolvePluginCapabilityProvidersSpy.mockImplementation(() => {
+    throw new Error("registry build failed");
+  });
+}
+
 function imageContext(withAudio = false): MsgContext {
   return {
     media: [
@@ -70,6 +82,9 @@ function imageContext(withAudio = false): MsgContext {
     ],
   };
 }
+
+const apply = (ctx: MsgContext, cfg: OpenClawConfig) =>
+  applyMediaUnderstanding({ ctx, cfg, activeModel });
 
 describe("applyMediaUnderstanding - lazy provider registry", () => {
   beforeAll(async () => {
@@ -87,35 +102,21 @@ describe("applyMediaUnderstanding - lazy provider registry", () => {
     async (scenario) => {
       const cfg: OpenClawConfig = scenario === "text-only model" ? {} : { ...visionConfig };
       if (scenario === "text-only model") {
-        catalog = [{ id: "gpt-5.4", name: "GPT-5.4", provider: "usage-proxy", input: ["text"] }];
+        catalog = [{ ...model, input: ["text"] }];
       } else if (scenario === "explicit image model") {
-        cfg.tools = { media: { models: [{ provider: "usage-proxy", capabilities: ["image"] }] } };
+        cfg.tools = configWithModels(["image"]).tools;
       }
-      await applyMediaUnderstanding({
-        ctx: imageContext(scenario === "mixed image and audio"),
-        cfg,
-        activeModel,
-      });
+      await apply(imageContext(scenario === "mixed image and audio"), cfg);
       expect(resolvePluginCapabilityProvidersSpy).toHaveBeenCalledTimes(1);
     },
   );
 
   it("a registry build failure still rejects the whole apply (caller's raw-content fallback), built once", async () => {
-    resolvePluginCapabilityProvidersSpy.mockImplementation(() => {
-      throw new Error("registry build failed");
-    });
-    catalog = [
-      { id: "gpt-5.4", name: "GPT-5.4", provider: "usage-proxy", input: ["text"] as const },
-    ];
+    breakRegistry();
+    catalog = [{ ...model, input: ["text"] }];
     const ctx = imageContext(true);
 
-    await expect(
-      applyMediaUnderstanding({
-        ctx,
-        cfg: {},
-        activeModel,
-      }),
-    ).rejects.toThrow("registry build failed");
+    await expect(apply(ctx, {})).rejects.toThrow("registry build failed");
     expect(resolvePluginCapabilityProvidersSpy).toHaveBeenCalledTimes(1);
     expect(ctx.MediaUnderstandingDecisions).toBeUndefined();
   });
@@ -126,37 +127,19 @@ describe("applyMediaUnderstanding - lazy provider registry", () => {
   ] as const)(
     "keeps the native-vision handoff with $name and a broken registry",
     async ({ capabilities }) => {
-      resolvePluginCapabilityProvidersSpy.mockImplementation(() => {
-        throw new Error("registry build failed");
-      });
-      const cfg: OpenClawConfig = {
-        ...visionConfig,
-        ...(capabilities
-          ? {
-              tools: {
-                media: { models: [{ provider: "usage-proxy", capabilities: [...capabilities] }] },
-              },
-            }
-          : {}),
-      };
-
+      breakRegistry();
+      const cfg = configWithModels(capabilities ? [...capabilities] : undefined);
       const ctx = imageContext();
-      await expect(
-        applyMediaUnderstanding({
-          ctx,
-          cfg,
-          activeModel,
+      await expect(apply(ctx, cfg)).resolves.toEqual({
+        extractedFileImages: [],
+      });
+      expect(ctx.MediaUnderstandingDecisions).toContainEqual(
+        expect.objectContaining({
+          capability: "image",
+          outcome: "skipped",
+          nativeVisionActive: true,
+          attachmentDispositions: { 0: { kind: "handed-to-native-vision" } },
         }),
-      ).resolves.toEqual({ extractedFileImages: [] });
-      expect(ctx.MediaUnderstandingDecisions).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            capability: "image",
-            outcome: "skipped",
-            nativeVisionActive: true,
-            attachmentDispositions: { 0: { kind: "handed-to-native-vision" } },
-          }),
-        ]),
       );
       expect(resolvePluginCapabilityProvidersSpy).not.toHaveBeenCalled();
     },
