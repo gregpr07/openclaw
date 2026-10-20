@@ -183,9 +183,10 @@ describe.skipIf(!connection)("mixed-mode boot conformance", () => {
     await expect(runProof(stateDir, "workboard-postgres")).rejects.toThrow(
       /Existing SQLite workboard data cannot switch engines.*openclaw database port/,
     );
-    const retained = await runProof(stateDir, "sqlite");
-    expect(retained.initialBoardName).toBe("Mixed proof");
-    expect(retained.workboardEngine).toBe("sqlite");
-    expect(retained.reopenedBoardName).toBe("Mixed proof");
+    await expect(runProof(stateDir, "sqlite")).resolves.toMatchObject({
+      initialBoardName: "Mixed proof",
+      workboardEngine: "sqlite",
+      reopenedBoardName: "Mixed proof",
+    });
   });
 });

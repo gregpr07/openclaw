@@ -42,10 +42,8 @@ describe("database engine observation", () => {
   it("executes SQLite without clocks or events when neither channel has a subscriber", async () => {
     const db = database();
     const clock = vi.spyOn(performance, "now");
-    expect([statementChannel.hasSubscribers, requestChannel.hasSubscribers]).toEqual([
-      false,
-      false,
-    ]);
+    expect(statementChannel.hasSubscribers).toBe(false);
+    expect(requestChannel.hasSubscribers).toBe(false);
     expect(db.prepare("SELECT 7 AS value").get()).toEqual({ value: 7 });
     const pending = Promise.resolve(8);
     expect(observeDatabaseRequest("sqlite", () => pending)).toBe(pending);
@@ -55,18 +53,16 @@ describe("database engine observation", () => {
 
   it("observes pre-subscription statements, redacts trailing-backslash literals and never publishes bindings", () => {
     const db = database();
-    const statement = db.prepare(
-      "SELECT ? AS value, 'C:\\' AS path, 'literal-secret' AS text, 42 AS number",
-    );
+    const statement = db.prepare("SELECT ? AS v, 'C:\\' AS p, 'literal-secret' AS t, 42 AS n");
     const events = capture(statementChannel);
     expect(statement.get("binding-secret")).toEqual({
-      value: "binding-secret",
-      path: "C:\\",
-      text: "literal-secret",
-      number: 42,
+      v: "binding-secret",
+      p: "C:\\",
+      t: "literal-secret",
+      n: 42,
     });
     expect(events).toEqual([
-      { ...completion("sqlite"), sql: "SELECT ? AS value, ? AS path, ? AS text, ? AS number" },
+      { ...completion("sqlite"), sql: "SELECT ? AS v, ? AS p, ? AS t, ? AS n" },
     ]);
     expect(JSON.stringify(events)).not.toContain("secret");
   });
