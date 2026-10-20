@@ -68,8 +68,7 @@ it("cancels an already contended same-process waiter without disturbing the owne
       throw error;
     }
   });
-  const waiter = withDistArtifactOwnership(root, callback, controller.signal).then(
-    () => undefined,
+  const waiter = withDistArtifactOwnership(root, callback, controller.signal).catch(
     (error: unknown) => error,
   );
   try {

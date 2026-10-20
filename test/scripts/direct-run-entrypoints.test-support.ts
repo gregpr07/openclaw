@@ -102,8 +102,7 @@ export async function withShimFixture<T>(
     wrapper === "scripts/run-vitest.mjs" ? "-child.mts" : ".mts",
   );
   const commands: Array<Promise<NodeResult>> = [];
-  let outcome: { value: Awaited<T> } | { error: unknown };
-  try {
+  const outcome = (async () => {
     for (const source of [
       wrapper,
       "scripts/tsx.mjs",
@@ -122,23 +121,22 @@ export async function withShimFixture<T>(
       copyFileSync(source, target);
     }
     writeFileSync(path.join(checkoutRoot, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
-    outcome = {
-      value: await run({
-        checkoutRoot,
-        fixtureRoot,
-        implementationPath,
-        wrapperPath,
-        runNode(args, env, cwd, onReady) {
-          const command = runNodeScript(args, env, 10_000, { cwd, onReady });
-          commands.push(command);
-          return command;
-        },
-      }),
-    };
-  } catch (error) {
-    outcome = { error };
-  }
-  const callbackError = "error" in outcome ? outcome.error : undefined;
+    return run({
+      checkoutRoot,
+      fixtureRoot,
+      implementationPath,
+      wrapperPath,
+      runNode(args, env, cwd, onReady) {
+        const command = runNodeScript(args, env, 10_000, { cwd, onReady });
+        commands.push(command);
+        return command;
+      },
+    });
+  })();
+  const callbackError = await outcome.then(
+    () => undefined,
+    (error: unknown) => error,
+  );
   // Callback rejection must not release files still owned by an in-flight command.
   const results = await Promise.all(commands);
   const unjoined = [callbackError, ...results.map((result) => result.error)].find(hasUnjoinedTree);
@@ -156,8 +154,5 @@ export async function withShimFixture<T>(
     );
   }
   rmSync(fixtureRoot, { recursive: true, force: true });
-  if ("error" in outcome) {
-    throw outcome.error;
-  }
-  return outcome.value;
+  return await outcome;
 }
