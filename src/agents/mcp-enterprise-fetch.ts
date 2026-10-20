@@ -25,6 +25,11 @@ export function withMcpEnterpriseBearer(params: {
   let cached: { authorizationId: string; token: string; expiresAt: number } | undefined;
   type ResourceAuthorization = { authorizationId: string; token: string; expiresAt: number };
   const authorizations = new Map<string, Promise<ResourceAuthorization>>();
+  const assertAuthorization = async (authorizationId: string) => {
+    if ((await readMcpEnterpriseAuthorizationId(params.config)) !== authorizationId) {
+      throw new Error("Enterprise SSO changed during MCP authorization. Retry the request.");
+    }
+  };
   const authorize = async (
     authorizationId: string,
     challenge?: ReturnType<typeof extractWWWAuthenticateParams>,
@@ -39,20 +44,31 @@ export function withMcpEnterpriseBearer(params: {
     let pending = authorizations.get(key);
     if (!pending) {
       pending = (async () => {
-        const provider = createMcpEnterpriseProvider(params.config, params.authFetchFn);
+        // Each step of SDK discovery, ID-JAG exchange, and resource redemption
+        // must retain the login that began this authorization.
+        const authFetch: FetchLike = async (input, init) => {
+          await assertAuthorization(authorizationId);
+          const response = await params.authFetchFn(input, init);
+          try {
+            await assertAuthorization(authorizationId);
+          } catch (error) {
+            await response.body?.cancel().catch(() => undefined);
+            throw error;
+          }
+          return response;
+        };
+        const provider = createMcpEnterpriseProvider(params.config, authFetch);
         const result = await auth(provider, {
           serverUrl: params.resourceUrl,
           scope,
           resourceMetadataUrl: challenge?.resourceMetadataUrl,
-          fetchFn: params.authFetchFn,
+          fetchFn: authFetch,
         });
         const tokens = provider.tokens();
         if (result !== "AUTHORIZED" || !tokens?.access_token) {
           throw new Error("Enterprise MCP authorization did not return an access token.");
         }
-        if ((await readMcpEnterpriseAuthorizationId(params.config)) !== authorizationId) {
-          throw new Error("Enterprise SSO changed during MCP authorization. Retry the request.");
-        }
+        await assertAuthorization(authorizationId);
         return {
           authorizationId,
           token: tokens.access_token,
@@ -100,6 +116,7 @@ export function withMcpEnterpriseBearer(params: {
     await response.body?.cancel().catch(() => undefined);
     cached = undefined;
     const freshToken = await authorize(authorizationId, challenge);
+    await assertAuthorization(authorizationId);
     const retryHeaders = new Headers(original.headers);
     retryHeaders.set("authorization", `Bearer ${freshToken}`);
     return params.fetchFn(request.url, { ...original, headers: retryHeaders });
