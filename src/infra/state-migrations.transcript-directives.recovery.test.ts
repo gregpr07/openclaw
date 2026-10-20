@@ -110,22 +110,18 @@ it.each([
     } else {
       expect(first.warnings).toEqual([]);
     }
-    const recovered = openNodeSqliteDatabase(databasePath, { readOnly: true });
-    try {
-      const readMeta = (key: string) =>
-        recovered.prepare("SELECT app_version FROM schema_meta WHERE meta_key = ?").get(key);
-      expect(
-        recovered
-          .prepare("SELECT published_at FROM session_transcript_archives WHERE session_id = ?")
-          .get("complete-recovery")?.published_at,
-      ).toBe(50);
-      expect(readMeta("historical-canonical-transcript-archive-recovery-v1")).toBeUndefined();
-      expect(
-        JSON.parse(String(readMeta("historical-transcript-directives-v1")?.app_version)),
-      ).toEqual({ phase: "complete", version: 2 });
-      expect(fs.readFileSync(archivePath)).toEqual(archiveBytes);
-    } finally {
-      recovered.close();
-    }
+    using recovered = openNodeSqliteDatabase(databasePath, { readOnly: true });
+    const readMeta = (key: string) =>
+      recovered.prepare("SELECT app_version FROM schema_meta WHERE meta_key = ?").get(key);
+    expect(
+      recovered
+        .prepare("SELECT published_at FROM session_transcript_archives WHERE session_id = ?")
+        .get("complete-recovery")?.published_at,
+    ).toBe(50);
+    expect(readMeta("historical-canonical-transcript-archive-recovery-v1")).toBeUndefined();
+    expect(
+      JSON.parse(String(readMeta("historical-transcript-directives-v1")?.app_version)),
+    ).toEqual({ phase: "complete", version: 2 });
+    expect(fs.readFileSync(archivePath)).toEqual(archiveBytes);
   },
 );
