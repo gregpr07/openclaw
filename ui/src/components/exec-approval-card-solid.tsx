@@ -326,7 +326,8 @@ export function SidebarApprovalRow(props: SidebarApprovalRowProps) {
             <span class="sidebar-issues-panel__entity" title={sessionTitle()}>
               {sessionTitle()}
             </span>
-            <ApprovalCountdown
+            <openclaw-approval-countdown
+              style={{ display: "contents" }}
               class={[
                 "sidebar-approval-row__timer",
                 { "sidebar-approval-row__timer--urgent": expiryUrgent() },
@@ -334,9 +335,9 @@ export function SidebarApprovalRow(props: SidebarApprovalRowProps) {
               role="timer"
               aria-label={expiryLabel()}
               title={expiryLabel()}
-              expiresAtMs={approval().expiresAtMs}
-              compact={true}
-            />
+            >
+              {formatCountdown(approval().expiresAtMs, nowMs(), true)}
+            </openclaw-approval-countdown>
           </div>
           <div class="sidebar-approval-row__command mono" title={approval().request.command}>
             <span aria-hidden="true">$ </span>
