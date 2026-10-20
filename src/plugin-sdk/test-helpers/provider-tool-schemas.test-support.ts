@@ -1,6 +1,8 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, vi } from "vitest";
 
 export function useProviderToolSchemaRuntimeForTest(pluginIds: readonly string[]): void {
+  const expectClean = (result: { failures: readonly unknown[] }) =>
+    expect(result.failures).toEqual([]);
   let install: () => void = () => {
     throw new Error("Provider tool-schema fixture was not prepared");
   };
@@ -25,9 +27,7 @@ export function useProviderToolSchemaRuntimeForTest(pluginIds: readonly string[]
       },
     };
     const cache = caches.createPluginCache();
-    const closeCache = async () => {
-      expect((await caches.retirePluginCache(cache)).failures).toEqual([]);
-    };
+    const closeCache = async () => expectClean(await caches.retirePluginCache(cache));
     close = closeCache;
     const prepared = caches.withPluginCache(cache, () => {
       const previousConfig = snapshots.getRuntimeConfigSnapshot();
@@ -54,7 +54,6 @@ export function useProviderToolSchemaRuntimeForTest(pluginIds: readonly string[]
     const normalize = runtime.normalizeProviderToolSchemasWithPlugin;
     const inspect = runtime.inspectProviderToolSchemasWithPlugin;
     const prepare = (params: Parameters<typeof normalize>[0]) => {
-      const { provider, context, workspaceDir, env } = params;
       if (params.runtimeHandle || !pluginIds.includes(params.provider)) {
         return params;
       }
@@ -62,11 +61,11 @@ export function useProviderToolSchemaRuntimeForTest(pluginIds: readonly string[]
         ...params,
         runtimeHandle: scopes.withPluginRuntimeGenerationScope(prepared, () =>
           handles.resolveProviderRuntimePluginHandle({
-            provider,
-            modelId: context.modelId,
+            provider: params.provider,
+            modelId: params.context.modelId,
             config: params.config,
-            workspaceDir,
-            env,
+            workspaceDir: params.workspaceDir,
+            env: params.env,
           }),
         ),
       };
@@ -85,9 +84,7 @@ export function useProviderToolSchemaRuntimeForTest(pluginIds: readonly string[]
     };
     close = async () => {
       try {
-        expect(
-          (await registry.disposePluginRegistryInstances(prepared.pluginRegistry)).failures,
-        ).toEqual([]);
+        expectClean(await registry.disposePluginRegistryInstances(prepared.pluginRegistry));
       } finally {
         await closeCache();
       }

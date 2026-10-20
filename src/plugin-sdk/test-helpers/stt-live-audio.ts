@@ -75,12 +75,11 @@ export async function synthesizeElevenLabsLiveSpeech(params: {
   }
 }
 
-export async function streamAudioForLiveTest(params: {
-  audio: Buffer;
-  sendAudio: (chunk: Buffer) => void;
-  chunkSize?: number;
-  delayMs?: number;
-}) {
+type AudioInput = { audio: Buffer; chunkSize?: number; delayMs?: number };
+
+export async function streamAudioForLiveTest(
+  params: AudioInput & { sendAudio: (chunk: Buffer) => void },
+) {
   const chunkSize = params.chunkSize ?? 160;
   const delayMs = params.delayMs ?? 5;
   for (let offset = 0; offset < params.audio.byteLength; offset += chunkSize) {
@@ -89,16 +88,15 @@ export async function streamAudioForLiveTest(params: {
   }
 }
 
-export async function runRealtimeSttLiveTest(params: {
-  provider: RealtimeTranscriptionProviderPlugin;
-  providerConfig: RealtimeTranscriptionProviderConfig;
-  audio: Buffer;
-  expectedNormalizedText?: RegExp | string;
-  timeoutMs?: number;
-  closeBeforeWait?: boolean;
-  chunkSize?: number;
-  delayMs?: number;
-}): Promise<{ transcripts: string[]; partials: string[]; errors: Error[] }> {
+export async function runRealtimeSttLiveTest(
+  params: AudioInput & {
+    provider: RealtimeTranscriptionProviderPlugin;
+    providerConfig: RealtimeTranscriptionProviderConfig;
+    expectedNormalizedText?: RegExp | string;
+    timeoutMs?: number;
+    closeBeforeWait?: boolean;
+  },
+): Promise<{ transcripts: string[]; partials: string[]; errors: Error[] }> {
   const transcripts: string[] = [];
   const partials: string[] = [];
   const errors: Error[] = [];
@@ -112,12 +110,7 @@ export async function runRealtimeSttLiveTest(params: {
 
   try {
     await session.connect();
-    await streamAudioForLiveTest({
-      audio: params.audio,
-      sendAudio: (chunk) => session.sendAudio(chunk),
-      chunkSize: params.chunkSize,
-      delayMs: params.delayMs,
-    });
+    await streamAudioForLiveTest({ ...params, sendAudio: (chunk) => session.sendAudio(chunk) });
     if (params.closeBeforeWait) {
       session.close();
     }

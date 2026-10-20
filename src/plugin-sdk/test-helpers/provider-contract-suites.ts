@@ -10,20 +10,16 @@ function resolveLazy<T>(value: Lazy<T>): T {
   return typeof value === "function" ? (value as () => T)() : value;
 }
 
-function expectUnique(values: readonly unknown[] | undefined) {
-  if (values) {
-    expect(values).toEqual([...new Set(values)]);
-  }
-}
+const expectUnique = (values: readonly unknown[] | undefined) =>
+  values && expect(values).toEqual([...new Set(values)]);
+const expectText = (value: string) => expect(value.trim()).not.toBe("");
 
 function expectWebProviderCredentialContract(
   provider: WebSearchProviderPlugin | WebFetchProviderPlugin,
   credentialValue: unknown,
 ) {
   expect(provider.id).toMatch(/^[a-z0-9][a-z0-9-]*$/);
-  for (const value of [provider.label, provider.hint, provider.placeholder]) {
-    expect(value.trim()).not.toBe("");
-  }
+  [provider.label, provider.hint, provider.placeholder].forEach(expectText);
   expect(provider.signupUrl.startsWith("https://")).toBe(true);
   if (provider.docsUrl) {
     expect(provider.docsUrl.startsWith("http")).toBe(true);
@@ -49,7 +45,7 @@ export function installProviderPluginContractSuite(params: { provider: Lazy<Prov
         return;
       }
       if (wizard.choiceId) {
-        expect(wizard.choiceId.trim()).not.toBe("");
+        expectText(wizard.choiceId);
         expect(wizardChoiceIds.has(wizard.choiceId)).toBe(false);
         wizardChoiceIds.add(wizard.choiceId);
       }
@@ -61,7 +57,7 @@ export function installProviderPluginContractSuite(params: { provider: Lazy<Prov
     };
 
     expect(provider.id).toMatch(/^[a-z0-9][a-z0-9-]*$/);
-    expect(provider.label.trim()).not.toBe("");
+    expectText(provider.label);
 
     if (provider.docsPath) {
       expect(provider.docsPath.startsWith("/")).toBe(true);
@@ -75,10 +71,9 @@ export function installProviderPluginContractSuite(params: { provider: Lazy<Prov
     expect(Array.isArray(provider.auth)).toBe(true);
     expectUnique(authIds);
     for (const method of provider.auth) {
-      expect(method.id.trim()).not.toBe("");
-      expect(method.label.trim()).not.toBe("");
+      [method.id, method.label].forEach(expectText);
       if (method.hint !== undefined) {
-        expect(method.hint.trim()).not.toBe("");
+        expectText(method.hint);
       }
       expectWizard(method.wizard);
       expect(typeof method.run).toBe("function");
@@ -117,7 +112,7 @@ export function installWebFetchProviderContractSuite(params: {
     const credentialValue = resolveLazy(params.credentialValue);
 
     expectWebProviderCredentialContract(provider, credentialValue);
-    expect(provider.credentialPath.trim()).not.toBe("");
+    expectText(provider.credentialPath);
     if (provider.inactiveSecretPaths) {
       expectUnique(provider.inactiveSecretPaths);
       expect(provider.inactiveSecretPaths).toContain(provider.credentialPath);

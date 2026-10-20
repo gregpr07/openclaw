@@ -10,28 +10,33 @@ import { replaceTranscriptEventsSync } from "../../config/sessions/session-acces
 import * as admission from "../../infra/sqlite-worker-operation-admission.js";
 import { sqliteWorkerOwnerProbe } from "../../infra/sqlite-worker-owner-probe.test-support.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
-import {
-  markPluginRegistryActive,
-  markPluginRegistryRetired,
-} from "../../plugins/registry-lifecycle.js";
+import * as lifecycle from "../../plugins/registry-lifecycle.js";
 import { withPluginRuntimeRegistryScope } from "../../plugins/runtime/gateway-request-scope.js";
 import { createPluginRecord } from "../../plugins/status.test-helpers.js";
 
 type Hook = "withSessionDeletion" | "withSessionContextReset";
 type HostTarget = Parameters<NonNullable<AgentHarnessV2["withSessionContextReset"]>>[0];
-type Target = HostTarget & { storePath: string };
 
 /** Exercise plugin cleanup around a real host worker commit or compensated refusal. */
 export async function withNativeSessionMutationForTest(params: {
   pluginId: string;
   harness: AgentHarnessV2;
   hook: Hook;
-  target: Target;
+  target: HostTarget & { storePath: string };
   run: (settle: (outcome?: "commit" | "rollback") => Promise<void>) => Promise<void>;
 }): Promise<void> {
   const prepare = params.harness[params.hook];
   assert(prepare, `Missing native session fixture hook: ${params.hook}`);
   const refusal = new Error("Synthetic agent transaction commit refusal");
+  const refuseCommit = () =>
+    sqliteWorkerOwnerProbe.admission(admission, (request, grant, admit) => {
+      const facts = isRecord(request.facts) ? request.facts.publication : undefined;
+      const nativeBinding = isRecord(facts) && facts.kind === "session-native-binding";
+      if (request.stage === "commit" && nativeBinding) {
+        throw refusal;
+      }
+      admit(request, grant);
+    });
   let prepared = false;
   const wrapped = async <T>(
     hostTarget: HostTarget,
@@ -41,51 +46,33 @@ export async function withNativeSessionMutationForTest(params: {
       assert.equal(hostTarget[key], params.target[key], `Native session target ${key}`);
     }
     prepared = true;
-    return prepare<T>(
-      {
-        ...hostTarget,
-        assertCurrent() {
-          hostTarget.assertCurrent();
-          params.target.assertCurrent();
-        },
-      },
-      async (mutation) => {
-        const settled: { result?: { value: T } | { error: unknown } } = {};
-        await params.run(async (outcome = "commit") => {
-          assert(!settled.result, "Native session fixture already settled");
-          const probe =
-            outcome === "rollback"
-              ? sqliteWorkerOwnerProbe.admission(admission, (request, grant, admit) => {
-                  const facts = isRecord(request.facts) ? request.facts.publication : undefined;
-                  if (
-                    request.stage === "commit" &&
-                    isRecord(facts) &&
-                    facts.kind === "session-native-binding"
-                  ) {
-                    throw refusal;
-                  }
-                  admit(request, grant);
-                })
-              : undefined;
-          try {
-            settled.result = { value: await commit(mutation) };
-            assert.notEqual(outcome, "rollback", "Expected agent commit refusal");
-          } catch (error) {
-            settled.result = { error };
-            if (error !== refusal) {
-              throw error;
-            }
-          } finally {
-            probe?.mockRestore();
+    const assertCurrent = () => {
+      hostTarget.assertCurrent();
+      params.target.assertCurrent();
+    };
+    return prepare<T>({ ...hostTarget, assertCurrent }, async (mutation) => {
+      const settled: { result?: { value: T } | { error: unknown } } = {};
+      await params.run(async (outcome = "commit") => {
+        assert(!settled.result, "Native session fixture already settled");
+        const probe = outcome === "rollback" ? refuseCommit() : undefined;
+        try {
+          settled.result = { value: await commit(mutation) };
+          assert.notEqual(outcome, "rollback", "Expected agent commit refusal");
+        } catch (error) {
+          settled.result = { error };
+          if (error !== refusal) {
+            throw error;
           }
-        });
-        assert(settled.result, "Native session fixture did not settle its worker transaction");
-        if ("error" in settled.result) {
-          throw settled.result.error;
+        } finally {
+          probe?.mockRestore();
         }
-        return settled.result.value;
-      },
-    );
+      });
+      assert(settled.result, "Native session fixture did not settle its worker transaction");
+      if ("error" in settled.result) {
+        throw settled.result.error;
+      }
+      return settled.result.value;
+    });
   };
   const registry = createEmptyPluginRegistry();
   registry.plugins.push(createPluginRecord({ id: params.pluginId }));
@@ -97,21 +84,14 @@ export async function withNativeSessionMutationForTest(params: {
   const { agentId, sessionId, sessionKey, storePath } = params.target;
   const scope = { agentId, sessionId, sessionKey, storePath };
   if (params.hook === "withSessionContextReset") {
+    const timestamp = "2026-01-01T00:00:00.000Z";
+    const message = { role: "user", content: "Synthetic context cut", timestamp: 1 };
     replaceTranscriptEventsSync(scope, [
-      {
-        type: "session",
-        id: scope.sessionId,
-        cwd: "/synthetic/workspace",
-        timestamp: "2026-01-01T00:00:00.000Z",
-      },
-      {
-        type: "message",
-        id: "fixture-user",
-        message: { role: "user", content: "Synthetic context cut", timestamp: 1 },
-      },
+      { type: "session", id: sessionId, cwd: "/synthetic/workspace", timestamp },
+      { type: "message", id: "fixture-user", message },
     ]);
   }
-  markPluginRegistryActive(registry);
+  lifecycle.markPluginRegistryActive(registry);
   try {
     await withPluginRuntimeRegistryScope(registry, async () => {
       if (params.hook === "withSessionContextReset") {
@@ -131,7 +111,7 @@ export async function withNativeSessionMutationForTest(params: {
       throw error;
     }
   } finally {
-    markPluginRegistryRetired(registry);
+    lifecycle.markPluginRegistryRetired(registry);
   }
   assert(prepared, "Native session fixture host did not invoke its registered harness");
 }

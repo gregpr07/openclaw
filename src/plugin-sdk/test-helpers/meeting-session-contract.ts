@@ -1,28 +1,21 @@
 import { expect, it } from "vitest";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { MeetingJoinRequest } from "../../meeting-bot/plugin-entry.js";
-import type {
-  MeetingPluginSession,
-  MeetingPluginChromeHealth,
-} from "../../meeting-bot/session-types.js";
+import type * as Meeting from "../../meeting-bot/session-types.js";
 import {
   meetingBrowserActScripts as browserActScripts,
   type MeetingBrowserFixture,
 } from "./meeting-browser.js";
 
-type Session = MeetingPluginSession<
-  "chrome" | "chrome-node",
-  "agent" | "bidi" | "transcribe",
-  MeetingPluginChromeHealth<string, string>
->;
+type Health = Meeting.MeetingPluginChromeHealth<string, string>;
+type Mode = NonNullable<MeetingJoinRequest["mode"]>;
+type Session = Meeting.MeetingPluginSession<"chrome" | "chrome-node", Mode, Health>;
 type Runtime = {
   join(request: MeetingJoinRequest): Promise<{ session: Session }>;
   list(): Session[];
   status(sessionId?: string): Promise<{ found: boolean; session?: Session }>;
-  leave(sessionId: string): Promise<unknown>;
-  transcript(sessionId: string): Promise<unknown>;
   speak(sessionId: string, message: string): Promise<unknown>;
-};
+} & Record<"leave" | "transcript", (sessionId: string) => Promise<unknown>>;
 
 export function defineMeetingSessionFlowTests(options: {
   createFixture(options?: {
@@ -34,7 +27,7 @@ export function defineMeetingSessionFlowTests(options: {
   tabId: string;
   rewrittenUrl: string;
   rewrittenUrlTestName: string;
-  endedHealth: Partial<MeetingPluginChromeHealth<string, string>>;
+  endedHealth: Partial<Health>;
 }) {
   const joinMeeting = (runtime: Runtime, request: Partial<MeetingJoinRequest> = {}) =>
     runtime.join({ url: options.url, mode: "transcribe", ...request });
@@ -59,6 +52,10 @@ export function defineMeetingSessionFlowTests(options: {
     providerConnected: active,
     realtimeReady: active,
   });
+  const requestArgs = (
+    params: Record<string, unknown>,
+    authority: unknown = expect.objectContaining({ scopes: ["operator.admin"] }),
+  ) => ["browser.request", expect.objectContaining(params), authority] as const;
   it("joins, reuses, reports, snapshots, speaks safely, and leaves through core", async () => {
     const { harness, runtime, session, id } = await joinedFixture({
       fullConfig: { agents: { entries: { operator: {} } } },
@@ -90,11 +87,7 @@ export function defineMeetingSessionFlowTests(options: {
       browserLeft: true,
       session: { state: "ended", chrome: { health } },
     });
-    expect(harness.gatewayRequest).toHaveBeenCalledWith(
-      "browser.request",
-      expect.objectContaining({ path: "/tabs/open" }),
-      expect.objectContaining({ scopes: ["operator.admin"] }),
-    );
+    expect(harness.gatewayRequest).toHaveBeenCalledWith(...requestArgs({ path: "/tabs/open" }));
   });
 
   it("reads an archived transcript without reclaiming a newer live tab owner", async () => {
@@ -102,10 +95,8 @@ export function defineMeetingSessionFlowTests(options: {
     harness.state.sessionConflict = true;
     harness.gatewayRequest.mockClear();
 
-    expect(await runtime.transcript(id)).toMatchObject({
-      found: true,
-      lines: [{ text: "Archived caption" }],
-    });
+    const transcript = await runtime.transcript(id);
+    expect(transcript).toMatchObject({ found: true, lines: [{ text: "Archived caption" }] });
     expectTranscriptScripts(harness);
   });
 
@@ -119,14 +110,10 @@ export function defineMeetingSessionFlowTests(options: {
       launched: false,
     });
     expect(harness.gatewayRequest).not.toHaveBeenCalledWith(
-      "browser.request",
-      expect.objectContaining({ path: "/tabs/open" }),
-      expect.anything(),
+      ...requestArgs({ path: "/tabs/open" }, expect.anything()),
     );
-    expect(await runtime.leave(id)).toMatchObject({
-      browserLeft: true,
-      session: { state: "ended" },
-    });
+    const left = await runtime.leave(id);
+    expect(left).toMatchObject({ browserLeft: true, session: { state: "ended" } });
   });
 
   it("refreshes a recovered browser tab target", async () => {
@@ -145,26 +132,17 @@ export function defineMeetingSessionFlowTests(options: {
       const fn = (params.body as { fn?: unknown } | undefined)?.fn;
       return params.path === "/act" && typeof fn === "string" && fn.includes("expectedSessionId");
     });
-    expect(transcriptRead?.[1]).toMatchObject({
-      body: { targetId: `${options.tabId}-replaced-again` },
-    });
+    const expectedTarget = { targetId: `${options.tabId}-replaced-again` };
+    expect(transcriptRead?.[1].body).toMatchObject(expectedTarget);
   });
 
   it(options.rewrittenUrlTestName, async () => {
     const { harness, runtime, id } = await joinedFixture();
     harness.state.tabUrl = options.rewrittenUrl;
     harness.gatewayRequest.mockClear();
-
     const status = await runtime.status(id);
-
     expect(status.session?.chrome?.health?.browserUrl).toBe(options.rewrittenUrl);
-    expect(harness.gatewayRequest).toHaveBeenCalledWith(
-      "browser.request",
-      expect.objectContaining({
-        path: "/act",
-        body: expect.objectContaining({ targetId: options.tabId }),
-      }),
-      expect.objectContaining({ scopes: ["operator.admin"] }),
-    );
+    const request = { path: "/act", body: expect.objectContaining({ targetId: options.tabId }) };
+    expect(harness.gatewayRequest).toHaveBeenCalledWith(...requestArgs(request));
   });
 }

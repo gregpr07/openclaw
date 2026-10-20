@@ -1,10 +1,10 @@
 // Unlike fetch, retain early rejection responses even when the upload fails mid-body.
 import net from "node:net";
 
+const CRLF = Buffer.from("\r\n");
+
 export type RawHttpResult = {
-  /** Empty when the server sent nothing. */
   statusLine: string;
-  /** Lowercase response header names and their final values. */
   headers: Record<string, string>;
   body: string;
   closedByServer: boolean;
@@ -37,7 +37,6 @@ export async function postRawWebhook(params: {
   idleTimeoutMs?: number;
   /** Incremental upload: let the server reject before the body finishes. */
   chunk?: { bytes: number; intervalMs: number };
-  /** Content-Length to declare; defaults to the body's real length. */
   contentLength?: number;
   /** Omit Content-Length to exercise limits on received bytes, not declared length. */
   chunkedEncoding?: boolean;
@@ -45,7 +44,6 @@ export async function postRawWebhook(params: {
   const target = new URL(params.url);
   const port = Number(target.port);
   const payload = Buffer.from(params.body, "utf-8");
-  const idleTimeoutMs = params.idleTimeoutMs ?? 2_000;
   const headerLines = Object.entries(params.headers ?? {})
     .map(([name, value]) => `${name}: ${value}\r\n`)
     .join("");
@@ -68,9 +66,7 @@ export async function postRawWebhook(params: {
         return;
       }
       settled = true;
-      if (timer) {
-        clearTimeout(timer);
-      }
+      clearTimeout(timer);
       socket.destroy();
       const raw = Buffer.concat(received);
       const headerEnd = raw.indexOf("\r\n\r\n", 0, "latin1");
@@ -93,51 +89,39 @@ export async function postRawWebhook(params: {
       });
     };
 
-    // Write ASCII framing separately so payload bytes above 0x7f are not re-encoded.
-    const writeBody = (slice: Buffer) => {
-      if (params.chunkedEncoding) {
-        socket.write(`${slice.length.toString(16)}\r\n`);
-      }
-      socket.write(slice);
-      if (params.chunkedEncoding) {
-        socket.write("\r\n");
-      }
-    };
+    // Frame raw bytes without re-encoding non-ASCII payloads through a string.
+    const frameChunk = (data: Buffer) =>
+      Buffer.concat([Buffer.from(data.length.toString(16) + "\r\n"), data, CRLF]);
+    const writeBody = (data: Buffer) =>
+      socket.write(params.chunkedEncoding ? frameChunk(data) : data);
 
     socket.on("connect", () => {
       socket.write(head);
-      if (!params.chunk) {
-        writeBody(payload);
-        if (params.chunkedEncoding) {
-          socket.write("0\r\n\r\n");
+      const incremental = Boolean(params.chunk);
+      const { bytes = payload.length, intervalMs = 0 } = params.chunk ?? {};
+      let offset = 0;
+      const pump = () => {
+        if (settled || socket.destroyed) {
+          return;
         }
-      } else {
-        const { bytes, intervalMs } = params.chunk;
-        let offset = 0;
-        const pump = () => {
-          if (settled || socket.destroyed) {
-            return;
-          }
-          if (offset >= payload.length) {
-            if (params.chunkedEncoding) {
-              socket.write(`0\r\n\r\n`);
-            }
-            return;
-          }
+        const hasBody = offset < payload.length;
+        if (!incremental || hasBody) {
           const end = Math.min(offset + bytes, payload.length);
           writeBody(payload.subarray(offset, end));
           offset = end;
+        }
+        if (incremental && hasBody) {
           setTimeout(pump, intervalMs).unref?.();
-        };
-        pump();
-      }
+        } else if (params.chunkedEncoding) {
+          socket.write("0\r\n\r\n");
+        }
+      };
+      pump();
       // Only the idle timeout reports a retained connection.
-      timer = setTimeout(() => settle(false), idleTimeoutMs);
+      timer = setTimeout(() => settle(false), params.idleTimeoutMs ?? 2_000);
       timer.unref?.();
     });
-    socket.on("data", (chunk: Buffer) => {
-      received.push(chunk);
-    });
+    socket.on("data", (chunk: Buffer) => received.push(chunk));
     // A mid-upload error may follow buffered response bytes; settle only on close.
     socket.on("error", () => {});
     socket.on("close", () => settle(true));
