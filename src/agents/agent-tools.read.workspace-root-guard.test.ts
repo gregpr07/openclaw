@@ -1,11 +1,12 @@
 import path from "node:path";
+import { Type } from "typebox";
 import { beforeEach, expect, it, vi } from "vitest";
 import {
   createOpenClawReadTool,
   wrapToolWorkspaceRootGuardWithOptions,
 } from "./agent-tools.read.js";
 import type { AnyAgentTool } from "./agent-tools.types.js";
-import { createStubTool } from "./test-helpers/agent-tool-stubs.js";
+import type { ReadToolDetails } from "./sessions/tools/tool-contracts.js";
 import { createSandboxFsBridgeFromResolver } from "./test-helpers/host-sandbox-fs-bridge.js";
 
 type AssertSandboxPath = typeof import("./sandbox-paths.js").assertSandboxPath;
@@ -15,8 +16,11 @@ vi.mock("./sandbox-paths.js", async (importOriginal) => ({
   assertSandboxPath: mocks.assertSandboxPath,
 }));
 const root = path.resolve("/tmp/root");
-const execute = vi.fn(async () => ({ content: [], details: {} }));
-let tool: AnyAgentTool;
+const execute = vi.fn(async () => ({
+  content: [{ type: "text" as const, text: "ok" }],
+  details: { kind: "text" as const, content: "ok" },
+}));
+let tool: AnyAgentTool<ReadToolDetails>;
 const guard = (
   filePath: string,
   options?: Parameters<typeof wrapToolWorkspaceRootGuardWithOptions>[2],
@@ -30,7 +34,7 @@ function expectGuard(filePath: string, guardRoot = root) {
 }
 beforeEach(() => {
   execute.mockClear();
-  tool = { ...createStubTool("read"), execute };
+  tool = { name: "read", label: "read", description: "read", parameters: Type.Object({}), execute };
   mocks.assertSandboxPath.mockReset().mockImplementation(async ({ filePath }) => ({
     resolved:
       filePath.startsWith("file://") || path.isAbsolute(filePath)

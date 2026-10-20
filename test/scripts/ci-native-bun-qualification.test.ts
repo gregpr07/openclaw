@@ -77,7 +77,7 @@ it.each([false, true])(
       ...(sharedDrift ? [changed(fixture.setup)] : []),
     ]);
     const reads = read.mock.calls.map(([file]) => file);
-    expect(reads.toSorted()).toEqual(files.toSorted());
+    expect(reads.map(String).toSorted()).toEqual(files.toSorted());
   },
 );
 

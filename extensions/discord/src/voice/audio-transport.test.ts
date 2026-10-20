@@ -101,7 +101,7 @@ describe("Discord audio worker control boundary", () => {
         d: { guild_id: "guild", channel_id: "voice", self_mute: false, self_deaf: false },
       },
     });
-    expect(worker.postMessage).toHaveBeenLastCalledWith({ type: "gateway-failed" });
+    expect(worker.postMessage).toHaveBeenLastCalledWith({ type: "gateway-failed" }, undefined);
   });
 
   it("waits for physical termination when the worker exceeds its stop grace", async () => {

@@ -255,8 +255,8 @@ it("preserves Telegram topics when resolving automation mention policy", async (
       },
     },
   ]);
-  const resolveRequireMention = vi.fn(
-    ({ groupId }: { groupId?: string }) => groupId === "-1001:topic:77",
+  const resolveRequireMention = vi.fn<ResolveMention>(
+    ({ groupId }) => groupId === "-1001:topic:77",
   );
   mockRuntime(resolveRequireMention);
   const { extractExplicitGroupId } = await import("./group-id.js");

@@ -47,7 +47,7 @@ it.each([
   ],
 ] satisfies [string, (host: RuntimeEnv) => unknown, boolean?][])(
   "%s reports unavailable metadata without suggesting config repair",
-  async (_name, run, json) =>
+  async (_name, run, json?: boolean) =>
     withConfig(unreadableConfig, async (host) => {
       if (json) {
         process.argv = [process.execPath, "openclaw", "config", "get", "gateway", "--json"];

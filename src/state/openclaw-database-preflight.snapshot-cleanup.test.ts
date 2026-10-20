@@ -36,7 +36,7 @@ it.each([
     // Bun can retain native resources after logical close; fail only this snapshot's removal.
     vi.spyOn(fs.promises, "rm").mockImplementation(async (target, options) => {
       if ([...busyRoots].some((root) => String(target).startsWith(root))) {
-        throw Object.assign(new Error(`${code}: resource busy or locked, rm '${target}'`), {
+        throw Object.assign(new Error(`${code}: resource busy or locked, rm '${String(target)}'`), {
           code,
         });
       }

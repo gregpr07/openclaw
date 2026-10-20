@@ -35,7 +35,7 @@ export function createPackageActivationLifetimeFixture() {
 
   return {
     lifetime,
-    setup() {
+    setup(this: void) {
       root = fs.realpathSync(lifetime.createTempDir("activation-lifetime-"));
       const tmp = path.join(root, "private-tmp");
       fs.mkdirSync(tmp, { mode: 0o700 });
@@ -52,6 +52,7 @@ export function createPackageActivationLifetimeFixture() {
     },
 
     async prepare(
+      this: void,
       cut?: (anchor: string) => void | Promise<void>,
       onCustody?: (retained: boolean) => void,
       runtime: PackageActivationRuntime = packageActivationRuntimeForTest(),
@@ -87,7 +88,7 @@ export function createPackageActivationLifetimeFixture() {
       };
     },
 
-    spawnChild(args: string[]) {
+    spawnChild(this: void, args: string[]) {
       const worker = resolveRuntimeWorkerUrl({
         ...packageActivationRuntimeEntrypoint,
         sourceWorkerName: "package-update-activation.process.test-support",
@@ -99,14 +100,14 @@ export function createPackageActivationLifetimeFixture() {
       });
     },
 
-    async stopChild(child: ChildProcess, closed: Promise<unknown>) {
+    async stopChild(this: void, child: ChildProcess, closed: Promise<unknown>) {
       await lifetime.verifyCleanup(async () => {
         await stopChildProcess(child, 5_000);
         await closed;
       });
     },
 
-    killUncommittedWrite(journalPath: string) {
+    killUncommittedWrite(this: void, journalPath: string) {
       {
         using journalSetup = new DatabaseSync(journalPath);
         journalSetup.exec(`
@@ -139,7 +140,7 @@ export function createPackageActivationLifetimeFixture() {
       );
     },
 
-    snapshotControl(anchor: string) {
+    snapshotControl(this: void, anchor: string) {
       return fs
         .readdirSync(resolvePackageActivationControl(anchor))
         .toSorted()
@@ -150,7 +151,7 @@ export function createPackageActivationLifetimeFixture() {
         });
     },
 
-    async writePostCoreCapability(packageRoot: string) {
+    async writePostCoreCapability(this: void, packageRoot: string) {
       await fsp.mkdir(path.join(packageRoot, "dist/infra"), { recursive: true });
       await fsp.writeFile(
         path.join(packageRoot, "dist/infra/update-migrated-finalize.worker.js"),

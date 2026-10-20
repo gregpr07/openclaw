@@ -22,6 +22,7 @@ function closeChild(child: ChildProcess) {
 }
 
 const handlers = new Map<string, () => void>();
+const childKill = vi.fn<ChildProcess["kill"]>(() => true);
 let restore: () => void;
 let scheduler: typeof import("../../scripts/test-docker-all.mts");
 let child: ChildProcess;
@@ -56,7 +57,8 @@ beforeEach(async () => {
   Object.defineProperty(child, "pid", { value: 42 });
   child.stdout = Object.assign(new EventEmitter(), { destroy: vi.fn() }) as never;
   child.stderr = Object.assign(new EventEmitter(), { destroy: vi.fn() }) as never;
-  child.kill = vi.fn(() => true) as ChildProcess["kill"];
+  childKill.mockReset().mockReturnValue(true);
+  child.kill = childKill;
   spawnMock.mockReset().mockReturnValue(child);
   for (const key of ["exitCode", "signalCode"]) {
     Object.defineProperty(child, key, { value: null, configurable: true });
@@ -99,7 +101,6 @@ describe("Docker scheduler Windows child shutdown", () => {
     "requires observed Windows child completion after SIGINT: %s",
     async (completion) => {
       vi.useFakeTimers();
-      const childKill = vi.mocked(child.kill);
       if (completion === "signal failure") {
         childKill.mockImplementation(() => {
           throw new Error("fixture kill failed");
@@ -165,7 +166,7 @@ describe("Docker scheduler Windows child shutdown", () => {
       closeChild(child);
       expect(await result).toBe(failure);
       expect(stream.closed).toBe(true);
-      expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+      expect(childKill).toHaveBeenCalledWith("SIGTERM");
       expect(process.exitCode).toBe(17);
       expect(diagnostic).not.toHaveBeenCalled();
     } finally {

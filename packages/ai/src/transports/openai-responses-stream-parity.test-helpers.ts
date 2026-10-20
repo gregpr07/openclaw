@@ -145,7 +145,7 @@ export function tool(
     ...(status === undefined ? {} : { status }),
   };
 }
-export function toolCall(id: string, name: string, args: unknown) {
+export function toolCall(id: string, name: string, args: Record<string, unknown>) {
   return { type: "toolCall" as const, id, name, arguments: args, partialJson: false };
 }
 

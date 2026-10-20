@@ -130,7 +130,7 @@ it.each([
   ],
 ] satisfies [string, string[], string, string?, boolean?][])(
   "rejects %s without changing config or shared state",
-  async (_name, args, error, input, json) => {
+  async (_name, args, error, input?: string, json?: boolean) => {
     const f = await fixture();
     const result = await f.run(args, 1, input);
     if (json) {
@@ -152,7 +152,7 @@ it.each([
   ["unset", ["config", "unset", "database"]],
 ] satisfies [string, string[], string?][])(
   "previews a database-only %s without credentials or database access",
-  async (_command, args, input) => {
+  async (_command, args, input?: string) => {
     const f = await fixture(true);
     const result = await f.run([...args, "--dry-run", "--json"], 0, input);
     expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, operations: 1 });

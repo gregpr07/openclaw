@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, assert, beforeEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import type { ChannelPlugin } from "../channels/plugins/types.js";
+import type { ChannelPlugin } from "../channels/plugins/types.public.js";
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../config/io.js";
 import type { GatewayRequestContext } from "../gateway/server-methods/types.js";
 import { resetDiagnosticEventsForTest } from "../infra/diagnostic-events.js";
