@@ -26,7 +26,6 @@ const { cfg: lifecycleConfig, account: lifecycleAccount } = createFeishuLifecycl
   appSecret: "secret_test",
   channelConfig: { groupPolicy: "open", allowFrom: ["ou_sender_1"] },
   accountConfig: {
-    groupPolicy: "open",
     groups: {
       oc_group_topic: {
         requireMention: false,
@@ -54,43 +53,14 @@ describe("Feishu ACP-init failure lifecycle", () => {
       mainSessionKey: "agent:main:main",
       matchedBy: "default",
     });
-    const conversation = {
-      channel: "feishu",
-      accountId: "acct-acp",
-      conversationId: "oc_group_topic:topic:om_topic_root_1",
-    };
-    const spec = { ...conversation, agentId: "codex", mode: "persistent" };
-    const sessionKey = "agent:codex:acp:binding:feishu:acct-acp:abc123";
     mocks.resolveConfiguredBindingRouteMock.mockReturnValue({
-      bindingResolution: {
-        configuredBinding: {
-          spec,
-          record: {
-            bindingId: "config:acp:feishu:acct-acp:oc_group_topic:topic:om_topic_root_1",
-            targetSessionKey: sessionKey,
-            targetKind: "session",
-            conversation: {
-              ...conversation,
-              parentConversationId: "oc_group_topic",
-            },
-            status: "active",
-            boundAt: 0,
-            metadata: { source: "config" },
-          },
-        },
-        statefulTarget: {
-          kind: "stateful",
-          driverId: "acp",
-          sessionKey,
-          agentId: "codex",
-        },
-      },
-      configuredBinding: { spec },
+      // The readiness mock rejects before binding contents can be consumed.
+      bindingResolution: {},
       route: {
         agentId: "codex",
         channel: "feishu",
         accountId: "acct-acp",
-        sessionKey,
+        sessionKey: "agent:codex:acp:binding:feishu:acct-acp:abc123",
         mainSessionKey: "agent:codex:main",
         matchedBy: "binding.channel",
       },

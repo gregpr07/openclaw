@@ -5,23 +5,7 @@ import { createToolFactoryHarness } from "./tool-factory-test-harness.js";
 
 const createFeishuClientMock = vi.fn((creds: { appId?: string } | undefined) => ({
   __appId: creds?.appId,
-  application: {
-    scope: {
-      list: vi.fn(async () => ({
-        code: 0,
-        data: { scopes: [] },
-      })),
-    },
-  },
 }));
-
-function feishuClientAppId(callIndex: number): string | undefined {
-  const call = createFeishuClientMock.mock.calls.at(callIndex);
-  if (!call) {
-    throw new Error(`expected createFeishuClient call ${callIndex}`);
-  }
-  return call[0]?.appId;
-}
 
 vi.mock("./client.js", () => ({
   createFeishuClient: (creds: { appId?: string } | undefined) => createFeishuClientMock(creds),
@@ -69,9 +53,10 @@ describe("feishu_doc account selection", () => {
     await docToolA.execute("call-a", { action: "list_blocks", doc_token: "d" });
     await docToolB.execute("call-b", { action: "list_blocks", doc_token: "d" });
 
-    expect(createFeishuClientMock).toHaveBeenCalledTimes(2);
-    expect(feishuClientAppId(0)).toBe("app-a");
-    expect(feishuClientAppId(1)).toBe("app-b");
+    expect(createFeishuClientMock.mock.calls.map(([account]) => account?.appId)).toEqual([
+      "app-a",
+      "app-b",
+    ]);
   });
 
   test("explicit accountId param overrides agentAccountId context", async () => {
@@ -83,7 +68,7 @@ describe("feishu_doc account selection", () => {
       accountId: "a",
     });
 
-    expect(feishuClientAppId(-1)).toBe("app-a");
+    expect(createFeishuClientMock.mock.lastCall?.[0]?.appId).toBe("app-a");
   });
 
   test.each([

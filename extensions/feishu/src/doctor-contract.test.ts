@@ -1,17 +1,13 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { describe, expect, it } from "vitest";
 import { resolveFeishuAccount } from "./accounts.js";
 import { FeishuConfigSchema } from "./config-schema.js";
 import { legacyConfigRules, normalizeCompatibilityConfig } from "./doctor-contract.js";
 
-function feishuConfig(entry: Record<string, unknown>): OpenClawConfig {
-  return { channels: { feishu: entry } } as never;
-}
-
 function normalize(entry: Record<string, unknown>) {
-  const result = normalizeCompatibilityConfig({ cfg: feishuConfig(entry) });
+  const result = normalizeCompatibilityConfig({ cfg: { channels: { feishu: entry } } as never });
   const feishu = result.config.channels?.feishu as unknown as Record<string, unknown>;
   const accounts = feishu.accounts as Record<string, Record<string, unknown>>;
+  expect(FeishuConfigSchema.safeParse(feishu).success).toBe(true);
   return { ...result, feishu, accounts };
 }
 
@@ -44,7 +40,6 @@ describe("feishu normalizeCompatibilityConfig streaming aliases", () => {
     expect(feishu.tools).toEqual({ bitable: false, doc: true });
     expect(accounts.work?.tools).toEqual({ bitable: false });
     expect(accounts.canonical?.tools).toEqual({ bitable: true });
-    expect(FeishuConfigSchema.safeParse(feishu).success).toBe(true);
   });
 
   it("sanitizes legacy Feishu-only coalesce fields so doctor output validates", () => {
@@ -56,7 +51,6 @@ describe("feishu normalizeCompatibilityConfig streaming aliases", () => {
     });
     expect(feishu.streaming).toEqual({ block: { coalesce: {} } });
     expect(accounts.work?.streaming).toEqual({ block: { coalesce: {} } });
-    expect(FeishuConfigSchema.safeParse(feishu).success).toBe(true);
   });
 
   it("strips unread legacy Feishu heartbeat fields at root and account scope", () => {
@@ -75,7 +69,6 @@ describe("feishu normalizeCompatibilityConfig streaming aliases", () => {
       "Removed channels.feishu.accounts.work.heartbeat (legacy Feishu fields were never read by runtime).",
       "Removed channels.feishu.accounts.empty.heartbeat (legacy Feishu fields were never read by runtime).",
     ]);
-    expect(FeishuConfigSchema.safeParse(feishu).success).toBe(true);
   });
 });
 
@@ -91,33 +84,24 @@ describe("feishu webhook route doctor migration", () => {
   it.each([
     ["/hook?", "/hook?"],
     ["   ", "/feishu/events"],
-    ["javascript:alert(1)", "/feishu/events"],
+    ["javascript:alert(operator-private-value)", "/feishu/events"],
   ])("repairs root and account webhook path %j to %j", (webhookPath, expectedPath) => {
     const result = normalize({ webhookPath, accounts: { main: { webhookPath } } });
     const { feishu, accounts } = result;
     expect(feishu.webhookPath).toBe(expectedPath);
     expect(accounts.main?.webhookPath).toBe(expectedPath);
-    expect(FeishuConfigSchema.safeParse(feishu).success).toBe(true);
     if (webhookPath === expectedPath) {
       expect(result.changes).toEqual([]);
     } else {
       expect(result.changes).toEqual([
-        expect.stringContaining("channels.feishu.webhookPath"),
-        expect.stringContaining("channels.feishu.accounts.main.webhookPath"),
+        "Reset invalid channels.feishu.webhookPath to /feishu/events.",
+        "Reset invalid channels.feishu.accounts.main.webhookPath to /feishu/events.",
       ]);
     }
 
     const second = normalizeCompatibilityConfig({ cfg: result.config });
     expect(second.changes).toEqual([]);
     expect(second.config).toBe(result.config);
-  });
-
-  it("reports actionable default repairs without echoing malformed operator URLs", () => {
-    const result = normalize({ webhookPath: "javascript:alert(operator-private-value)" });
-
-    expect(result.changes).toEqual([
-      "Reset invalid channels.feishu.webhookPath to /feishu/events.",
-    ]);
   });
 });
 

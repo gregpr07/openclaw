@@ -1,6 +1,7 @@
 // Preserve lifecycle mocks before loading the real monitor and bot.
 // oxfmt-ignore
 import { getFeishuLifecycleTestMocks, resetFeishuLifecycleTestMocks } from "./lifecycle.test-support.js";
+import { once } from "node:events";
 import { EventDispatcher } from "@larksuiteoapi/node-sdk";
 import {
   createChannelIngressQueueForTests,
@@ -18,6 +19,7 @@ import { monitorSingleAccount } from "./monitor.account.js";
 import {
   createFeishuLifecycleConfig,
   createFeishuLifecycleReplyDispatcher,
+  createFeishuTextMessageEvent,
   installFeishuLifecycleReplyRuntime,
   mockFeishuReplyOnceDispatch,
 } from "./test-support/lifecycle-test-support.js";
@@ -53,14 +55,8 @@ it("suppresses rich-post transport twins and retained legacy records without blo
     runtime.config.current = () => cfg;
     const queueOptions = { channelId: "feishu", accountId: "test", stateDir: state.stateDir };
     const ingressReady = createDeferred<(eventId: string) => Promise<boolean>>();
-    runtime.state.openChannelIngressQueue = <
-      T,
-      TMetadata = unknown,
-      TCompletedMetadata = unknown,
-    >() => {
-      const ingressQueue = createChannelIngressQueueForTests<T, TMetadata, TCompletedMetadata>(
-        queueOptions,
-      );
+    runtime.state.openChannelIngressQueue = <T, M = unknown, C = unknown>() => {
+      const ingressQueue = createChannelIngressQueueForTests<T, M, C>(queueOptions);
       ingressReady.resolve((eventId) =>
         observeChannelIngressQueueWrite(ingressQueue, "complete", eventId),
       );
@@ -72,22 +68,18 @@ it("suppresses rich-post transport twins and retained legacy records without blo
     mocks.monitorWebSocketMock.mockImplementation(async (...args: unknown[]) => {
       const transport = args[0] as { eventDispatcher: EventDispatcher };
       ready.resolve(transport.eventDispatcher);
-      await new Promise<void>((resolve) => {
-        controller.signal.addEventListener("abort", () => resolve(), { once: true });
-      });
+      await once(controller.signal, "abort");
     });
     // A shipped attachment-free post record survives process-memory reset.
-    expect(
-      await finalizeFeishuMessageProcessing({ messageId: "om-legacy", namespace: "test" }),
-    ).toBe(true);
+    const legacy = { messageId: "om-legacy", namespace: "test" };
+    expect(await finalizeFeishuMessageProcessing(legacy)).toBe(true);
     await closeOpenClawStateDatabaseAsync();
     feishuDedupeState.reset();
     expect(await hasProcessedFeishuMessage("om-legacy", "test")).toBe(true);
-    const monitorRuntime = createNonExitingRuntimeEnv();
     const monitor = monitorSingleAccount({
       cfg,
       account: resolveFeishuAccount({ cfg, accountId: "test" }),
-      runtime: monitorRuntime,
+      runtime: createNonExitingRuntimeEnv(),
       abortSignal: controller.signal,
       fireAndForget: false,
       botOpenIdSource: { kind: "prefetched", botOpenId: "ou-bot", source: "provider" },
@@ -106,33 +98,28 @@ it("suppresses rich-post transport twins and retained legacy records without blo
         sequence += 1;
         const eventId = `evt-post-${sequence}`;
         const completed = observeCompletion(eventId);
+        const event = createFeishuTextMessageEvent({
+          messageId,
+          chatId: "oc-post",
+          senderOpenId: "ou-user",
+          text: "Hello rich post",
+        });
+        const elements = [
+          { tag: "text", text: "Hello rich post", style: ["bold"] },
+          ...(media.imageKey ? [{ tag: "img", image_key: media.imageKey }] : []),
+        ];
+        event.message.message_type = "post";
+        event.message.create_time = createTime;
+        event.message.content = JSON.stringify({
+          en_us: { title: "", content: [elements] },
+          ...(media.fileKey
+            ? { files: [{ file_key: media.fileKey, file_name: "report.csv" }] }
+            : {}),
+        });
         await dispatcher.invoke({
           schema: "2.0",
           header: { event_id: eventId, event_type: "im.message.receive_v1" },
-          event: {
-            sender: { sender_id: { open_id: "ou-user" }, sender_type: "user" },
-            message: {
-              message_id: messageId,
-              chat_id: "oc-post",
-              chat_type: "group",
-              message_type: "post",
-              create_time: createTime,
-              content: JSON.stringify({
-                en_us: {
-                  title: "",
-                  content: [
-                    [
-                      { tag: "text", text: "Hello rich post", style: ["bold"] },
-                      ...(media.imageKey ? [{ tag: "img", image_key: media.imageKey }] : []),
-                    ],
-                  ],
-                },
-                ...(media.fileKey
-                  ? { files: [{ file_key: media.fileKey, file_name: "report.csv" }] }
-                  : {}),
-              }),
-            },
-          },
+          event,
         });
         await expect(completed).resolves.toBe(true);
         expect(await queue.listPending()).toEqual([]);
@@ -155,12 +142,6 @@ it("suppresses rich-post transport twins and retained legacy records without blo
       await send("om-legacy", 3, "1758000000001", { imageKey: "img_fixture" });
       await send("om-legacy", 3, "1758000000001", { imageKey: "img_fixture" });
       await send("om-media-fresh-id", 4, "1758000000001", { imageKey: "img_fixture" });
-    } catch (error) {
-      console.error("Feishu post-replay lifecycle diagnostics", {
-        logs: vi.mocked(monitorRuntime.log).mock.calls,
-        errors: vi.mocked(monitorRuntime.error).mock.calls,
-      });
-      throw error;
     } finally {
       controller.abort();
       await monitor;
