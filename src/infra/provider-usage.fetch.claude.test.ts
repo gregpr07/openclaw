@@ -100,14 +100,8 @@ describe("fetchClaudeUsage", () => {
     const cancel = vi.fn();
     const response = new Response(
       new ReadableStream<Uint8Array>({
-        pull(controller) {
-          if (pulls === 64) {
-            controller.close();
-            return;
-          }
-          pulls++;
-          controller.enqueue(new Uint8Array(1024 * 1024));
-        },
+        pull: (controller) =>
+          pulls++ < 64 ? controller.enqueue(new Uint8Array(1024 * 1024)) : controller.close(),
         cancel,
       }),
       { status: 502 },

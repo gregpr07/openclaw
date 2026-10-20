@@ -8,9 +8,8 @@ const io = vi.hoisted(() => ({
   probe: vi.fn<typeof import("node:child_process").spawnSync>(),
   history: vi.fn<typeof import("./gateway-boot-lifecycle.js").readGatewayLastShutdownAsync>(),
   service: vi.fn<typeof import("../daemon/service-state.js").readGatewayServiceState>(),
-  loadedLaunchAgent:
-    vi.fn<typeof import("../daemon/launchd-runtime.js").readLoadedLaunchAgentState>(),
-  correspondingLaunchAgent:
+  loadedJob: vi.fn<typeof import("../daemon/launchd-runtime.js").readLoadedLaunchAgentState>(),
+  matchingCommand:
     vi.fn<typeof import("../daemon/launchd-runtime.js").readCorrespondingLaunchAgentCommand>(),
   restart: vi.fn<typeof import("./restart.js").requestGatewayRestartWithSignalAdmission>(),
   error: vi.fn(),
@@ -29,8 +28,8 @@ vi.mock("../daemon/service.js", () => ({ resolveGatewayService: () => ({ label: 
 vi.mock("../daemon/service-state.js", () => ({ readGatewayServiceState: io.service }));
 // mock-isolation: Supply loaded and on-disk launchd observations without inspecting native jobs.
 vi.mock("../daemon/launchd-runtime.js", () => ({
-  readLoadedLaunchAgentState: io.loadedLaunchAgent,
-  readCorrespondingLaunchAgentCommand: io.correspondingLaunchAgent,
+  readLoadedLaunchAgentState: io.loadedJob,
+  readCorrespondingLaunchAgentCommand: io.matchingCommand,
 }));
 // mock-isolation: Observe the lifecycle request without signaling the Vitest process.
 vi.mock("./restart.js", () => ({
@@ -50,29 +49,29 @@ let recovery: RecoveryOwner;
 let finished: ReturnType<typeof createDeferredCore<void>>;
 let release: (() => void) | undefined;
 const environment = captureEnv(["OPENCLAW_STATE_DIR", "NODE_OPTIONS"]);
-const serviceRuntime = "/fixture/current/bin/node";
-const serviceEnvironment = { PATH: "/fixture/current/bin", NODE_OPTIONS: "--no-warnings" };
+const nodePath = "/fixture/current/bin/node";
+const serviceEnv = { PATH: "/fixture/current/bin", NODE_OPTIONS: "--no-warnings" };
 const serviceState: GatewayServiceState = {
   installed: true,
   loadState: { status: "loaded" },
   running: true,
-  env: serviceEnvironment,
+  env: serviceEnv,
   command: {
-    programArguments: [serviceRuntime, "/fixture/openclaw.mjs", "gateway", "run"],
+    programArguments: [nodePath, "/fixture/openclaw.mjs", "gateway", "run"],
     workingDirectory: "/fixture/service",
-    environment: serviceEnvironment,
+    environment: serviceEnv,
   },
 };
-const runningUnderService = { mode: "supervised", supervisor: "systemd" } as const;
-const loadedLaunchAgent = {
+const systemd = { mode: "supervised", supervisor: "systemd" } as const;
+const loadedJob = {
   ...serviceState,
   launchAgent: {
     target: "gui/501/ai.openclaw.gateway",
     sourcePath: "/fixture/Library/LaunchAgents/ai.openclaw.gateway.plist",
-    program: serviceRuntime,
-    programArguments: [serviceRuntime, "/fixture/openclaw.mjs", "gateway", "run"],
+    program: nodePath,
+    programArguments: [nodePath, "/fixture/openclaw.mjs", "gateway", "run"],
     workingDirectory: "/fixture/service",
-    environment: serviceEnvironment,
+    environment: serviceEnv,
   },
 };
 const probeResult = (stdout: string, stderr = "", status = 0) => ({
@@ -95,8 +94,8 @@ beforeEach(async () => {
   io.warn.mockImplementation(() => finished.resolve());
   io.history.mockResolvedValue(undefined);
   io.service.mockResolvedValue(serviceState);
-  io.loadedLaunchAgent.mockResolvedValue(loadedLaunchAgent);
-  io.correspondingLaunchAgent.mockResolvedValue(serviceState.command);
+  io.loadedJob.mockResolvedValue(loadedJob);
+  io.matchingCommand.mockResolvedValue(serviceState.command);
   io.restart.mockReturnValue({ status: "emitted" });
   io.probe.mockReturnValue(probeResult("v24.20.0\n"));
   runtime = await import("./child-runtime-viability.js");
@@ -119,7 +118,7 @@ function diagnose() {
 }
 
 function register(
-  decision: RecoveryDecision = runningUnderService,
+  decision: RecoveryDecision = systemd,
   ownsProcessLifecycle = true,
   isCurrent = () => true,
 ) {
@@ -177,18 +176,13 @@ it.each(["systemd", "launchd"] as const)(
         timeoutMs: 5_000,
       });
     } else {
-      expect(io.correspondingLaunchAgent).toHaveBeenCalledWith(
-        process.env,
-        loadedLaunchAgent.launchAgent,
-        5_000,
-      );
+      expect(io.matchingCommand).toHaveBeenCalledWith(process.env, loadedJob.launchAgent, 5_000);
       expect(io.service).not.toHaveBeenCalled();
     }
-    expect(io.probe).toHaveBeenCalledExactlyOnceWith(serviceRuntime, ["--version"], {
+    expect(io.probe).toHaveBeenCalledExactlyOnceWith(nodePath, ["--version"], {
       encoding: "utf8",
       cwd: "/fixture/service",
-      env:
-        supervisor === "systemd" ? serviceEnvironment : expect.objectContaining(serviceEnvironment),
+      env: supervisor === "systemd" ? serviceEnv : expect.objectContaining(serviceEnv),
       timeout: 1_000,
       maxBuffer: 8_192,
     });
@@ -214,7 +208,7 @@ it.each([
   ["unmanaged", { mode: "disabled", reason: "unmanaged", detail: "foreground" }, true],
   ["respawn disabled", { mode: "disabled", reason: "no-respawn" }, true],
   ["external supervisor", { mode: "supervised", supervisor: "external" }, true],
-  ["embedded lifecycle", runningUnderService, false],
+  ["embedded lifecycle", systemd, false],
 ] as const)("keeps %s report-only", async (_name, decision, owns) => {
   await recover(decision, owns);
   expectReported(/no verified native service/, true, true);
@@ -256,14 +250,14 @@ it("does not request restart after its lifecycle retires during preflight", asyn
     current = false;
     return serviceState;
   });
-  await recover(runningUnderService, true, () => current);
+  await recover(systemd, true, () => current);
   expectReported(/already stopping/);
 });
 
 it("keeps a rewritten launchd plist report-only when it does not match the loaded job", async () => {
-  io.correspondingLaunchAgent.mockResolvedValueOnce(null);
+  io.matchingCommand.mockResolvedValueOnce(null);
   await recover({ mode: "supervised", supervisor: "launchd" });
-  expect(io.loadedLaunchAgent).toHaveBeenCalledOnce();
-  expect(io.correspondingLaunchAgent).toHaveBeenCalledOnce();
+  expect(io.loadedJob).toHaveBeenCalledOnce();
+  expect(io.matchingCommand).toHaveBeenCalledOnce();
   expectReported(/no verified Node command/, true, true);
 });
