@@ -1,4 +1,3 @@
-// Tests path boundary enforcement for safe file access.
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -16,9 +15,19 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+const withBoundaryDir = (run: (base: string) => Promise<void>) =>
+  withTestDir({ prefix: "openclaw-boundary-path-" }, run);
+
+async function makeBoundary(base: string) {
+  const root = path.join(base, "workspace");
+  const outside = path.join(base, "outside");
+  await Promise.all([root, outside].map((dir) => fs.mkdir(dir, { recursive: true })));
+  return { root, outside };
+}
+
 describe("resolveRealpathOrAbsolute", () => {
   it("keeps missing paths lexical and falls back on non-missing errors", async () => {
-    await withTestDir({ prefix: "openclaw-boundary-path-" }, async (base) => {
+    await withBoundaryDir(async (base) => {
       const alias = path.join(base, "alias");
       await fs.symlink(path.join(base, "target"), alias);
       const missing = path.join(alias, "missing");
@@ -35,7 +44,6 @@ describe("resolveIdentityPathViaExistingAncestorSync", () => {
   it("continues through native realpath failures to preserve ancestor identity", () => {
     const aliasRoot = path.resolve("identity-alias");
     const targetPath = path.join(aliasRoot, "locked", "leaf");
-    const lockedPath = path.dirname(targetPath);
     const canonicalRoot = path.resolve("identity-real");
     const calls: string[] = [];
 
@@ -51,7 +59,7 @@ describe("resolveIdentityPathViaExistingAncestorSync", () => {
     expect(resolveIdentityPathViaExistingAncestorSync(targetPath)).toBe(
       path.join(canonicalRoot, "locked", "leaf"),
     );
-    expect(calls).toEqual([targetPath, lockedPath, aliasRoot]);
+    expect(calls).toEqual([targetPath, path.dirname(targetPath), aliasRoot]);
   });
 
   it("falls back lexically only after native realpath fails through the root", () => {
@@ -61,11 +69,10 @@ describe("resolveIdentityPathViaExistingAncestorSync", () => {
     let cursor = targetPath;
     while (true) {
       expectedCalls.push(cursor);
-      const parent = path.dirname(cursor);
-      if (parent === cursor) {
+      if (path.dirname(cursor) === cursor) {
         break;
       }
-      cursor = parent;
+      cursor = path.dirname(cursor);
     }
 
     vi.spyOn(fsSync.realpathSync, "native").mockImplementation((candidate) => {
@@ -84,29 +91,18 @@ describe("resolveRootPath", () => {
       return;
     }
 
-    await withTestDir({ prefix: "openclaw-boundary-path-" }, async (base) => {
-      const root = path.join(base, "workspace");
-      const outside = path.join(base, "outside");
+    await withBoundaryDir(async (base) => {
+      const { root, outside } = await makeBoundary(base);
       const linkPath = path.join(root, "alias-out");
-      await fs.mkdir(root, { recursive: true });
-      await fs.mkdir(outside, { recursive: true });
       await fs.symlink(outside, linkPath);
-      const dangling = path.join(linkPath, "missing.txt");
+      const options = {
+        absolutePath: path.join(linkPath, "missing.txt"),
+        rootPath: root,
+        boundaryLabel: "sandbox root",
+      };
 
-      await expect(
-        resolveRootPath({
-          absolutePath: dangling,
-          rootPath: root,
-          boundaryLabel: "sandbox root",
-        }),
-      ).rejects.toThrow(/Symlink escapes sandbox root/i);
-      expect(() =>
-        resolveRootPathSync({
-          absolutePath: dangling,
-          rootPath: root,
-          boundaryLabel: "sandbox root",
-        }),
-      ).toThrow(/Symlink escapes sandbox root/i);
+      await expect(resolveRootPath(options)).rejects.toThrow(/Symlink escapes sandbox root/i);
+      expect(() => resolveRootPathSync(options)).toThrow(/Symlink escapes sandbox root/i);
     });
   });
 
@@ -115,34 +111,26 @@ describe("resolveRootPath", () => {
       return;
     }
 
-    await withTestDir({ prefix: "openclaw-boundary-path-" }, async (base) => {
-      const root = path.join(base, "workspace");
-      const outside = path.join(base, "outside");
+    await withBoundaryDir(async (base) => {
+      const { root, outside } = await makeBoundary(base);
       const outsideFile = path.join(outside, "target.txt");
       const linkPath = path.join(root, "link.txt");
-      await fs.mkdir(root, { recursive: true });
-      await fs.mkdir(outside, { recursive: true });
       await fs.writeFile(outsideFile, "x", "utf8");
       await fs.symlink(outsideFile, linkPath);
 
-      await expect(
-        resolveRootPath({
-          absolutePath: linkPath,
-          rootPath: root,
-          boundaryLabel: "sandbox root",
-        }),
-      ).rejects.toThrow(/Symlink escapes sandbox root/i);
+      const options = { absolutePath: linkPath, rootPath: root, boundaryLabel: "sandbox root" };
+      await expect(resolveRootPath(options)).rejects.toThrow(/Symlink escapes sandbox root/i);
 
       const allowed = await resolveRootPath({
-        absolutePath: linkPath,
-        rootPath: root,
-        boundaryLabel: "sandbox root",
+        ...options,
         policy: { allowFinalSymlinkForUnlink: true },
       });
       const rootReal = await fs.realpath(root);
-      expect(allowed.exists).toBe(true);
-      expect(allowed.kind).toBe("symlink");
-      expect(allowed.canonicalPath).toBe(path.join(rootReal, "link.txt"));
+      expect(allowed).toMatchObject({
+        exists: true,
+        kind: "symlink",
+        canonicalPath: path.join(rootReal, "link.txt"),
+      });
     });
   });
 
@@ -151,7 +139,7 @@ describe("resolveRootPath", () => {
       return;
     }
 
-    await withTestDir({ prefix: "openclaw-boundary-path-" }, async (base) => {
+    await withBoundaryDir(async (base) => {
       const root = path.join(base, "workspace");
       const aliasRoot = path.join(base, "workspace-alias");
       const fileName = "plugin.js";
@@ -159,19 +147,16 @@ describe("resolveRootPath", () => {
       await fs.writeFile(path.join(root, fileName), "export default {}", "utf8");
       await fs.symlink(root, aliasRoot);
 
-      const resolved = await resolveRootPath({
+      const options = {
         absolutePath: path.join(aliasRoot, fileName),
         rootPath: await fs.realpath(root),
         boundaryLabel: "plugin root",
-      });
+      };
+      const resolved = await resolveRootPath(options);
       expect(resolved.exists).toBe(true);
       expect(isPathInside(resolved.rootCanonicalPath, resolved.canonicalPath)).toBe(true);
 
-      const resolvedSync = resolveRootPathSync({
-        absolutePath: path.join(aliasRoot, fileName),
-        rootPath: await fs.realpath(root),
-        boundaryLabel: "plugin root",
-      });
+      const resolvedSync = resolveRootPathSync(options);
       expect(resolvedSync.exists).toBe(true);
       expect(isPathInside(resolvedSync.rootCanonicalPath, resolvedSync.canonicalPath)).toBe(true);
     });

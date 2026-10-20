@@ -1,4 +1,3 @@
-// Tests channel approval authorization and sender validation.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createResolvedApproverActionAuthAdapter } from "../plugin-sdk/approval-auth-helpers.js";
 import type { ChannelApprovalKind } from "./approval-types.js";
@@ -17,56 +16,48 @@ vi.mock("../channels/plugins/index.js", async () => {
 
 import { resolveApprovalCommandAuthorization } from "./channel-approval-auth.js";
 
+function authorize(
+  overrides: Partial<Parameters<typeof resolveApprovalCommandAuthorization>[0]> = {},
+) {
+  return resolveApprovalCommandAuthorization({
+    cfg: {},
+    channel: "workspace",
+    accountId: "work",
+    senderId: "U123",
+    kind: "exec",
+    ...overrides,
+  });
+}
+
 describe("resolveApprovalCommandAuthorization", () => {
   beforeEach(() => {
     getChannelPluginMock.mockReset();
   });
 
   it("allows commands by default when the channel has no approval override", async () => {
-    expect(
-      await resolveApprovalCommandAuthorization({
-        cfg: {} as never,
-        channel: "workspace",
-        senderId: "U123",
-        kind: "exec",
-      }),
-    ).toEqual({ authorized: true, explicit: false });
+    expect(await authorize({ accountId: undefined })).toEqual({
+      authorized: true,
+      explicit: false,
+    });
   });
 
   it("delegates to the channel approval override when present", async () => {
     getChannelPluginMock.mockReturnValue({
       approvalCapability: {
-        authorizeActorAction: ({
-          approvalKind,
-        }: {
-          action: "approve";
-          approvalKind: ChannelApprovalKind;
-        }) =>
+        authorizeActorAction: ({ approvalKind }: { approvalKind: ChannelApprovalKind }) =>
           approvalKind === "plugin"
             ? { authorized: false, reason: "plugin denied" }
             : { authorized: true },
       },
     });
 
-    expect(
-      await resolveApprovalCommandAuthorization({
-        cfg: {} as never,
-        channel: "guildchat",
-        accountId: "work",
-        senderId: "123",
-        kind: "exec",
-      }),
-    ).toEqual({ authorized: true, explicit: true });
-
-    expect(
-      await resolveApprovalCommandAuthorization({
-        cfg: {} as never,
-        channel: "guildchat",
-        accountId: "work",
-        senderId: "123",
-        kind: "plugin",
-      }),
-    ).toEqual({ authorized: false, reason: "plugin denied", explicit: true });
+    const actor = { channel: "guildchat", senderId: "123" };
+    expect(await authorize(actor)).toEqual({ authorized: true, explicit: true });
+    expect(await authorize({ ...actor, kind: "plugin" })).toEqual({
+      authorized: false,
+      reason: "plugin denied",
+      explicit: true,
+    });
   });
 
   it("rejects commands through an older channel capability with scoped plugin reviewers", async () => {
@@ -74,10 +65,10 @@ describe("resolveApprovalCommandAuthorization", () => {
     getChannelPluginMock.mockReturnValue({ approvalCapability: { authorizeActorAction } });
     const cfg = {
       approvals: { plugin: { slack: { approvers: ["team:T11111111:user:U11111111"] } } },
-    } as never;
+    };
 
     expect(
-      await resolveApprovalCommandAuthorization({
+      await authorize({
         cfg,
         channel: "slack",
         accountId: "default",
@@ -97,17 +88,9 @@ describe("resolveApprovalCommandAuthorization", () => {
       },
     });
 
-    expect(
-      await resolveApprovalCommandAuthorization({
-        cfg: {} as never,
-        channel: "workspace",
-        accountId: "work",
-        senderId: "U123",
-        kind: "exec",
-      }),
-    ).toEqual({ authorized: true, explicit: false });
+    expect(await authorize()).toEqual({ authorized: true, explicit: false });
     expect(getActionAvailabilityState).toHaveBeenCalledWith({
-      cfg: {} as never,
+      cfg: {},
       accountId: "work",
       action: "approve",
       approvalKind: "exec",
@@ -122,14 +105,9 @@ describe("resolveApprovalCommandAuthorization", () => {
       }),
     });
 
-    expect(
-      await resolveApprovalCommandAuthorization({
-        cfg: {} as never,
-        channel: "quietchat",
-        accountId: "work",
-        senderId: "uuid:attacker",
-        kind: "exec",
-      }),
-    ).toEqual({ authorized: true, explicit: false });
+    expect(await authorize({ channel: "quietchat", senderId: "uuid:attacker" })).toEqual({
+      authorized: true,
+      explicit: false,
+    });
   });
 });
