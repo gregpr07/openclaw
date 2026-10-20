@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { createApplyPatchTool } from "./apply-patch.js";
 import { applyPatch, createMemoryPatchSandbox } from "./apply-patch.test-support.js";
@@ -11,34 +11,35 @@ const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 // The temp root's volume decides whether two spellings name one entry (APFS and NTFS by default).
 const caseInsensitiveTemp = existsSync(os.tmpdir().toUpperCase());
 
-async function makeDir() {
-  // Sandbox checks compare canonical paths; macOS tmpdir is itself a symlink.
-  return fs.realpath(tempDirs.make("openclaw-patch-preflight-"));
-}
+// The tracker canonicalizes the system temp root before creating directories.
+let dir: string;
+beforeEach(() => {
+  dir = tempDirs.make("openclaw-patch-preflight-");
+});
 
 const patch = (...hunks: string[]) => ["*** Begin Patch", ...hunks, "*** End Patch"].join("\n");
 const update = (file: string, before: string, after: string) =>
   `*** Update File: ${file}\n@@\n-${before}\n+${after}`;
-const execute = (dir: string, input: string, workspaceOnly = true) =>
-  createApplyPatchTool({ cwd: dir, workspaceOnly }).execute("preflight", { input }, undefined);
+const execute = (root: string, input: string, workspaceOnly = true) =>
+  createApplyPatchTool({ cwd: root, workspaceOnly }).execute("preflight", { input }, undefined);
 
-async function symlink(dir: string, targetDir = dir) {
+async function symlink(root: string, targetDir = root) {
   const target = path.join(targetDir, "target.txt");
-  const link = path.join(dir, "link.txt");
+  const link = path.join(root, "link.txt");
   await fs.writeFile(target, "keep\n", "utf8");
   await fs.symlink(target, link);
   return { target, link };
 }
 
-async function hardlink(dir: string, content = "keep\n") {
-  await fs.writeFile(path.join(dir, "original.txt"), content, "utf8");
-  await fs.link(path.join(dir, "original.txt"), path.join(dir, "alias.txt"));
+async function hardlink(root: string, content = "keep\n") {
+  await fs.writeFile(path.join(root, "original.txt"), content, "utf8");
+  await fs.link(path.join(root, "original.txt"), path.join(root, "alias.txt"));
 }
 
-async function expectFiles(dir: string, files: Record<string, string>) {
-  const names = (await fs.readdir(dir)).toSorted();
+async function expectFiles(root: string, files: Record<string, string>) {
+  const names = (await fs.readdir(root)).toSorted();
   const contents = await Promise.all(
-    names.map((name) => fs.readFile(path.join(dir, name), "utf8")),
+    names.map((name) => fs.readFile(path.join(root, name), "utf8")),
   );
   expect(Object.fromEntries(names.map((name, i) => [name, contents[i]]))).toEqual(files);
 }
@@ -60,7 +61,6 @@ describe("applyPatch preflight", () => {
       error: /Failed to find expected lines in .*important\.txt/,
     },
   ])("leaves the workspace unchanged when $name rejects", async ({ input, error }) => {
-    const dir = await makeDir();
     await fs.writeFile(path.join(dir, "important.txt"), "irreplaceable\n");
 
     await expect(applyPatch(input, { cwd: dir })).rejects.toThrow(error);
@@ -90,7 +90,6 @@ describe("applyPatch preflight", () => {
   it.runIf(process.platform !== "win32")(
     "replaces an outside symlink that the same patch deletes first",
     async () => {
-      const dir = await makeDir();
       const outsideDir = await fs.realpath(tempDirs.make("openclaw-patch-outside-"));
       const { target: outsideTarget, link } = await symlink(dir, outsideDir);
       const result = await execute(
@@ -117,7 +116,6 @@ describe("applyPatch preflight", () => {
   it.runIf(process.platform === "linux")(
     "updates the other name of a hardlinked symlink after deleting one name",
     async () => {
-      const dir = await makeDir();
       await fs.writeFile(path.join(dir, "target.txt"), "old\n", "utf8");
       await fs.symlink(path.join(dir, "target.txt"), path.join(dir, "a"));
       await fs.link(path.join(dir, "a"), path.join(dir, "b"));
@@ -146,7 +144,6 @@ describe("applyPatch preflight", () => {
   ])(
     "replaces an outside symlink with $name on a case-insensitive volume",
     async ({ hunks, created }) => {
-      const dir = await makeDir();
       const outsideDir = await fs.realpath(tempDirs.make("openclaw-patch-outside-"));
       await symlink(dir, outsideDir);
       await fs.symlink(outsideDir, path.join(dir, "d"));
@@ -176,7 +173,6 @@ describe("applyPatch preflight", () => {
       error: /Failed to read file to update .*target\.txt/,
     },
   ])("keeps a deleted in-workspace symlink when $name rejects", async ({ hunks, error }) => {
-    const dir = await makeDir();
     const { target, link } = await symlink(dir);
 
     await expect(execute(dir, patch("*** Delete File: link.txt", hunks))).rejects.toThrow(error);
@@ -201,7 +197,6 @@ describe("applyPatch preflight", () => {
       files: { "link.txt": "moved\n" },
     },
   ])("stages $name after deleting an in-workspace symlink", async ({ hunks, files }) => {
-    const dir = await makeDir();
     const { link } = await symlink(dir);
     await execute(dir, patch("*** Delete File: link.txt", hunks));
 
@@ -221,7 +216,6 @@ describe("applyPatch preflight", () => {
       files: { "original.txt": "changed\n" },
     },
   ])("$name after the same patch deletes one name", async ({ hunks, files }) => {
-    const dir = await makeDir();
     await hardlink(dir);
     await execute(dir, patch("*** Delete File: alias.txt", hunks));
     await expectFiles(dir, files);
@@ -245,7 +239,6 @@ describe("applyPatch preflight", () => {
       files: { "alias.txt": "kept\n", "moved.txt": "two\n" },
     },
   ])("$name after an update through one name of a hardlink", async ({ hunks, move, files }) => {
-    const dir = await makeDir();
     await hardlink(dir, "one\n");
     await execute(
       dir,
@@ -256,7 +249,6 @@ describe("applyPatch preflight", () => {
   });
 
   it("replaces a file with a directory that the same patch deletes first", async () => {
-    const dir = await makeDir();
     await fs.writeFile(path.join(dir, "x"), "file\n", "utf8");
 
     await applyPatch(
@@ -270,7 +262,6 @@ describe("applyPatch preflight", () => {
   it.runIf(process.platform !== "win32")(
     "rejects an update of a moved symlink path before moving it",
     async () => {
-      const dir = await makeDir();
       const { link } = await symlink(dir);
       const input = patch(
         "*** Update File: link.txt\n*** Move to: moved.txt\n@@\n-keep\n+moved",
@@ -289,7 +280,6 @@ describe("applyPatch preflight", () => {
   it.runIf(process.platform !== "win32")(
     "replaces an outside directory symlink that the same patch deletes first",
     async () => {
-      const dir = await makeDir();
       const outsideDir = await fs.realpath(tempDirs.make("openclaw-patch-outside-"));
       await fs.writeFile(path.join(outsideDir, "x.txt"), "keep\n", "utf8");
       await fs.symlink(outsideDir, path.join(dir, "d"));
@@ -313,7 +303,6 @@ describe("applyPatch preflight", () => {
   it.runIf(process.platform !== "win32")(
     "rejects an outside symlink update before an unrelated delete runs",
     async () => {
-      const dir = await makeDir();
       const outsideDir = await fs.realpath(tempDirs.make("openclaw-patch-outside-"));
       await symlink(dir, outsideDir);
       await fs.writeFile(path.join(dir, "unrelated.txt"), "keep\n", "utf8");
