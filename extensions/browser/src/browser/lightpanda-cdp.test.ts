@@ -18,6 +18,11 @@ const attachedPage = {
   sessionId: "browser-session",
   params: { sessionId: "page-session", targetInfo: { type: "page", targetId: "page-one" } },
 };
+const targetCommand = (id: number) => ({
+  id,
+  method: "Target.getTargets",
+  sessionId: "browser-session",
+});
 
 describe("Lightpanda CDP session routing", () => {
   it.each([undefined, "lightpanda"] as const)(
@@ -90,25 +95,16 @@ describe("Lightpanda CDP session routing", () => {
         params: { targetId: "explicit-target" },
       }),
     ).toMatchObject({ params: { targetId: "explicit-target" } });
-    normalize.send({ id: 2, method: "Target.getTargets", sessionId: "browser-session" });
-    expect(normalize.receive({ id: 2, result: {} })).toEqual({
-      id: 2,
-      result: {},
-      sessionId: "browser-session",
-    });
-    expect(normalize.receive({ id: 1, error: { message: "not found" } })).toEqual({
-      id: 1,
-      error: { message: "not found" },
-      sessionId: "page-session",
-    });
+    normalize.send(targetCommand(2));
+    const reply = { id: 2, result: {} };
+    expect(normalize.receive(reply)).toEqual({ ...reply, sessionId: "browser-session" });
+    const error = { id: 1, error: { message: "not found" } };
+    expect(normalize.receive(error)).toEqual({ ...error, sessionId: "page-session" });
     // A duplicate or unsolicited response must never acquire an old session.
     expect(normalize.receive({ id: 1, result: {} })).toEqual({ id: 1, result: {} });
-    normalize.send({ id: 3, method: "Target.getTargets", sessionId: "browser-session" });
-    expect(normalize.receive({ id: 3, result: {}, sessionId: "engine-session" })).toEqual({
-      id: 3,
-      result: {},
-      sessionId: "engine-session",
-    });
+    normalize.send(targetCommand(3));
+    const routed = { id: 3, result: {}, sessionId: "engine-session" };
+    expect(normalize.receive(routed)).toEqual(routed);
   });
 
   it("forgets detached targets and all state when the connection closes", () => {
@@ -129,14 +125,12 @@ describe("Lightpanda CDP session routing", () => {
   it("bounds unanswered target requests instead of retaining them indefinitely", () => {
     const normalize = createLightpandaCdpNormalizer();
     for (let id = 1; id <= 4096; id += 1) {
-      normalize.send({ id, method: "Target.getTargets", sessionId: "browser-session" });
+      normalize.send(targetCommand(id));
     }
-    expect(() =>
-      normalize.send({ id: 4097, method: "Target.getTargets", sessionId: "browser-session" }),
-    ).toThrow("too many unanswered target commands");
+    expect(() => normalize.send(targetCommand(4097))).toThrow(
+      "too many unanswered target commands",
+    );
     normalize.receive({ id: 1, result: {} });
-    expect(() =>
-      normalize.send({ id: 4097, method: "Target.getTargets", sessionId: "browser-session" }),
-    ).not.toThrow();
+    expect(() => normalize.send(targetCommand(4097))).not.toThrow();
   });
 });

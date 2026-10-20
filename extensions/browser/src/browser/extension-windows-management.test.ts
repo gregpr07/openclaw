@@ -37,6 +37,9 @@ const missing = {
   store: "missing",
   installation: null,
 };
+const framed = (value: unknown, suffix = "\n") => Buffer.from(JSON.stringify(value) + suffix);
+const responseScript = (value: unknown, exitCode = 0) =>
+  `process.stdout.write(${JSON.stringify(framed(value).toString())}); process.exitCode=${exitCode};`;
 describe("accepted Windows management ABI", () => {
   it.each(['{"v":1,"\\u0076":1}', '{"v":1.0}', '{"v":1,"x":"\\ud800"}'])(
     "rejects ambiguous JSON %s",
@@ -47,53 +50,37 @@ describe("accepted Windows management ABI", () => {
   it("enforces exact byte bounds, UTF-8 and LF-inclusive response framing", () => {
     const request = windowsFixture().request;
     const json = JSON.stringify(request);
-    expect(
-      parseWindowsJson(Buffer.from(json + " ".repeat(32768 - Buffer.byteLength(json)))),
-    ).toEqual(request);
-    expect(() =>
-      parseWindowsJson(Buffer.from(json + " ".repeat(32769 - Buffer.byteLength(json)))),
-    ).toThrow();
+    const padded = (size: number) => Buffer.from(json + " ".repeat(size - Buffer.byteLength(json)));
+    expect(parseWindowsJson(padded(32768))).toEqual(request);
+    expect(() => parseWindowsJson(padded(32769))).toThrow();
     for (const bytes of [Buffer.from([239, 187, 191, 123, 125]), Buffer.from([192, 175])]) {
       expect(() => parseWindowsJson(bytes)).toThrow();
     }
-    expect(
-      parseWindowsManagementResponse(Buffer.from(JSON.stringify(missing) + "\n"), 0, request),
-    ).toEqual(missing);
+    const parse = (suffix = "\n", code = 0) =>
+      parseWindowsManagementResponse(framed(missing, suffix), code, request);
+    expect(parse()).toEqual(missing);
     for (const suffix of ["", "\r\n", "\n\n", "\n{}"]) {
-      expect(() =>
-        parseWindowsManagementResponse(Buffer.from(JSON.stringify(missing) + suffix), 0, request),
-      ).toThrow();
+      expect(() => parse(suffix)).toThrow();
     }
-    expect(() =>
-      parseWindowsManagementResponse(Buffer.from(JSON.stringify(missing) + "\n"), 1, request),
-    ).toThrow();
+    expect(() => parse("\n", 1)).toThrow();
   });
   it("enforces action/Store and discriminated context rules", () => {
     const { request } = windowsFixture();
+    const accepts = (overrides: Record<string, unknown>) =>
+      managementRequestSchema.safeParse({ ...request, ...overrides }).success;
     for (const [action, store] of [
       ["inspect", "request"],
       ["inspect", "remove"],
       ["install", "remove"],
       ["uninstall", "request"],
     ]) {
-      expect(managementRequestSchema.safeParse({ ...request, action, store }).success).toBe(false);
+      expect(accepts({ action, store })).toBe(false);
     }
-    expect(
-      managementRequestSchema.safeParse({
-        ...request,
-        mode: "companion-managed-wsl",
-        context: null,
-      }).success,
-    ).toBe(true);
-    expect(
-      managementRequestSchema.safeParse({ ...request, mode: "companion-managed-wsl" }).success,
-    ).toBe(false);
-    expect(
-      managementRequestSchema.safeParse({
-        ...request,
-        expectedOrigins: [WINDOWS_OFFICIAL_ORIGIN, WINDOWS_OFFICIAL_ORIGIN],
-      }).success,
-    ).toBe(false);
+    expect(accepts({ mode: "companion-managed-wsl", context: null })).toBe(true);
+    expect(accepts({ mode: "companion-managed-wsl" })).toBe(false);
+    expect(accepts({ expectedOrigins: [WINDOWS_OFFICIAL_ORIGIN, WINDOWS_OFFICIAL_ORIGIN] })).toBe(
+      false,
+    );
   });
   it("accepts truthful partial failures and rejects disabled/unknown invented inventory", () => {
     const f = windowsFixture();
@@ -104,7 +91,7 @@ describe("accepted Windows management ABI", () => {
     });
     const partial = { ...f.response, ok: false, code: "browser_control_disabled" };
     const parse = (response: unknown) =>
-      parseWindowsManagementResponse(Buffer.from(JSON.stringify(response) + "\n"), 1, request);
+      parseWindowsManagementResponse(framed(response), 1, request);
     expect(parse(partial)).toEqual(partial);
     for (const store of ["disabled", "unknown"]) {
       expect(() => parse({ ...partial, store })).toThrow();
@@ -144,23 +131,18 @@ describe("real child-process management transport (not Windows PE proof)", () =>
   it("sends exactly --manage, closes stdin at EOF and accepts a bounded typed failure on exit1", async () => {
     const response = { ...missing, ok: false, code: "busy", registration: null, store: null };
     await child(
-      'let input=""; for await (const chunk of process.stdin) input+=chunk; JSON.parse(input); if(process.argv[2]!=="--manage")process.exit(2); process.stdout.write(' +
-        JSON.stringify(JSON.stringify(response) + "\n") +
-        "); process.exitCode=1;",
+      'let input=""; for await (const chunk of process.stdin) input+=chunk; JSON.parse(input); if(process.argv[2]!=="--manage")process.exit(2);' +
+        responseScript(response, 1),
     );
     expect(await runWindowsManagement("fixture.exe", windowsFixture().request)).toEqual(response);
   });
   it.each(["stderr", "overflow", "exit-mismatch"])("rejects %s without any retry", async (kind) => {
     const body =
       kind === "stderr"
-        ? 'process.stderr.write("private error"); process.stdout.write(' +
-          JSON.stringify(JSON.stringify(missing) + "\n") +
-          ");"
+        ? 'process.stderr.write("private error");' + responseScript(missing)
         : kind === "overflow"
           ? 'process.stdout.write("x".repeat(32769));'
-          : "process.stdout.write(" +
-            JSON.stringify(JSON.stringify(missing) + "\n") +
-            "); process.exitCode=1;";
+          : responseScript(missing, 1);
     const run = await child(body);
     await expect(runWindowsManagement("fixture.exe", windowsFixture().request)).rejects.toThrow(
       WindowsManagementTransportError,

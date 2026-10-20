@@ -22,6 +22,12 @@ const session = getPwToolsCoreSessionMocks();
 const canonical = "/private/tmp/openclaw/uploads/ok.txt";
 const paths = ["/tmp/openclaw/uploads/ok.txt"];
 const target = { cdpUrl: "http://127.0.0.1:18792", targetId: "T1" };
+const remote = { cdpUrl: "https://browser.example/cdp", ssrfPolicy: {} };
+const extension = {
+  browserFilesystemLocal: false,
+  uploadPathsFallbackOnPayloadLimit: true,
+  ssrfPolicy: {},
+};
 const payload = {
   name: "ok.txt",
   mimeType: "text/plain",
@@ -59,12 +65,11 @@ describe("upload handoff", () => {
     const fileChooser = { setFiles: vi.fn(async () => {}) };
     await setFileChooserFilesViaPlaywright({
       ...target,
-      cdpUrl: "https://browser.example/cdp",
+      ...remote,
       page: page as never,
       fileChooser: fileChooser as never,
       paths,
       timeoutMs: 250,
-      ssrfPolicy: {},
     });
     expect(stat).toHaveBeenCalledWith(canonical);
     expect(readFile).toHaveBeenCalledWith(canonical);
@@ -76,7 +81,7 @@ describe("upload handoff", () => {
 
   it("uses an octet-stream payload when mime detection has no answer", async () => {
     detectMime.mockResolvedValueOnce(undefined);
-    await upload({ cdpUrl: "https://browser.example/cdp", ssrfPolicy: {} });
+    await upload(remote);
     expect(setInputFiles).toHaveBeenCalledWith(
       [{ ...payload, mimeType: "application/octet-stream" }],
       nativeOptions,
@@ -93,9 +98,8 @@ describe("upload handoff", () => {
     });
     await expect(
       upload({
-        cdpUrl: "https://browser.example/cdp",
+        ...remote,
         paths: ["/tmp/openclaw/uploads/one.txt", "/tmp/openclaw/uploads/two.txt"],
-        ssrfPolicy: {},
       }),
     ).rejects.toThrow("Cannot set buffer larger than 50Mb");
     expect(readFile).not.toHaveBeenCalled();
@@ -104,22 +108,14 @@ describe("upload handoff", () => {
 
   it.each([47, 48, 50])("keeps extension path handoff for a %i MiB upload", async (mib) => {
     stat.mockResolvedValueOnce({ size: mib * 1024 * 1024 });
-    await upload({
-      browserFilesystemLocal: false,
-      uploadPathsFallbackOnPayloadLimit: true,
-      ssrfPolicy: {},
-    });
+    await upload(extension);
     expect(readFile).not.toHaveBeenCalled();
     expect(setInputFiles).toHaveBeenCalledExactlyOnceWith([canonical], nativeOptions);
   });
 
   it("sends extension uploads below the relay bound as bytes", async () => {
     stat.mockResolvedValue({ size: 46 * 1024 * 1024, mtimeMs: payload.lastModifiedMs });
-    await upload({
-      browserFilesystemLocal: false,
-      uploadPathsFallbackOnPayloadLimit: true,
-      ssrfPolicy: {},
-    });
+    await upload(extension);
     expect(readFile).toHaveBeenCalledWith(canonical);
     expect(setInputFiles).toHaveBeenCalledExactlyOnceWith([payload], nativeOptions);
   });
@@ -129,13 +125,12 @@ describe("upload handoff", () => {
       browserFilesystemLocal: true,
       ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
     });
-    expect(stat).not.toHaveBeenCalled();
-    expect(readFile).not.toHaveBeenCalled();
-    expect(detectMime).not.toHaveBeenCalled();
+    for (const unused of [stat, readFile, detectMime, elementHandle]) {
+      expect(unused).not.toHaveBeenCalled();
+    }
     expect(setInputFiles).toHaveBeenCalledExactlyOnceWith([canonical], nativeOptions);
     expect(resolveStrictExistingUploadPaths).toHaveBeenCalledWith({ requestedPaths: paths });
     expect(session.refLocator).toHaveBeenCalledWith(page, "e7");
-    expect(elementHandle).not.toHaveBeenCalled();
     expect(session.withPageNavigationRequestGuard).toHaveBeenCalledOnce();
     expect(session.assertPageNavigationCompletedSafely).toHaveBeenCalledOnce();
   });

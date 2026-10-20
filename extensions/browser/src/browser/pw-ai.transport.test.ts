@@ -38,16 +38,9 @@ const socketServer = new WebSocketServer({ server, path: "/devtools/browser/test
 const socketConnections = vi.fn();
 socketServer.on("connection", socketConnections);
 
-type FakeSession = {
-  send: ReturnType<typeof vi.fn>;
-  detach: ReturnType<typeof vi.fn>;
-};
-
-function createPage(opts: { targetId: string; snapshotFull?: string }) {
-  const session: FakeSession = {
-    send: vi.fn().mockResolvedValue({
-      targetInfo: { targetId: opts.targetId },
-    }),
+function createPage(targetId: string, snapshotText = "SNAP") {
+  const session = {
+    send: vi.fn().mockResolvedValue({ targetInfo: { targetId } }),
     detach: vi.fn().mockResolvedValue(undefined),
   };
 
@@ -63,8 +56,8 @@ function createPage(opts: { targetId: string; snapshotFull?: string }) {
     locator,
     on: vi.fn(),
     off: vi.fn(),
-    url: vi.fn(() => `https://example.test/${opts.targetId}`),
-    ariaSnapshot: vi.fn().mockResolvedValue(opts.snapshotFull ?? "SNAP"),
+    url: vi.fn(() => `https://example.test/${targetId}`),
+    ariaSnapshot: vi.fn().mockResolvedValue(snapshotText),
   };
 
   return { page, session, locator, click };
@@ -105,6 +98,10 @@ beforeAll(async () => {
   cdpUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 });
 
+function snapshot(targetId: string, maxChars?: number) {
+  return snapshotRoleViaPlaywright({ refsMode: "aria", cdpUrl, targetId, maxChars });
+}
+
 afterEach(async () => {
   const socketClosures = [...socketServer.clients].map((socket) => once(socket, "close"));
   await closePlaywrightBrowserConnection();
@@ -129,18 +126,14 @@ describe("pw-ai", () => {
   ])(
     "acts on the selected target's snapshot ref %s over one connection",
     async (buttonRef, linkRef) => {
-      const snapshot = `- button "OK" [ref=${buttonRef}]\n- link "Docs" [ref=${linkRef}]`;
-      const p1 = createPage({ targetId: "T1", snapshotFull: "OTHER PAGE" });
-      const p2 = createPage({ targetId: "T2", snapshotFull: snapshot });
+      const text = `- button "OK" [ref=${buttonRef}]\n- link "Docs" [ref=${linkRef}]`;
+      const p1 = createPage("T1", "OTHER PAGE");
+      const p2 = createPage("T2", text);
       createBrowser([p1.page, p2.page]);
 
-      const res = await snapshotRoleViaPlaywright({
-        refsMode: "aria",
-        cdpUrl,
-        targetId: "T2",
-      });
+      const res = await snapshot("T2");
 
-      expect(res.snapshot).toBe(snapshot);
+      expect(res.snapshot).toBe(text);
       expect(res.refs).toEqual({
         [buttonRef]: { role: "button", name: "OK" },
         [linkRef]: { role: "link", name: "Docs" },
@@ -150,11 +143,7 @@ describe("pw-ai", () => {
       expect(p2.page.off).toHaveBeenCalledWith("framenavigated", expect.any(Function));
       expect(p2.page.off).toHaveBeenCalledWith("framedetached", expect.any(Function));
 
-      await clickViaPlaywright({
-        cdpUrl,
-        targetId: "T2",
-        ref: buttonRef,
-      });
+      await clickViaPlaywright({ cdpUrl, targetId: "T2", ref: buttonRef });
 
       expect(p2.locator).toHaveBeenCalledWith(`aria-ref=${buttonRef}`);
       expect(p2.click).toHaveBeenCalledTimes(1);
@@ -169,16 +158,10 @@ describe("pw-ai", () => {
   it("truncates oversized snapshots", async () => {
     const firstLine = "VISIBLE";
     const marker = "[...TRUNCATED - page too large]";
-    const longSnapshot = `${firstLine}\n${"A".repeat(50)}`;
-    const p1 = createPage({ targetId: "T1", snapshotFull: longSnapshot });
+    const p1 = createPage("T1", `${firstLine}\n${"A".repeat(50)}`);
     createBrowser([p1.page]);
 
-    const res = await snapshotRoleViaPlaywright({
-      refsMode: "aria",
-      cdpUrl,
-      targetId: "T1",
-      maxChars: firstLine.length + 2 + marker.length,
-    });
+    const res = await snapshot("T1", firstLine.length + 2 + marker.length);
 
     expect(res.truncated).toBe(true);
     expect(res.snapshot).toBe(`${firstLine}\n\n${marker}`);
