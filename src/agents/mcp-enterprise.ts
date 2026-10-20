@@ -47,12 +47,21 @@ export function mcpEnterpriseIdpStoreKey(config: McpEnterpriseConfig): string {
 
 /** Keep discovery, code exchange, and refresh on the caller's guarded fetch. */
 export function discoverMcpEnterpriseIdp(config: McpEnterpriseConfig, fetchFn: FetchLike) {
+  const oidcFetch: oidc.CustomFetch = (url, options) => {
+    const { body, ...init } = options;
+    // openid-client accepts Uint8Array<ArrayBufferLike>; RequestInit requires
+    // an owned ArrayBuffer in the UI and declaration TypeScript projects.
+    return fetchFn(url, {
+      ...init,
+      body: body instanceof Uint8Array ? new Uint8Array(body).buffer : body,
+    });
+  };
   return oidc.discovery(
     new URL(config.idpIssuer),
     config.idpClientId,
     config.idpClientSecret,
     undefined,
-    { [oidc.customFetch]: fetchFn },
+    { [oidc.customFetch]: oidcFetch },
   );
 }
 
