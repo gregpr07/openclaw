@@ -40,7 +40,13 @@ describe("shared legacy migration receipts", () => {
       now: 123,
       reportJson: '{"preserved":true}',
     };
-    return { env, receipt };
+    runOpenClawStateWriteTransaction(({ db }) => recordLegacyMigrationReceipt(db, receipt), {
+      env,
+    });
+    const { db } = openOpenClawStateDatabase({ env });
+    const source = () =>
+      db.prepare("SELECT * FROM migration_sources WHERE source_key = ?").get(receipt.sourceKey);
+    return { env, receipt, db, source };
   }
 
   it("preserves persisted source-key hashing with optional ownership scope", () => {
@@ -63,10 +69,7 @@ describe("shared legacy migration receipts", () => {
   });
 
   it("records one typed receipt, rejects duplicates, and marks verified source removal", () => {
-    const { env, receipt } = createFixture();
-    runOpenClawStateWriteTransaction(({ db }) => recordLegacyMigrationReceipt(db, receipt), {
-      env,
-    });
+    const { env, receipt, source } = createFixture();
 
     expect(readLegacyMigrationReceipt(receipt.sourceKey, env)).toEqual({
       sourceKey: receipt.sourceKey,
@@ -83,14 +86,7 @@ describe("shared legacy migration receipts", () => {
     markLegacyMigrationSourceRemoved(receipt.sourceKey, env, "test migration cleanup");
 
     expect(readLegacyMigrationReceipt(receipt.sourceKey, env)?.removedSource).toBe(true);
-    const { db } = openOpenClawStateDatabase({ env });
-    expect(
-      db
-        .prepare(
-          "SELECT migration_kind, target_table, source_size_bytes, source_record_count, status, removed_source FROM migration_sources WHERE source_key = ?",
-        )
-        .get(receipt.sourceKey),
-    ).toEqual({
+    expect(source()).toMatchObject({
       migration_kind: receipt.migrationKind,
       target_table: receipt.targetTable,
       source_size_bytes: receipt.sourceSizeBytes,
@@ -101,10 +97,7 @@ describe("shared legacy migration receipts", () => {
   });
 
   it("upserts resumed runs and sources without replacing a preserved receipt report", () => {
-    const { env, receipt } = createFixture();
-    runOpenClawStateWriteTransaction(({ db }) => recordLegacyMigrationReceipt(db, receipt), {
-      env,
-    });
+    const { env, receipt, db: database, source } = createFixture();
     markLegacyMigrationSourceRemoved(receipt.sourceKey, env);
 
     runOpenClawStateWriteTransaction(
@@ -132,14 +125,9 @@ describe("shared legacy migration receipts", () => {
       { env },
     );
 
-    const { db } = openOpenClawStateDatabase({ env });
     expect(
-      db
-        .prepare(
-          "SELECT started_at, finished_at, status, report_json FROM migration_runs WHERE id = ?",
-        )
-        .get(receipt.runId),
-    ).toEqual({
+      database.prepare("SELECT * FROM migration_runs WHERE id = ?").get(receipt.runId),
+    ).toMatchObject({
       started_at: receipt.now,
       finished_at: receipt.now + 2,
       status: "archived",
@@ -151,12 +139,6 @@ describe("shared legacy migration receipts", () => {
       removedSource: false,
       reportJson: receipt.reportJson,
     });
-    expect(
-      db
-        .prepare(
-          "SELECT source_size_bytes, source_record_count FROM migration_sources WHERE source_key = ?",
-        )
-        .get(receipt.sourceKey),
-    ).toEqual({ source_size_bytes: 24, source_record_count: 2 });
+    expect(source()).toMatchObject({ source_size_bytes: 24, source_record_count: 2 });
   });
 });

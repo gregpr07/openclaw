@@ -38,19 +38,25 @@ describe("managed worktree path state migrations", () => {
     });
   });
 
+  function migrations(root: string, stateDir: string) {
+    const env = { ...process.env, HOME: root, OPENCLAW_STATE_DIR: stateDir };
+    const cfg: OpenClawConfig = {};
+    const common = { env, legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES };
+    return {
+      env,
+      cfg,
+      detect: () => detectLegacyStateMigrations({ ...common, cfg, homedir: () => root }),
+      run: (detected: Awaited<ReturnType<typeof detectLegacyStateMigrations>>) =>
+        runLegacyStateMigrations({ ...common, detected, config: cfg }),
+    };
+  }
+
   it("does not create the worktrees directory during detection", async () => {
     const root = tempDirs.make("openclaw-worktree-path-detection-");
     const stateDir = path.join(root, "state");
     const worktreesDir = path.join(stateDir, "worktrees");
     await fs.mkdir(stateDir, { recursive: true });
-    const env = { ...process.env, HOME: root, OPENCLAW_STATE_DIR: stateDir };
-
-    const detected = await detectLegacyStateMigrations({
-      cfg: {} as OpenClawConfig,
-      env,
-      homedir: () => root,
-      legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES,
-    });
+    const detected = await migrations(root, stateDir).detect();
 
     expect(detected.worktrees.pathRewrites).toStrictEqual([]);
     await expect(fs.stat(worktreesDir)).rejects.toMatchObject({ code: "ENOENT" });
@@ -68,48 +74,34 @@ describe("managed worktree path state migrations", () => {
       const linkedStateDir = path.join(root, "linked-state");
       await fs.mkdir(realStateDir, { recursive: true });
       await fs.symlink(realStateDir, linkedStateDir, "dir");
-      const env = { ...process.env, HOME: root, OPENCLAW_STATE_DIR: linkedStateDir };
-      const cfg = {} as OpenClawConfig;
+      const { env, cfg, detect, run } = migrations(root, linkedStateDir);
       setRuntimeConfigSnapshot(cfg);
       const service = new ManagedWorktreeService({ env });
       const live = await service.create({ repoRoot: repo, name: "live", baseRef: "HEAD" });
       const canonicalRoot = path.dirname(path.dirname(live.path));
-      const rawLivePath = path.join(linkedStateDir, "worktrees", live.repoFingerprint, live.name);
-      const rawRemovedPath = path.join(
-        linkedStateDir,
-        "worktrees",
-        live.repoFingerprint,
-        "removed",
-      );
+      const rawPath = (name: string) =>
+        path.join(linkedStateDir, "worktrees", live.repoFingerprint, name);
       const database = openOpenClawStateDatabase({ env });
       const db = database.db;
-      db.prepare("UPDATE worktrees SET path = ? WHERE id = ?").run(rawLivePath, live.id);
-      const removed = {
+      db.prepare("UPDATE worktrees SET path = ? WHERE id = ?").run(rawPath(live.name), live.id);
+      const row = (name: string, id: string, pathname: string) => ({
         ...live,
-        id: "legacy-removed",
-        name: "removed",
-        path: rawRemovedPath,
-        branch: "openclaw/removed",
-        removedAt: 1,
-      };
-      const canonical = {
-        ...live,
-        id: "canonical-row",
-        name: "canonical",
-        path: path.join(canonicalRoot, live.repoFingerprint, "canonical"),
-        branch: "openclaw/canonical",
-      };
+        id,
+        name,
+        path: pathname,
+        branch: `openclaw/${name}`,
+      });
+      const removed = { ...row("removed", "legacy-removed", rawPath("removed")), removedAt: 1 };
+      const canonical = row(
+        "canonical",
+        "canonical-row",
+        path.join(canonicalRoot, live.repoFingerprint, "canonical"),
+      );
       const movedPath = path.join(root, "relocated-worktrees", "moved");
-      const moved = {
-        ...live,
-        id: "moved-row",
-        name: "moved",
-        path: movedPath,
-        branch: "openclaw/moved",
-      };
-      await insertRegistryWorktree(env, removed, { provisionedPaths: [] });
-      await insertRegistryWorktree(env, canonical, { provisionedPaths: [] });
-      await insertRegistryWorktree(env, moved, { provisionedPaths: [] });
+      const moved = row("moved", "moved-row", movedPath);
+      for (const entry of [removed, canonical, moved]) {
+        await insertRegistryWorktree(env, entry, { provisionedPaths: [] });
+      }
 
       await closeOpenClawStateDatabaseAsync();
       const { DatabaseSync } = requireNodeSqlite();
@@ -122,21 +114,11 @@ describe("managed worktree path state migrations", () => {
 
       // Doctor's read-only SELECT * follows the physical columns. Compatibility
       // validation must allow this additive column to be absent before that query.
-      const detected = await detectLegacyStateMigrations({
-        cfg,
-        env,
-        homedir: () => root,
-        legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES,
-      });
+      const detected = await detect();
       expect(detected.preview).toContain(
         "- Managed worktrees: canonicalize 2 persisted paths for symlinked state directories",
       );
-      const result = await runLegacyStateMigrations({
-        detected,
-        config: cfg,
-        env,
-        legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES,
-      });
+      const result = await run(detected);
       expect(result.warnings).toStrictEqual([]);
       expect(result.changes).toContain(
         "Canonicalized 2 managed worktree paths for symlinked state directories",
@@ -159,19 +141,9 @@ describe("managed worktree path state migrations", () => {
       expect(getRegistryWorktree(env, canonical.id)?.path).toBe(canonical.path);
       expect(getRegistryWorktree(env, moved.id)?.path).toBe(movedPath);
 
-      const secondDetection = await detectLegacyStateMigrations({
-        cfg,
-        env,
-        homedir: () => root,
-        legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES,
-      });
+      const secondDetection = await detect();
       expect(secondDetection.worktrees.pathRewrites).toStrictEqual([]);
-      const secondResult = await runLegacyStateMigrations({
-        detected: secondDetection,
-        config: cfg,
-        env,
-        legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES,
-      });
+      const secondResult = await run(secondDetection);
       expect(secondResult.changes).not.toContain(
         "Canonicalized 2 managed worktree paths for symlinked state directories",
       );

@@ -124,19 +124,11 @@ describe("Doctor retired runtime state recovery", () => {
   });
 
   it.each([
-    {
-      relative: "settings/voicewake.json",
-      value: { triggers: ["retained"] },
-      table: "config_machine_state",
-    },
-    {
-      relative: "settings/voicewake-routing.json",
-      value: { version: 1, routes: [] },
-      table: "config_machine_state",
-    },
-    {
-      relative: "bindings/current-conversations.json",
-      value: {
+    ["settings/voicewake.json", { triggers: ["retained"] }, "config_machine_state"],
+    ["settings/voicewake-routing.json", { version: 1, routes: [] }, "config_machine_state"],
+    [
+      "bindings/current-conversations.json",
+      {
         version: 1,
         bindings: [
           {
@@ -145,19 +137,19 @@ describe("Doctor retired runtime state recovery", () => {
           },
         ],
       },
-      table: "current_conversation_bindings",
-    },
-    {
-      relative: "plugin-binding-approvals.json",
-      value: {
+      "current_conversation_bindings",
+    ],
+    [
+      "plugin-binding-approvals.json",
+      {
         version: 1,
         approvals: [{ pluginRoot: "/plugins/test", pluginId: "test", channel: "discord" }],
       },
-      table: "plugin_binding_approvals",
-    },
-  ])(
-    "retains $relative after SQLite rejection and retries the import",
-    async ({ relative, value, table }) => {
+      "plugin_binding_approvals",
+    ],
+  ] as const)(
+    "retains %s after SQLite rejection and retries the import",
+    async (relative, value, table) => {
       const source = write(relative, value);
       const { db } = openOpenClawStateDatabase({ env });
       db.exec(
