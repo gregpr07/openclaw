@@ -19,10 +19,14 @@ suite.define(() => {
           await page.addInitScript(() => {
             let themes = 0;
             window.addEventListener("message", (event) => {
-              if (event.data?.type === "openclaw:widget-theme") themes += 1;
+              if (event.data?.type === "openclaw:widget-theme") {
+                themes += 1;
+              }
             });
             const observer = new MutationObserver(() => {
-              if (!document.querySelector("iframe")) return;
+              if (!document.querySelector("iframe")) {
+                return;
+              }
               document.documentElement.dataset.initialCanvas = JSON.stringify({
                 scheme: getComputedStyle(document.documentElement).colorScheme,
                 themes,

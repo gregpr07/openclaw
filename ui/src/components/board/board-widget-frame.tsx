@@ -299,7 +299,9 @@ export function createBoardWidgetFrame(host: BoardWidgetFrameOwnerHost) {
     if (url.href !== sandboxRequestUrl) {
       sandboxRequestUrl = url.href;
       initialTheme = document.documentElement.dataset.themeMode === "light" ? "light" : "dark";
-      if (frameElement) frameElement.style.colorScheme = initialTheme;
+      if (frameElement) {
+        frameElement.style.colorScheme = initialTheme;
+      }
     }
     // Keep the seed stable until navigation; theme messages update the mounted shell.
     url.hash = `theme=${initialTheme}`;
