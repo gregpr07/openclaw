@@ -67,30 +67,25 @@ afterEach(() => clearPluginMetadataLifecycleCaches());
 describe("finalized tool descriptor snapshots", () => {
   it("reuses Tool Search schemas while binding the current catalog and configured limit", async () => {
     const catalogRef = createToolSearchCatalogRef();
-    const config = { tools: { toolSearch: { searchDefaultLimit: 1 } } };
-    const controls = () => createToolSearchTools({ catalogRef, config });
+    const controls = (searchDefaultLimit = 1) => {
+      const config = { tools: { toolSearch: { searchDefaultLimit } } };
+      return attempt(createToolSearchTools({ catalogRef, config }), { config });
+    };
+    const register = (tools: AnyAgentTool[]) =>
+      registerHeadlessToolSearchCatalog({ catalogRef, tools });
     const names = ["lookup_one", "lookup_two", "lookup_three"];
     try {
-      registerHeadlessToolSearchCatalog({
-        catalogRef,
-        tools: names.map((name) => tool(schema(), { name })),
-      });
-      const cold = attempt(controls(), { config });
+      register(names.map((name) => tool(schema(), { name })));
+      const cold = controls();
       const coldBytes = JSON.stringify([0, 1, 2].map((index) => cold.tool(index).parameters));
       await cold.settle();
-      const warm = attempt(controls(), { config });
+      const warm = controls();
       expect(JSON.stringify([0, 1, 2].map((index) => warm.tool(index).parameters))).toBe(coldBytes);
       await warm.settle();
 
-      const current = tool(schema(), {
-        name: names[0],
-        execute: vi.fn(async () => ({ content: [], details: { marker: "current" } })),
-      });
-      registerHeadlessToolSearchCatalog({
-        catalogRef,
-        tools: [current, ...names.slice(1).map((name) => tool(schema(), { name }))],
-      });
-      const next = attempt(controls(), { config });
+      const current = tool(schema(), { name: names[0] });
+      register([current, ...names.slice(1).map((name) => tool(schema(), { name }))]);
+      const next = controls();
       for (const index of [0, 1, 2]) {
         expect(getPublishedRuntimeToolInputSchema(next.tool(index).parameters)).toBeDefined();
         expect(next.tool(index).parameters).toBe(warm.tool(index).parameters);
@@ -100,10 +95,7 @@ describe("finalized tool descriptor snapshots", () => {
       expect(current.execute).toHaveBeenCalledOnce();
       await next.settle();
 
-      const changedConfig = { tools: { toolSearch: { searchDefaultLimit: 2 } } };
-      const changed = attempt(createToolSearchTools({ catalogRef, config: changedConfig }), {
-        config: changedConfig,
-      });
+      const changed = controls(2);
       expect(JSON.stringify(changed.tool().parameters)).toContain("Defaults to 2 when omitted.");
       expect(
         (await changed.tool().execute("search-changed", { query: "lookup" })).details,
