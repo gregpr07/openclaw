@@ -5,30 +5,36 @@ import { PLUGIN_MODEL_CATALOG_GENERATED_BY } from "./plugin-model-catalog.js";
 import { AuthStorage } from "./sessions/auth-storage.js";
 
 const generatedProvider = {
-  api: "openai-completions",
+  api: "openai-completions" as const,
   baseUrl: "https://fixture.example/v1",
   apiKey: "cached-key-is-not-current-auth",
   models: [{ id: "retained-model", name: "Generated model", contextWindow: 65536 }],
 };
-const pluginCatalogs = [
-  {
-    pluginId: "catalog-owner",
-    contents: JSON.stringify({
-      generatedBy: PLUGIN_MODEL_CATALOG_GENERATED_BY,
-      providers: { fixture: generatedProvider },
-    }),
-  },
-];
+function catalogs(
+  providers: Record<string, typeof generatedProvider> = { fixture: generatedProvider },
+) {
+  return [
+    {
+      pluginId: "catalog-owner",
+      contents: JSON.stringify({
+        generatedBy: PLUGIN_MODEL_CATALOG_GENERATED_BY,
+        providers,
+      }),
+    },
+  ];
+}
 const deferredMetadata = createPluginMetadataSnapshotFixture({
   plugins: [{ id: "catalog-owner", providers: ["fixture"], activation: { onStartup: false } }],
 });
 
-function readCatalog(authStorage: AuthStorage, modelsJsonContents: string | null = null) {
+type Sources = Parameters<typeof discoverModelsFromCapturedSources>[1];
+function readCatalog(authStorage: AuthStorage, overrides: Partial<Sources> = {}) {
   return discoverModelsFromCapturedSources(authStorage, {
     config: {},
-    modelsJsonContents,
-    pluginCatalogs,
+    modelsJsonContents: null,
+    pluginCatalogs: catalogs(),
     pluginMetadataSnapshot: deferredMetadata,
+    ...overrides,
   });
 }
 
@@ -49,9 +55,8 @@ describe("generated provider membership", () => {
   });
 
   it("preserves authored rows independently of deferred generated membership", () => {
-    const registry = readCatalog(
-      AuthStorage.inMemory(),
-      JSON.stringify({
+    const registry = readCatalog(AuthStorage.inMemory(), {
+      modelsJsonContents: JSON.stringify({
         providers: {
           fixture: {
             ...generatedProvider,
@@ -64,38 +69,27 @@ describe("generated provider membership", () => {
           "auth-only": { apiKey: "auth-only-key", models: [] },
         },
       }),
-    );
+    });
 
-    expect(
-      registry.getAll().map(({ provider, id, name, contextWindow }) => ({
-        provider,
-        id,
-        name,
-        contextWindow,
-      })),
-    ).toEqual([
+    expect(registry.getAll()).toMatchObject([
       { provider: "fixture", id: "retained-model", name: "Authored model", contextWindow: 32768 },
       { provider: "manual", id: "manual-model", name: "Manual root model", contextWindow: 16384 },
     ]);
   });
 
   it("keeps a deferred catalog with a current configured provider key", () => {
-    const registry = discoverModelsFromCapturedSources(AuthStorage.inMemory(), {
+    const registry = readCatalog(AuthStorage.inMemory(), {
       config: {
         models: {
           providers: {
             fixture: {
-              api: "openai-completions",
-              baseUrl: "https://fixture.example/v1",
+              ...generatedProvider,
               apiKey: "current-configured-key",
               models: [],
             },
           },
         },
       },
-      modelsJsonContents: null,
-      pluginCatalogs,
-      pluginMetadataSnapshot: deferredMetadata,
     });
 
     expect(registry.find("fixture", "retained-model")).toMatchObject({
@@ -105,21 +99,10 @@ describe("generated provider membership", () => {
   });
 
   it("does not use an unowned provider's authentication to revive a deferred owner", () => {
-    const registry = discoverModelsFromCapturedSources(
+    const registry = readCatalog(
       AuthStorage.inMemory({ unrelated: { type: "api_key", key: "unrelated-current-key" } }),
       {
-        config: {},
-        modelsJsonContents: null,
-        pluginCatalogs: [
-          {
-            pluginId: "catalog-owner",
-            contents: JSON.stringify({
-              generatedBy: PLUGIN_MODEL_CATALOG_GENERATED_BY,
-              providers: { fixture: generatedProvider, unrelated: generatedProvider },
-            }),
-          },
-        ],
-        pluginMetadataSnapshot: deferredMetadata,
+        pluginCatalogs: catalogs({ fixture: generatedProvider, unrelated: generatedProvider }),
       },
     );
 
@@ -127,12 +110,10 @@ describe("generated provider membership", () => {
   });
 
   it("excludes generated native inventory for a configured proxy endpoint", () => {
-    const registry = discoverModelsFromCapturedSources(AuthStorage.inMemory(), {
+    const registry = readCatalog(AuthStorage.inMemory(), {
       config: {
         models: { providers: { fixture: { baseUrl: "https://proxy.example/v1", models: [] } } },
       },
-      modelsJsonContents: null,
-      pluginCatalogs,
       pluginMetadataSnapshot: createPluginMetadataSnapshotFixture({
         plugins: [
           {

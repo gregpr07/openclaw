@@ -100,44 +100,40 @@ describe("isProviderModelRerouted", () => {
       ).toBe(true);
     });
 
-    it.each([{ provider: "partner-chat", origin: "global" as const, rerouted: false }])(
-      "respects $origin catalog alias ownership for $provider",
-      ({ rerouted, provider, ...owner }) => {
-        const snapshot = createPluginMetadataSnapshotFixture({
-          plugins: [
-            {
-              id: "catalog-owner",
-              providers: ["catalog-provider"],
-              modelCatalog: { aliases: { [provider]: { provider: "catalog-provider" } } },
-              ...owner,
-            },
-          ],
-        });
-        withPluginMetadataSnapshotScope(snapshot, () => {
-          const alias = { provider, model: "team/chat" };
-          expect(
-            isProviderModelRerouted(
-              alias,
-              { ...alias, responseModel: "upstream-model" },
-              declaredConfig(provider, alias.model),
-            ),
-          ).toBe(rerouted);
-        });
-      },
-    );
+    it("respects global catalog alias ownership for partner-chat", () => {
+      const provider = "partner-chat";
+      const snapshot = createPluginMetadataSnapshotFixture({
+        plugins: [
+          {
+            id: "catalog-owner",
+            providers: ["catalog-provider"],
+            modelCatalog: { aliases: { [provider]: { provider: "catalog-provider" } } },
+            origin: "global",
+          },
+        ],
+      });
+      withPluginMetadataSnapshotScope(snapshot, () => {
+        const alias = { provider, model: "team/chat" };
+        expect(
+          isProviderModelRerouted(
+            alias,
+            { ...alias, responseModel: "upstream-model" },
+            declaredConfig(provider, alias.model),
+          ),
+        ).toBe(false);
+      });
+    });
   });
 
-  it.each([{ requested: "gpt-5.6-luna", response: "gpt-5.6-luna-2026-08-02", rerouted: false }])(
-    "classifies an OpenAI $requested run answered as $response as rerouted=$rerouted",
-    ({ requested, response, rerouted }) => {
-      expect(
-        isProviderModelRerouted(
-          { provider: "openai", model: requested },
-          { provider: "openai", model: requested, responseModel: response },
-        ),
-      ).toBe(rerouted);
-    },
-  );
+  it("keeps an OpenAI dated response equivalent to its requested model", () => {
+    const requested = { provider: "openai", model: "gpt-5.6-luna" };
+    expect(
+      isProviderModelRerouted(requested, {
+        ...requested,
+        responseModel: "gpt-5.6-luna-2026-08-02",
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("formatAgentRunRouteChange", () => {
@@ -151,18 +147,13 @@ describe("formatAgentRunRouteChange", () => {
     const secret = `sk-${"s".repeat(96)}`;
     const routeChange = formatAgentRunRouteChange(
       {
-        runId: "run-1",
-        sessionId: "session-1",
-        turnId: "turn-1",
+        ...visibleRerouteReceipt,
         requested: { provider: "provider", model: secret },
         effective: {
           provider: "provider",
           model: "configured",
           responseModel: "m".repeat(500),
         },
-        successfulToolNames: [],
-        rerouted: true,
-        terminalDisposition: "visible",
       },
       "run-1",
     );

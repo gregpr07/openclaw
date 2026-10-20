@@ -12,21 +12,24 @@ import { withStateDirEnv } from "../test-helpers/state-dir-env.js";
 import { assertAgentSessionStoreDeletionSafe } from "./agent-delete-databases.js";
 import { findOverlappingWorkspaceAgentIds, isSharedAuthStoreOwner } from "./agent-delete-safety.js";
 
+function sessionConfig(store: string): OpenClawConfig {
+  return {
+    agents: { ownership: "explicit", entries: { alpha: {}, ops: {} } },
+    session: { store },
+  };
+}
+
 describe("shared session store deletion safety", () => {
   it.each(["absent", "survivor-owned", "per-agent"])(
     "allows deletion with an %s session store",
     async (kind) => {
       await withStateDirEnv("openclaw-agent-delete-session-owner-", async ({ stateDir }) => {
         const sharedPath = path.join(stateDir, "shared.sqlite");
-        const cfg: OpenClawConfig = {
-          agents: { ownership: "explicit", entries: { alpha: {}, ops: {} } },
-          session: {
-            store:
-              kind === "per-agent"
-                ? path.join(stateDir, "agents", "{agentId}", "agent", "openclaw-agent.sqlite")
-                : sharedPath,
-          },
-        };
+        const cfg = sessionConfig(
+          kind === "per-agent"
+            ? path.join(stateDir, "agents", "{agentId}", "agent", "openclaw-agent.sqlite")
+            : sharedPath,
+        );
         if (kind === "survivor-owned") {
           openOpenClawAgentDatabase({ agentId: "ops", path: sharedPath });
         } else if (kind === "per-agent") {
@@ -43,10 +46,7 @@ describe("shared session store deletion safety", () => {
     async (absentRegistry) => {
       await withStateDirEnv("openclaw-agent-delete-owner-commit-", async ({ stateDir }) => {
         const sharedPath = path.join(stateDir, "shared.sqlite");
-        const cfg: OpenClawConfig = {
-          agents: { ownership: "explicit", entries: { alpha: {}, ops: {} } },
-          session: { store: sharedPath },
-        };
+        const cfg = sessionConfig(sharedPath);
         openOpenClawAgentDatabase({ agentId: "ops", path: sharedPath });
         const options = absentRegistry ? { path: path.join(stateDir, "absent-state.sqlite") } : {};
         await expect(
@@ -75,10 +75,7 @@ describe("shared session store deletion safety", () => {
   it("refuses a replaced session store after safety admission yields", async () => {
     await withStateDirEnv("openclaw-agent-delete-owner-replacement-", async ({ stateDir }) => {
       const sharedPath = path.join(stateDir, "shared.sqlite");
-      const cfg: OpenClawConfig = {
-        agents: { ownership: "explicit", entries: { alpha: {}, ops: {} } },
-        session: { store: sharedPath },
-      };
+      const cfg = sessionConfig(sharedPath);
       openOpenClawAgentDatabase({ agentId: "ops", path: sharedPath });
       await closeOpenClawAgentDatabasesAsync();
       const pending = assertAgentSessionStoreDeletionSafe(cfg, "alpha");
@@ -95,26 +92,13 @@ describe("shared auth store deletion safety", () => {
   const otherAgentAuthDbPath = path.join(os.tmpdir(), "other-auth", "openclaw-agent.sqlite");
 
   it.each([
-    {
-      name: "blocks the legacy-main database owner",
-      ownership: { location: "legacy-main" } as const,
-      agentAuthDbPath: sharedAuthDbPath,
-      expected: true,
-    },
-    {
-      name: "allows a non-owner agent database",
-      ownership: { location: "legacy-main" } as const,
-      agentAuthDbPath: otherAgentAuthDbPath,
-      expected: false,
-    },
-    {
-      name: "follows state-db ownership instead of a legacy-main path match",
-      ownership: { location: "state-db" } as const,
-      agentAuthDbPath: sharedAuthDbPath,
-      expected: false,
-    },
-  ])("$name", ({ ownership, agentAuthDbPath, expected }) => {
-    expect(isSharedAuthStoreOwner({ ownership, agentAuthDbPath, sharedAuthDbPath })).toBe(expected);
+    ["legacy-main", sharedAuthDbPath, true],
+    ["legacy-main", otherAgentAuthDbPath, false],
+    ["state-db", sharedAuthDbPath, false],
+  ] as const)("ownership %s at %s blocks deletion: %s", (location, agentAuthDbPath, expected) => {
+    expect(
+      isSharedAuthStoreOwner({ ownership: { location }, agentAuthDbPath, sharedAuthDbPath }),
+    ).toBe(expected);
   });
 });
 

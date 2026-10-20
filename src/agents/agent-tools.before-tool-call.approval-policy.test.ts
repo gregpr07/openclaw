@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import type { ChannelPlugin } from "../channels/plugins/types.js";
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../config/io.js";
 import type { GatewayRequestContext } from "../gateway/server-methods/types.js";
 import { resetDiagnosticEventsForTest } from "../infra/diagnostic-events.js";
@@ -31,6 +32,28 @@ vi.mock("./tools/gateway.js", () => ({ callGatewayTool: vi.fn() }));
 const mockCallGateway = vi.mocked(callGatewayTool);
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
+function requireApproval(pluginId?: string) {
+  hookRunner.runBeforeToolCall.mockResolvedValue({
+    requireApproval: { title: "Review diff", description: "Review selected tool call", pluginId },
+  });
+}
+
+function approvalChannel(
+  id: string,
+  label: string,
+  approvalCapability: NonNullable<ChannelPlugin["approvalCapability"]>,
+) {
+  setActivePluginRegistry(
+    createTestRegistry([
+      {
+        pluginId: id,
+        source: "test",
+        plugin: { ...createChannelTestPluginBase({ id, label }), approvalCapability },
+      },
+    ]),
+  );
+}
+
 beforeEach(() => {
   setRuntimeConfigSnapshot({});
   resetDiagnosticSessionStateForTest();
@@ -49,13 +72,7 @@ afterEach(() => {
 
 describe("plugin approval policy subject and setup guidance", () => {
   it("uses one request for an in-process tool approval without reviewer scope", async () => {
-    hookRunner.runBeforeToolCall.mockResolvedValue({
-      requireApproval: {
-        title: "Review diff",
-        description: "Review selected tool call",
-        pluginId: "diffs",
-      },
-    });
+    requireApproval("diffs");
     mockCallGateway.mockResolvedValueOnce({ id: "plugin:approved", decision: "allow-once" });
     const gatewayContext = {} as GatewayRequestContext;
 
@@ -78,13 +95,7 @@ describe("plugin approval policy subject and setup guidance", () => {
   it.each(["wrapped", "adapted"] as const)(
     "binds a %s tool approval to its registered owner rather than the approval hook owner",
     async (path) => {
-      hookRunner.runBeforeToolCall.mockResolvedValue({
-        requireApproval: {
-          title: "Review diff",
-          description: "Review selected tool call",
-          pluginId: "review-hook",
-        },
-      });
+      requireApproval("review-hook");
       mockCallGateway.mockResolvedValueOnce({ id: "server-id-diffs", status: "accepted" });
       mockCallGateway.mockResolvedValueOnce({ id: "server-id-diffs", decision: "allow-once" });
       const execute = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "ok" }] });
@@ -113,25 +124,12 @@ describe("plugin approval policy subject and setup guidance", () => {
     const describePluginApprovalSetup = vi.fn(
       () => "Check `approvals.plugin.slack` and the connected bot workspace.",
     );
-    setActivePluginRegistry(
-      createTestRegistry([
-        {
-          pluginId: "slack",
-          source: "test",
-          plugin: {
-            ...createChannelTestPluginBase({ id: "slack", label: "Slack" }),
-            approvalCapability: {
-              getActionAvailabilityState: () => ({ kind: "enabled" as const }),
-              getExecInitiatingSurfaceState: () => ({ kind: "enabled" as const }),
-              describePluginApprovalSetup,
-            },
-          },
-        },
-      ]),
-    );
-    hookRunner.runBeforeToolCall.mockResolvedValue({
-      requireApproval: { title: "Review diff", description: "Render diff" },
+    approvalChannel("slack", "Slack", {
+      getActionAvailabilityState: () => ({ kind: "enabled" }),
+      getExecInitiatingSurfaceState: () => ({ kind: "enabled" }),
+      describePluginApprovalSetup,
     });
+    requireApproval();
     mockCallGateway.mockResolvedValueOnce({ id: "plugin:no-route", decision: null });
 
     const result = await runBeforeToolCallHook({
@@ -158,26 +156,13 @@ describe("plugin approval policy subject and setup guidance", () => {
   });
 
   it("blocks turn-source plugin approval timeouts with setup guidance", async () => {
-    setActivePluginRegistry(
-      createTestRegistry([
-        {
-          pluginId: "telegram",
-          source: "test",
-          plugin: {
-            ...createChannelTestPluginBase({ id: "telegram", label: "Telegram" }),
-            approvalCapability: {
-              native: {},
-              getActionAvailabilityState: () => ({ kind: "enabled" as const }),
-              getExecInitiatingSurfaceState: () => ({ kind: "disabled" as const }),
-              describePluginApprovalSetup: () => "Configure Telegram native approval setup.",
-            },
-          },
-        },
-      ]),
-    );
-    hookRunner.runBeforeToolCall.mockResolvedValue({
-      requireApproval: { title: "Approval", description: "Review tool execution" },
+    approvalChannel("telegram", "Telegram", {
+      native: {},
+      getActionAvailabilityState: () => ({ kind: "enabled" }),
+      getExecInitiatingSurfaceState: () => ({ kind: "disabled" }),
+      describePluginApprovalSetup: () => "Configure Telegram native approval setup.",
     });
+    requireApproval();
     mockCallGateway.mockResolvedValueOnce({
       id: "server-id",
       status: "accepted",
@@ -197,22 +182,15 @@ describe("plugin approval policy subject and setup guidance", () => {
       },
     });
 
-    expect(result.blocked).toBe(true);
-    expect(result).toHaveProperty("disposition", "timed_out");
-    expect(result).toHaveProperty(
-      "reason",
-      "Approval timed out\n\nConfigure Telegram native approval setup.",
-    );
+    expect(result).toMatchObject({
+      blocked: true,
+      disposition: "timed_out",
+      reason: "Approval timed out\n\nConfigure Telegram native approval setup.",
+    });
   });
 
   it("uses the transport channel when tool policy provider differs", async () => {
-    hookRunner.runBeforeToolCall.mockResolvedValue({
-      requireApproval: {
-        title: "Transport routed approval",
-        description: "Must use the transport channel",
-        pluginId: "my-plugin",
-      },
-    });
+    requireApproval("my-plugin");
 
     const tempDir = tempDirs.make("openclaw-hook-route-");
     await fs.writeFile(join(tempDir, "note.txt"), "hello");
