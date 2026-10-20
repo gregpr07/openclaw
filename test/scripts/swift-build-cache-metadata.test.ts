@@ -31,20 +31,22 @@ function expectTimes(time: bigint, ...files: string[]) {
   }
 }
 
+function python(args: string[], cwd?: string) {
+  const result = spawnSync("python3", ["-I", "-S", ...args], {
+    cwd,
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+  expect(result.status, result.stdout + result.stderr).toBe(0);
+  return result.stdout;
+}
 function setTime(time: bigint, ...files: string[]) {
-  const result = spawnSync(
-    "python3",
-    [
-      "-I",
-      "-S",
-      "-c",
-      "import os,sys\nfor file in sys.argv[2:]: os.utime(file, ns=(int(sys.argv[1]),)*2)",
-      String(time),
-      ...files,
-    ],
-    { encoding: "utf8", timeout: 10_000 },
-  );
-  expect(result.status, result.stderr).toBe(0);
+  python([
+    "-c",
+    "import os,sys\nfor file in sys.argv[2:]: os.utime(file, ns=(int(sys.argv[1]),)*2)",
+    String(time),
+    ...files,
+  ]);
 }
 
 function fixture(profile: "macos" | "ios" = "macos") {
@@ -56,15 +58,8 @@ function fixture(profile: "macos" | "ios" = "macos") {
   const source = input(`apps/${profile}/Sources/Feature.swift`);
   fs.chmodSync(source, 0o644);
   setTime(originalTime, source);
-  const run = (mode: "record" | "restore") => {
-    const result = spawnSync(
-      "python3",
-      ["-I", "-S", script, mode, ...(profile === "ios" ? [profile] : [])],
-      { cwd: root, encoding: "utf8", timeout: 10_000 },
-    );
-    expect(result.status, result.stdout + result.stderr).toBe(0);
-    return result.stdout;
-  };
+  const run = (mode: "record" | "restore") =>
+    python([script, mode, ...(profile === "ios" ? [profile] : [])], root);
   return { root, at, input, source, metadata, run };
 }
 

@@ -38,6 +38,7 @@ it("rejects unsafe ports and refuses to overwrite existing state", async () => {
 it("creates canonical sessions, retained lifecycle states and isolated supporting stores", async () => {
   const root = temporary.make("team-shape-contract-");
   const stateDir = path.join(root, "state");
+  const at = (name: string) => path.join(stateDir, name);
   const sentinel = path.join(root, "unrelated-repository");
   execFileSync("git", ["init", "--initial-branch=main", sentinel], {
     env: {
@@ -72,10 +73,8 @@ it("creates canonical sessions, retained lifecycle states and isolated supportin
       OPENCLAW_SYSTEMD_UNIT: "openclaw-gateway-team-shape-40967",
       OPENCLAW_LAUNCHD_LABEL: "ai.openclaw.team-shape-40967",
       OPENCLAW_WINDOWS_TASK_NAME: "OpenClaw Gateway (team-shape-40967)",
-      TMPDIR: path.join(stateDir, "tmp"),
-      TMP: path.join(stateDir, "tmp"),
-      TEMP: path.join(stateDir, "tmp"),
-      USERPROFILE: path.join(stateDir, "home"),
+      ...Object.fromEntries(["TMPDIR", "TMP", "TEMP"].map((key) => [key, at("tmp")])),
+      USERPROFILE: at("home"),
     });
   } finally {
     await flushLogger();
@@ -84,7 +83,7 @@ it("creates canonical sessions, retained lifecycle states and isolated supportin
   expect(read(gitConfig)).toBe(originalConfig);
   expect(fs.existsSync(path.join(sentinel, "redirected-index"))).toBe(false);
   expect(fs.readdirSync(path.join(sentinel, ".git", "refs", "heads"))).toEqual([]);
-  const summary = readJson(path.join(stateDir, "team-shape-summary.json"));
+  const summary = readJson(at("team-shape-summary.json"));
   expect(summary).toMatchObject({
     sessionCount: 20,
     retainedRuns: 20,
@@ -95,13 +94,11 @@ it("creates canonical sessions, retained lifecycle states and isolated supportin
     visibilityCounts: { shared: 14, "read-only": 2, suggest: 2, draft: 2 },
   });
   expect(summary.agentDatabaseBytes).toBeGreaterThan(512 * 1024);
-  const agent = new DatabaseSync(path.join(stateDir, "agents/main/agent/openclaw-agent.sqlite"), {
-    readOnly: true,
-  });
-  const state = new DatabaseSync(path.join(stateDir, "state", "openclaw.sqlite"), {
-    readOnly: true,
-  });
-  try {
+  {
+    using agent = new DatabaseSync(at("agents/main/agent/openclaw-agent.sqlite"), {
+      readOnly: true,
+    });
+    using state = new DatabaseSync(at("state/openclaw.sqlite"), { readOnly: true });
     expectCounts(agent, {
       "session_nodes WHERE entry_valid = 1": 20,
       "session_nodes WHERE owner_actor_type = 'human'": 20,
@@ -134,12 +131,9 @@ it("creates canonical sessions, retained lifecycle states and isolated supportin
       { execution: "terminal", delivery: "delivered", n: 15 },
       { execution: "terminal", delivery: "pending", n: 3 },
     ]);
-  } finally {
-    agent.close();
-    state.close();
   }
   expect(fs.existsSync(path.join(summary.projectWorktrees[0].path, ".git"))).toBe(true);
-  expect(readJson(path.join(stateDir, "openclaw.json"))).toMatchObject({
+  expect(readJson(at("openclaw.json"))).toMatchObject({
     gateway: { bind: "loopback", port: 40967 },
     cron: { enabled: false },
   });
