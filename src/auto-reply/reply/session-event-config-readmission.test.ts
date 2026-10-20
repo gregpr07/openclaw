@@ -16,6 +16,7 @@ import {
 import { buildEmbeddedAttemptToolRunContext } from "../../agents/embedded-agent-runner/run/attempt-tool-run-context.js";
 import type { RunEmbeddedAgentParams } from "../../agents/embedded-agent-runner/run/params.js";
 import { runEmbeddedAgent } from "../../agents/embedded-agent.js";
+import { FailoverError } from "../../agents/failover-error.js";
 import { createAgentHarnessHostCapabilities } from "../../agents/harness/host-capability.js";
 import { resolveAttemptWorkspaceSandbox } from "../../agents/workspace-sandbox.js";
 import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
@@ -144,6 +145,9 @@ it.for([
   "scheduled-revoked",
   "scheduled-model-revoked",
   "scheduled-model-malformed",
+  "scheduled-subagent-default",
+  "scheduled-subagent-locked",
+  "scheduled-gmail-default",
 ] as const)(
   "re-admits accepted deferred work after a config publication: %s",
   async (scenario, { signal }) => {
@@ -153,18 +157,23 @@ it.for([
         const config = completionConfig(state.workspaceDir);
         const explicitScheduledModel =
           scenario === "scheduled-control" || scenario.startsWith("scheduled-model-");
-        if (explicitScheduledModel) {
+        const scheduledSubagent = scenario.startsWith("scheduled-subagent-");
+        if (explicitScheduledModel || scheduledSubagent || scenario === "scheduled-gmail-default") {
           config.agents = {
             ...config.agents,
             defaults: {
               ...config.agents?.defaults,
               modelPolicy: { allow: ["mock-openai/*"] },
+              ...(scheduledSubagent ? { subagents: { model: "mock-openai/gpt-5.6-luna" } } : {}),
               models: {
                 ...config.agents?.defaults?.models,
                 "mock-openai/gpt-5.6-sol": { agentRuntime: { id: "openclaw" } },
               },
             },
           };
+        }
+        if (scenario === "scheduled-gmail-default") {
+          config.hooks = { gmail: { model: "mock-openai/gpt-5.6-luna", thinking: "off" } };
         }
         setRuntimeConfigSnapshot(config);
         await state.writeConfig(config);
@@ -174,6 +183,14 @@ it.for([
           sessionId: "config-readmission",
           lifecycleRevision: "original",
           permissionMode: "full",
+          ...(scenario === "scheduled-subagent-locked" ? { modelSelectionLocked: true } : {}),
+          ...(scenario === "scheduled-gmail-default"
+            ? {
+                providerOverride: "mock-openai",
+                modelOverride: "gpt-5.6-luna",
+                thinkingLevel: "off",
+              }
+            : {}),
           // A channel route arms durable restart-recovery source claims.
           delivery: normalizeSessionDeliveryState({
             context: { channel: "telegram", to: "-100001", accountId: "readmission" },
@@ -212,6 +229,15 @@ it.for([
               await startRun(params);
               firstStarted.resolve();
               await releaseFirst.promise;
+            } else if (scheduledSubagent && prompts.length === 2) {
+              if (scenario === "scheduled-subagent-locked") {
+                await startRun(params);
+              }
+              throw new FailoverError("Synthetic scheduled primary unavailable", {
+                reason: "model_not_found",
+                provider: params.provider,
+                model: params.model,
+              });
             } else {
               await attemptRealWrite(params, filePath, operatorAuthority);
             }
@@ -259,6 +285,12 @@ it.for([
                       payload: {
                         kind: "agentTurn" as const,
                         message: "Background exec completed",
+                        ...(scenario === "scheduled-gmail-default"
+                          ? { externalContentSource: "gmail" as const }
+                          : {}),
+                        ...(scenario === "scheduled-subagent-locked"
+                          ? { fallbacks: ["mock-openai/gpt-5.6-sol"] }
+                          : {}),
                         ...(explicitScheduledModel
                           ? {
                               model:
@@ -302,13 +334,27 @@ it.for([
           }
           setRuntimeConfigSnapshot({
             ...config,
-            ...(scenario === "scheduled-model-revoked"
+            ...(scenario === "scheduled-gmail-default"
+              ? {
+                  hooks: { gmail: { model: "mock-openai/gpt-5.6-sol", thinking: "high" as const } },
+                }
+              : {}),
+            ...(scenario === "scheduled-model-revoked" || scheduledSubagent
               ? {
                   agents: {
                     ...config.agents,
                     defaults: {
                       ...config.agents?.defaults,
-                      modelPolicy: { allow: ["mock-openai/gpt-5.6-luna"] },
+                      ...(scenario === "scheduled-model-revoked"
+                        ? { modelPolicy: { allow: ["mock-openai/gpt-5.6-luna"] } }
+                        : {
+                            subagents: {
+                              model: {
+                                primary: "mock-openai/gpt-5.6-sol",
+                                fallbacks: ["mock-openai/gpt-5.6-luna"],
+                              },
+                            },
+                          }),
                     },
                   },
                 }
@@ -323,16 +369,23 @@ it.for([
           const executes =
             scenario !== "publication-storm" &&
             !scenario.startsWith("scheduled-model-") &&
+            scenario !== "scheduled-subagent-locked" &&
             !revoked;
           const completedOutcome = await completion.settled;
           expect(completedOutcome, completedOutcome.error).toMatchObject({
             status: executes ? "completed" : "failed",
-            executionStarted: executes,
+            executionStarted: executes || scenario === "scheduled-subagent-locked",
           });
-          expect(prompts).toHaveLength(executes ? 2 : 1);
+          expect(prompts).toHaveLength(
+            scenario === "scheduled-subagent-default"
+              ? 3
+              : executes || scenario === "scheduled-subagent-locked"
+                ? 2
+                : 1,
+          );
           if (scenario === "scheduled-model-revoked") {
             expect(completedOutcome.error).toContain(
-              'Scheduled model "mock-openai/gpt-5.6-sol" is not allowed',
+              "automation model override 'mock-openai/gpt-5.6-sol' rejected by agents.defaults.modelPolicy.allow",
             );
           }
           if (scenario === "scheduled-model-malformed") {
@@ -341,16 +394,50 @@ it.for([
           if (executes) {
             expect(prompts[1]).toContain("Background exec completed");
           }
-          if (scenario === "scheduled-control") {
+          if (scenario === "scheduled-control" || scenario === "scheduled-subagent-default") {
             expect(runEmbeddedAgentMock.mock.calls[1]?.[0]).toMatchObject({
               provider: "mock-openai",
               model: "gpt-5.6-sol",
             });
           }
+          if (scenario === "scheduled-subagent-default") {
+            expect(runEmbeddedAgentMock.mock.calls[2]?.[0]).toMatchObject({
+              provider: "mock-openai",
+              model: "gpt-5.6-luna",
+            });
+            const saved = await readSessionEntryInWorker(scope);
+            expect(saved?.providerOverride).toBeUndefined();
+            expect(saved?.modelOverride).toBeUndefined();
+          }
+          if (scenario === "scheduled-gmail-default") {
+            expect(runEmbeddedAgentMock.mock.calls[1]?.[0]).toMatchObject({
+              provider: "mock-openai",
+              model: "gpt-5.6-sol",
+              thinkLevel: "high",
+            });
+            expect(await readSessionEntryInWorker(scope)).toMatchObject({
+              providerOverride: "mock-openai",
+              modelOverride: "gpt-5.6-luna",
+              thinkingLevel: "off",
+            });
+          }
+          if (scenario === "scheduled-subagent-locked") {
+            expect(completedOutcome.error).toBe("Session event execution failed");
+            expect(runEmbeddedAgentMock.mock.calls[1]?.[0]).toMatchObject({
+              provider: "mock-openai",
+              model: "gpt-5.6-luna",
+            });
+            expect(await readSessionEntryInWorker(scope)).toMatchObject({
+              modelSelectionLocked: true,
+            });
+          }
           // Final effect: only the unrestricted control reaches the filesystem.
           const written = await fs.readFile(filePath, "utf8").catch(() => undefined);
           expect(written).toBe(
-            scenario === "allow-control" || scenario === "scheduled-control"
+            scenario === "allow-control" ||
+              scenario === "scheduled-control" ||
+              scenario === "scheduled-subagent-default" ||
+              scenario === "scheduled-gmail-default"
               ? "written\n"
               : undefined,
           );

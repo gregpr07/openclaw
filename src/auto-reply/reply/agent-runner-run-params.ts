@@ -50,6 +50,7 @@ export function resolveModelFallbackOptions(
     cfg: config,
     agentId: run.agentId,
     sessionKey: run.sessionKey,
+    modelSelectionLocked: run.modelSelectionLocked,
     ...(run.scheduledAutomation
       ? {
           hasSessionModelOverride: false,
@@ -57,13 +58,13 @@ export function resolveModelFallbackOptions(
             cfg: config,
             job: run.scheduledAutomation.job,
             agentId: run.agentId,
+            ...run.scheduledAutomation.modelFallbackPolicy,
           }),
         }
       : {
           hasSessionModelOverride: run.hasSessionModelOverride === true,
           modelOverrideSource: run.modelOverrideSource,
           hasAutoFallbackProvenance: run.hasAutoFallbackProvenance === true,
-          modelSelectionLocked: run.modelSelectionLocked,
           subagentSpawnLineage: run.subagentSpawnLineage,
         }),
   });

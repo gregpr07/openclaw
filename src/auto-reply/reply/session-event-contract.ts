@@ -116,6 +116,11 @@ export type SessionEventSourcePolicy = Readonly<
 /** Cron-owned snapshot and live occurrence fence shared with ordinary reply admission. */
 export type ScheduledSessionAutomation = {
   job: CronStoredJob;
+  /** Selected with this admission's config and session; never persisted on the job. */
+  modelFallbackPolicy?: {
+    useSubagentFallbacks: boolean;
+    inheritDefaultFallbacksForAgentStringModel: boolean;
+  };
   operatorAuthority?: AdmittedRunOperatorAuthority;
   /** Original Control UI admin classification, revalidated by the restored operator source. */
   controlUiAdmin?: true;

@@ -9,7 +9,6 @@ import {
   type PreparedModelRuntimeLease,
 } from "../../agents/prepared-model-runtime.js";
 import { resolveSessionStableReplyMode } from "../../auto-reply/reply/session-stable-reply-mode.js";
-import { resolveAgentModelPrimaryValue } from "../../config/model-input.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { resolveCreatorSandbox } from "../../gateway/operator-role-policy.js";
 import { isCronSessionKey, parseAgentSessionKey } from "../../routing/session-key.js";
@@ -343,16 +342,8 @@ async function resolveCronRunPreparation(params: CronRunPreparationParams) {
         };
       }
       const cfgWithAgentDefaults = resolvedModelSelection.cfgWithAgentDefaults;
-      const ownerAgentConfig = resolveAgentConfig(modelOwner.config, modelOwner.agentId);
-      const matchesDefaultFallbackAgentStringModel =
-        typeof ownerAgentConfig?.model === "string" &&
-        resolveAgentModelPrimaryValue(ownerAgentConfig.model) ===
-          resolveAgentModelPrimaryValue(modelOwner.config.agents?.defaults?.model);
-      const useSubagentFallbacks = resolvedModelSelection.modelSource === "subagent";
-      const inheritDefaultFallbacksForAgentStringModel =
-        matchesDefaultFallbackAgentStringModel &&
-        (resolvedModelSelection.modelSource === "default" ||
-          resolvedModelSelection.modelSource === "agent");
+      const { useSubagentFallbacks, inheritDefaultFallbacksForAgentStringModel } =
+        resolvedModelSelection;
 
       const preflight = await resolveCronPreflight({
         cfg: cfgWithAgentDefaults,

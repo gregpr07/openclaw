@@ -1,8 +1,6 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { isImplicitAcpWorkspaceCandidate } from "../../agents/agent-scope-config.js";
 import {
-  hasLegacyAutoFallbackWithoutOrigin,
-  resolveAutoFallbackPrimaryProbe,
   resolveAgentConfig,
   resolveAgentDir,
   resolveAgentWorkspaceDir,
@@ -35,7 +33,6 @@ import {
   isModelSelectionLocked,
   ModelSelectionLockedError,
 } from "../../sessions/model-overrides.js";
-import { resolveStoredModelOverrideAsync } from "../../sessions/stored-model-overrides.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import { readAgentDatabaseAdmissionRefusal } from "../../state/agent-database-admission.js";
 import { waitForAgentDatabaseWriteAdmission } from "../../state/agent-database-preparation-context.js";
@@ -101,12 +98,13 @@ import { prepareReplySourceInput, retireUnadoptedReplySource } from "./reply-sou
 import { createReplyTimingTracker, isReplyProfilerEnabled } from "./reply-timing-tracker.js";
 import { prepareReplyWorkspace } from "./reply-workspace.js";
 import { withReplySessionDiffBaseline, type ReplyDiffBaseline } from "./session-diff-baseline.js";
+import { resolveScheduledSessionModelSelection } from "./session-event-model-selection.js";
 import { resolveReplySessionInitializationOptions } from "./session-initialization-admission.js";
 import { SessionResetCleanupError } from "./session-reset-cleanup.js";
 import { initSessionState, resolveReplySessionPreprocessingState } from "./session.js";
 import { mergeSkillFilters } from "./skill-filter.js";
 import { stageRemoteInboundMediaIfNeeded } from "./stage-remote-inbound-media.js";
-import { isStaleHeartbeatAutoFallbackOverride } from "./stored-model-override.js";
+import { resolveReplyStoredModelSelection } from "./stored-model-override.js";
 import { createTypingController } from "./typing.js";
 
 const stageSandboxMediaRuntimeLoader = createLazyImportLoader(
@@ -544,6 +542,26 @@ async function resolveReplyFromConfig(
     const replySession = { sessionEntry, sessionStore, sessionKey, storePath };
     const replyContext = { ...workspaceContext, ...replySession };
     const sessionModelSelectionLocked = isModelSelectionLocked(sessionEntry);
+    const scheduledModel = opts?.scheduledAutomation
+      ? await resolveScheduledSessionModelSelection({
+          automation: opts.scheduledAutomation,
+          cfg,
+          agentId,
+          agentDir,
+          workspaceDir,
+          sessionKey,
+          sessionEntry,
+          publishedRuntime: preparedReplyDispatchRuntime,
+        })
+      : undefined;
+    if (scheduledModel && !sessionModelSelectionLocked) {
+      provider = scheduledModel.provider;
+      model = scheduledModel.model;
+      hasResolvedTurnModelOverride = true;
+      turnAuthProfile = scheduledModel.configuredProfileId
+        ? { provider, model, profileId: scheduledModel.configuredProfileId }
+        : undefined;
+    }
     if (sessionModelSelectionLocked && hasResolvedTurnModelOverride) {
       // Turn-local overrides cannot retarget a native harness with a locked model.
       provider = defaultProvider;
@@ -559,6 +577,19 @@ async function resolveReplyFromConfig(
       : sessionEntry.toolOverrides;
     const optsWithSessionSkillOverrides = {
       ...optsWithCommandQueueOverride,
+      ...(scheduledModel ? { thinkingLevelOverride: scheduledModel.thinkingLevelOverride } : {}),
+      ...(scheduledModel && opts?.scheduledAutomation && !sessionModelSelectionLocked
+        ? {
+            scheduledAutomation: {
+              ...opts.scheduledAutomation,
+              modelFallbackPolicy: {
+                useSubagentFallbacks: scheduledModel.useSubagentFallbacks,
+                inheritDefaultFallbacksForAgentStringModel:
+                  scheduledModel.inheritDefaultFallbacksForAgentStringModel,
+              },
+            },
+          }
+        : {}),
       ...(turnToolOverrides?.skills ? { skillOverrides: turnToolOverrides.skills } : {}),
       ...(awaitSessionDiffBaseline ? { awaitSessionDiffBaseline } : {}),
     };
@@ -663,11 +694,11 @@ async function resolveReplyFromConfig(
         : null;
     const primaryProvider = resolvedChannelModelOverride?.ref.provider ?? defaultProvider;
     const primaryModel = resolvedChannelModelOverride?.ref.model ?? defaultModel;
-    const hasSessionModelOverride = Boolean(
-      normalizeOptionalString(sessionEntry.modelOverride) ||
-      normalizeOptionalString(sessionEntry.providerOverride),
-    );
-    const storedModelOverride = await resolveStoredModelOverrideAsync({
+    const {
+      modelOverride: storedModelOverride,
+      autoFallbackPrimaryProbe,
+      hasEffectiveStoredModelOverride,
+    } = await resolveReplyStoredModelSelection({
       sessionEntry,
       sessionStore,
       sessionKey,
@@ -676,49 +707,17 @@ async function resolveReplyFromConfig(
         sessionCtx.ModelParentSessionKey ??
         sessionCtx.ParentSessionKey,
       defaultProvider,
+      defaultModel,
+      primaryProvider,
+      primaryModel,
+      sessionModelSelectionLocked,
+      hasResolvedTurnModelOverride,
+      isHeartbeat: opts?.isHeartbeat,
     });
-    const staleHeartbeatAutoFallbackOverride =
-      !sessionModelSelectionLocked &&
-      isStaleHeartbeatAutoFallbackOverride({
-        isHeartbeat: opts?.isHeartbeat === true,
-        hasResolvedHeartbeatModelOverride:
-          opts?.isHeartbeat === true && hasResolvedTurnModelOverride,
-        sessionEntry,
-        storedOverride: storedModelOverride,
-        defaultProvider,
-        defaultModel,
-        primaryProvider,
-        primaryModel,
-      });
-    const staleLegacyAutoFallbackWithoutOrigin =
-      !sessionModelSelectionLocked &&
-      storedModelOverride?.source === "session" &&
-      hasLegacyAutoFallbackWithoutOrigin(sessionEntry);
-    if (
-      storedModelOverride?.model &&
-      !hasResolvedTurnModelOverride &&
-      !staleHeartbeatAutoFallbackOverride &&
-      !staleLegacyAutoFallbackWithoutOrigin
-    ) {
-      provider = storedModelOverride.provider ?? defaultProvider;
+    if (storedModelOverride) {
+      provider = storedModelOverride.provider;
       model = storedModelOverride.model;
     }
-    const canApplyAutoFallbackPrimaryProbe =
-      !sessionModelSelectionLocked &&
-      !hasResolvedTurnModelOverride &&
-      !staleHeartbeatAutoFallbackOverride;
-    const autoFallbackPrimaryProbe = canApplyAutoFallbackPrimaryProbe
-      ? resolveAutoFallbackPrimaryProbe({
-          entry: sessionEntry,
-          sessionKey,
-          primaryProvider,
-          primaryModel,
-        })
-      : undefined;
-    const hasEffectiveStoredModelOverride =
-      Boolean(storedModelOverride || hasSessionModelOverride) &&
-      !staleHeartbeatAutoFallbackOverride &&
-      !staleLegacyAutoFallbackWithoutOrigin;
     if (
       !hasResolvedTurnModelOverride &&
       !hasEffectiveStoredModelOverride &&
