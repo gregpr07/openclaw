@@ -34,6 +34,12 @@ function clientWith(
   };
 }
 const methods = (request: ReturnType<typeof vi.fn>) => request.mock.calls.map(([method]) => method);
+const started = { status: "started", messageId: "first-turn" };
+const start = (
+  request: ReturnType<typeof vi.fn>,
+  mode: Parameters<typeof startSessionPlacementInitialTurn>[1]["mode"] = "dispatch",
+  current = () => true,
+) => startSessionPlacementInitialTurn(clientWith(request), { ...params, mode }, current);
 function placementRequest(state: () => string) {
   return vi.fn(async (method: string) =>
     method === "agents.list"
@@ -67,36 +73,29 @@ afterEach(() => {
   sessionStorage.clear();
 });
 
-it("waits for server-started placement and sends exactly once without dispatch", async () => {
+it.each([
+  ["provisioning", "dispatch"],
+  ["failed", "retry"],
+  ["reclaimed", "retry"],
+  ["local", "retry"],
+] as const)("starts required %s placement via %s without admin dispatch", async (initial, mode) => {
   vi.useFakeTimers();
-  let state = "provisioning";
+  let state: string = initial;
   const request = placementRequest(() => state);
-  const pending = startSessionPlacementInitialTurn(clientWith(request), params, () => true);
-  await vi.advanceTimersByTimeAsync(0);
-  expect(methods(request)).toEqual(["agents.list", "sessions.describe"]);
-  state = "active";
-  await vi.advanceTimersByTimeAsync(250);
-  expect(await pending).toEqual({ status: "started", messageId: "first-turn" });
-  expect(methods(request)).toEqual([
-    "agents.list",
-    "sessions.describe",
-    "sessions.describe",
-    "sessions.send",
-  ]);
+  const pending = start(request, mode);
+  if (initial === "provisioning") {
+    await vi.advanceTimersByTimeAsync(0);
+    expect(methods(request)).toEqual(["agents.list", "sessions.describe"]);
+    state = "active";
+    await vi.advanceTimersByTimeAsync(250);
+  }
+  expect(await pending).toEqual(started);
+  expect(methods(request)).toEqual(
+    initial === "provisioning"
+      ? ["agents.list", "sessions.describe", "sessions.describe", "sessions.send"]
+      : ["agents.list", "sessions.describe", "sessions.send"],
+  );
 });
-
-it.each(["failed", "reclaimed", "local"])(
-  "admits explicit Retry from %s through the server run owner, not admin dispatch",
-  async (state) => {
-    const request = placementRequest(() => state);
-    const retry = { ...params, mode: "retry" as const };
-    expect(await startSessionPlacementInitialTurn(clientWith(request), retry, () => true)).toEqual({
-      status: "started",
-      messageId: "first-turn",
-    });
-    expect(methods(request)).toEqual(["agents.list", "sessions.describe", "sessions.send"]);
-  },
-);
 
 it.each([undefined, "replacement"])(
   "does not send or dispatch when the required policy changes to %s",
@@ -108,9 +107,7 @@ it.each([undefined, "replacement"])(
           : undefined,
       },
     }));
-    expect(
-      await startSessionPlacementInitialTurn(clientWith(request), params, () => true),
-    ).toMatchObject({ status: "dispatch-rejected" });
+    expect(await start(request)).toMatchObject({ status: "dispatch-rejected" });
     expect(request.mock.calls).toHaveLength(1);
   },
 );
@@ -129,7 +126,7 @@ it("Stop fences a late active placement reply and retains the existing reclaim o
     }
     return {};
   });
-  const pending = startSessionPlacementInitialTurn(clientWith(request), params, () => current);
+  const pending = start(request, "dispatch", () => current);
   await read.promise;
   current = false;
   active.resolve({ session: { placement: { state: "active" } } });

@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import { expect, it, vi } from "vitest";
+import { expect, it, onTestFinished, vi } from "vitest";
 import { createChangeListeners } from "../../../../src/shared/listeners.ts";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { GatewayBrowserClient } from "../../api/gateway.ts";
@@ -56,57 +56,52 @@ it.each(["success", "dynamic"] as const)(
       changes.publish();
     };
     const pending: Array<Promise<unknown>> = [];
-    try {
-      harness.publish(true);
-      await vi.waitFor(() => expect(sessions.state.result?.sessions[0]?.key).toBe(key));
-      pending.push(sessions.refresh({ agentId: "main", force: true }));
-      select("writer");
-      if (outcome === "dynamic") {
-        select("main");
-      }
-      const patch = sessions.patch(key, { permissionMode: "workspace" });
-      pending.push(patch);
-      await vi.waitFor(() =>
-        expect(sessions.state.result?.sessions[0]?.permissionMode).toBe("workspace"),
-      );
-      if (outcome === "dynamic") {
-        // The selection supplier is live when the queued request drains.
-        state.selectedId = "writer";
-        harness.emitEvent({
-          type: "event",
-          event: "session.message",
-          payload: {
-            ...initial.sessions[0],
-            sessionKey: key,
-            updatedAt: 3,
-            permissionMode: "full",
-            archived: false,
-            hasActiveRun: true,
-            status: "running",
-          },
-        });
-      }
-      blocker.resolve(initial);
-      await vi.waitFor(() => expect(queries).toHaveLength(3));
-      expect(queries).toEqual(["main", "main", "writer"]);
-      if (outcome === "success") {
-        selected.resolve(sessionsResult([{ key: "agent:writer:chat", kind: "direct" }], 3));
-      } else {
-        selected.reject(new Error("Writer roster unavailable"));
-      }
-      await Promise.all(pending);
-      expect(sessions.state.loading).toBe(false);
-      if (outcome === "success") {
-        expect(sessions.state.agentId).toBe("writer");
-      } else {
-        expect(sessions.state.error).toBe("Writer roster unavailable");
-      }
-      await expect(patch).resolves.not.toHaveProperty("listRefreshError");
-    } finally {
+    onTestFinished(async () => {
       blocker.resolve(initial);
       selected.resolve(initial);
       await Promise.allSettled(pending);
       sessions.dispose();
+    });
+    harness.publish(true);
+    await vi.waitFor(() => expect(sessions.state.result?.sessions[0]?.key).toBe(key));
+    pending.push(sessions.refresh({ agentId: "main", force: true }));
+    select("writer");
+    if (outcome === "dynamic") {
+      select("main");
     }
+    const patch = sessions.patch(key, { permissionMode: "workspace" });
+    pending.push(patch);
+    await vi.waitFor(() =>
+      expect(sessions.state.result?.sessions[0]?.permissionMode).toBe("workspace"),
+    );
+    if (outcome === "dynamic") {
+      // The selection supplier is live when the queued request drains.
+      state.selectedId = "writer";
+      harness.emitEvent({
+        type: "event",
+        event: "session.message",
+        payload: {
+          ...initial.sessions[0],
+          sessionKey: key,
+          updatedAt: 3,
+          permissionMode: "full",
+          archived: false,
+          hasActiveRun: true,
+          status: "running",
+        },
+      });
+    }
+    blocker.resolve(initial);
+    await vi.waitFor(() => expect(queries).toEqual(["main", "main", "writer"]));
+    const expected =
+      outcome === "success" ? { agentId: "writer" } : { error: "Writer roster unavailable" };
+    if (outcome === "success") {
+      selected.resolve(sessionsResult([{ key: "agent:writer:chat", kind: "direct" }], 3));
+    } else {
+      selected.reject(new Error("Writer roster unavailable"));
+    }
+    await Promise.all(pending);
+    expect(sessions.state).toMatchObject({ loading: false, ...expected });
+    await expect(patch).resolves.not.toHaveProperty("listRefreshError");
   },
 );

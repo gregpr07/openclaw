@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { expect, it, vi } from "vitest";
+import { expect, it, onTestFinished, vi } from "vitest";
 import type { GatewayEventFrame } from "../../api/gateway.ts";
 import type { GatewaySessionRow } from "../../api/types.ts";
 import { createSessionActivity } from "../../pages/activity/session-activity-owner.ts";
@@ -12,6 +12,8 @@ import { createTestSessionCapability, sessionsResult } from "./session-capabilit
 it("bounds list reads across two viewers and three streaming sessions for three minutes", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(1);
+  const cleanup: Array<() => void> = [() => vi.useRealTimers()];
+  onTestFinished(() => cleanup.toReversed().forEach((stop) => stop()));
   let trigger = "route";
   const rows: GatewaySessionRow[] = Array.from({ length: 3 }, (_, index) => ({
     key: `agent:main:stream-${index}`,
@@ -49,16 +51,13 @@ it("bounds list reads across two viewers and three streaming sessions for three 
         Date.now(),
       );
     });
-    const source = createApplicationGateway({
+    const source = createApplicationGateway();
+    source.publish({
+      ...source.gateway.snapshot,
       client,
       phase: "connected",
-      hello: null,
-      offlineStable: false,
-      canvasPluginSurfaceUrl: null,
       assistantAgentId: "main",
       sessionKey: rows[0]!.key,
-      lastError: null,
-      lastErrorCode: null,
     });
     const sessions = createTestSessionCapability(source.gateway);
     const agents = createAgentCapability(source.gateway);
@@ -74,76 +73,70 @@ it("bounds list reads across two viewers and three streaming sessions for three 
         subscribe: () => () => {},
       },
     });
+    cleanup.push(() => agents.dispose());
     const stop = store.subscribe(() => {});
     const activity = createSessionActivity(() => {});
+    cleanup.push(
+      () => activity.dispose(),
+      () => sessions.dispose(),
+      stop,
+    );
     void sessions.refresh({ agentId: "main", force: true });
     void activity.load(client, { personId: null, time: "all", query: "" });
-    return { reads, sessions, store, activity, stop, source, client, agents };
+    return { reads, sessions, store, activity, source, client };
   });
-  try {
-    await vi.advanceTimersByTimeAsync(0);
-    for (const phase of ["session.message", "patch", "stores"]) {
-      trigger = phase;
-      for (let second = 0; second < 60; second += 1) {
-        for (const row of rows) {
-          row.updatedAt = Date.now();
-          const event: GatewayEventFrame = {
-            type: "event",
-            event: phase === "session.message" ? "session.message" : "sessions.changed",
-            payload:
-              phase === "stores"
-                ? { reason: "stores" }
-                : {
-                    ...(phase === "patch" ? { reason: "patch" } : {}),
-                    sessionKey: row.key,
-                    session: { ...row },
-                  },
-          };
-          for (const viewer of viewers) {
-            viewer.source.publishEvent(event);
-            // Activity's sessions route subscribes to sessions.changed, not streaming messages.
-            if (event.event === "sessions.changed") {
-              viewer.activity.invalidate(event.payload);
-            }
+  await vi.advanceTimersByTimeAsync(0);
+  for (const phase of ["session.message", "patch", "stores"]) {
+    trigger = phase;
+    for (let second = 0; second < 60; second += 1) {
+      for (const row of rows) {
+        row.updatedAt = Date.now();
+        const event: GatewayEventFrame = {
+          type: "event",
+          event: phase === "session.message" ? "session.message" : "sessions.changed",
+          payload:
+            phase === "stores"
+              ? { reason: "stores" }
+              : {
+                  ...(phase === "patch" ? { reason: "patch" } : {}),
+                  sessionKey: row.key,
+                  session: { ...row },
+                },
+        };
+        for (const viewer of viewers) {
+          viewer.source.publishEvent(event);
+          // Activity's sessions route subscribes to sessions.changed, not streaming messages.
+          if (event.event === "sessions.changed") {
+            viewer.activity.invalidate(event.payload);
           }
         }
-        await vi.advanceTimersByTimeAsync(1_000);
       }
+      await vi.advanceTimersByTimeAsync(1_000);
     }
-    console.log("session-refetch-volume", JSON.stringify(viewers.map(({ reads }) => reads)));
-    expect(viewers[0]!.reads).toEqual(viewers[1]!.reads);
-    for (const { reads, sessions, store } of viewers) {
-      expect(reads["sidebar:session.message"] ?? 0).toBe(0);
-      expect(reads["roster:session.message"] ?? 0).toBe(0);
-      expect(reads["sidebar:patch"] ?? 0).toBe(0);
-      expect(reads["roster:patch"] ?? 0).toBe(0);
-      expect(reads["activity:patch"]).toBeLessThanOrEqual(12);
-      for (const owner of ["sidebar", "roster", "activity"]) {
-        expect(reads[`${owner}:stores`]).toBeLessThanOrEqual(12);
-      }
-      expect(sessions.state.result?.sessions).toHaveLength(3);
-      expect(store.snapshot.result?.sessions).toHaveLength(3);
+  }
+  expect(viewers[0]!.reads).toEqual(viewers[1]!.reads);
+  for (const { reads, sessions, store } of viewers) {
+    for (const owner of ["sidebar", "roster"]) {
+      expect([reads[`${owner}:session.message`] ?? 0, reads[`${owner}:patch`] ?? 0]).toEqual([
+        0, 0,
+      ]);
     }
-    trigger = "route-change";
-    for (const { activity, client } of viewers) {
-      activity.invalidate();
-      void activity.load(client, { personId: "another-person", time: "all", query: "" });
+    expect(reads["activity:patch"]).toBeLessThanOrEqual(12);
+    for (const owner of ["sidebar", "roster", "activity"]) {
+      expect(reads[`${owner}:stores`]).toBeLessThanOrEqual(12);
     }
-    await vi.advanceTimersByTimeAsync(0);
+    expect(sessions.state.result?.sessions).toHaveLength(3);
+    expect(store.snapshot.result?.sessions).toHaveLength(3);
+  }
+  trigger = "route-change";
+  for (const { activity, client } of viewers) {
+    activity.invalidate();
+    void activity.load(client, { personId: "another-person", time: "all", query: "" });
+  }
+  for (const delay of [0, 20_000]) {
+    await vi.advanceTimersByTimeAsync(delay);
     for (const { reads } of viewers) {
       expect(reads["activity:route-change"]).toBe(1);
     }
-    await vi.advanceTimersByTimeAsync(20_000);
-    for (const { reads } of viewers) {
-      expect(reads["activity:route-change"]).toBe(1);
-    }
-  } finally {
-    for (const { sessions, activity, stop, agents } of viewers) {
-      stop();
-      sessions.dispose();
-      activity.dispose();
-      agents.dispose();
-    }
-    vi.useRealTimers();
   }
 });

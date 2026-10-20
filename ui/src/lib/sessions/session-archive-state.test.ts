@@ -4,48 +4,39 @@ import type { GatewaySessionRow } from "../../api/types.ts";
 import { createSessionArchiveState } from "./session-archive-state.ts";
 import { createSessionRowProvenance } from "./session-row-provenance.ts";
 
-const row = (sessionId: string, extra: Partial<GatewaySessionRow> = {}): GatewaySessionRow => ({
+const base: GatewaySessionRow = {
   key: "agent:main:archive",
-  sessionId,
+  sessionId: "same",
   kind: "direct",
-  ...extra,
-});
-function fixture(publishedRow: () => GatewaySessionRow | undefined) {
-  const provenance = createSessionRowProvenance();
-  const archives = createSessionArchiveState(publishedRow, () => {}, provenance);
-  const observe = (value: GatewaySessionRow, archived: boolean, clock: number) => {
-    provenance.observeReadRow(value, clock);
-    archives.observe(value.key, archived, value);
-  };
-  return { archives, provenance, observe };
-}
+};
+const fixture = (published: () => GatewaySessionRow | undefined) =>
+  createSessionArchiveState(published, () => {}, createSessionRowProvenance());
 
 it.each([
-  { pending: false, archived: undefined, publishedId: "same", expected: undefined },
-  { pending: false, archived: false, publishedId: "same", expected: undefined },
-  { pending: true, archived: undefined, publishedId: null, expected: "pending" },
-  { pending: false, archived: true, publishedId: null, expected: "archived" },
-  { pending: false, archived: true, publishedId: "replacement", expected: undefined },
-  { pending: false, archived: true, publishedId: undefined, expected: undefined },
-  { pending: true, archived: true, publishedId: "same", expected: "pending" },
-  { pending: true, archived: false, publishedId: "same", expected: "pending" },
-])(
-  "resolves visibility with pending=$pending archived=$archived publishedId=$publishedId",
-  ({ pending, archived, publishedId, expected }) => {
-    const value = row("same");
+  [false, undefined, "same", undefined],
+  [false, false, "same", undefined],
+  [true, undefined, null, "pending"],
+  [false, true, null, "archived"],
+  [false, true, "replacement", undefined],
+  [false, true, undefined, undefined],
+  [true, true, "same", "pending"],
+  [true, false, "same", "pending"],
+] as const)(
+  "visibility: pending=%s archived=%s published=%s → %s",
+  (pending, archived, publishedId, expected) => {
     const publishedRow = vi.fn(() =>
-      publishedId === null ? undefined : { ...value, sessionId: publishedId },
+      publishedId === null ? undefined : { ...base, sessionId: publishedId },
     );
-    const { archives, observe } = fixture(publishedRow);
+    const archives = fixture(publishedRow);
     if (archived !== undefined) {
-      observe(value, archived, 1);
+      archives.observe(base.key, archived, base);
     }
     if (pending) {
-      archives.beginPending(value.key, value.sessionId);
+      archives.beginPending(base.key, base.sessionId);
     }
-    expect(archives.visibility(` ${value.key} `)).toBe(expected);
+    expect(archives.visibility(` ${base.key} `)).toBe(expected);
     if (!pending && !archived) {
-      for (const key of [value.key, "agent:main:unknown", " "]) {
+      for (const key of [base.key, "agent:main:unknown", " "]) {
         expect(archives.visibility(key)).toBeUndefined();
       }
       expect(publishedRow).not.toHaveBeenCalled();
@@ -54,39 +45,34 @@ it.each([
 );
 
 it("keeps a successor's archive pending when an older same-key archive confirms", () => {
-  const previous = row("previous");
+  const previous = { ...base, sessionId: "previous" };
   let published = previous;
-  const { archives, observe } = fixture(() => published);
+  const archives = fixture(() => published);
   const finishPrevious = archives.beginPending(previous.key, previous.sessionId);
   published = { ...previous, sessionId: "successor" };
   expect(archives.visibility(previous.key)).toBeUndefined();
   const finishSuccessor = archives.beginPending(published.key, published.sessionId);
 
-  observe(previous, true, 1);
+  archives.observe(previous.key, true, previous);
   finishPrevious?.();
   expect(archives.visibility(published.key)).toBe("pending");
 
-  observe(published, true, 2);
+  archives.observe(published.key, true, published);
   expect(archives.visibility(published.key)).toBe("archived");
   finishSuccessor?.();
   expect(archives.visibility(published.key)).toBe("archived");
 });
 
 it("keeps a confirmed archive until a newer authoritative archive observation", () => {
-  const value = row("confirmed-archive", { archived: false, updatedAt: 1 });
-  const { archives, provenance, observe } = fixture(() => value);
-  observe(value, false, 1);
+  const value = { ...base, sessionId: "confirmed-archive", archived: false, updatedAt: 1 };
+  const archives = fixture(() => value);
+  archives.observe(value.key, false, value);
   archives.confirm(value.key, true, { sessionId: "confirmed-archive", updatedAt: 2 });
 
-  const unrelated = { ...value, label: "Updated title", updatedAt: 3 };
-  provenance.observeReadRow(unrelated, 3);
-  expect(archives.applyRow(unrelated).archived).toBe(true);
-
-  const pendingRead = { ...value };
-  observe(pendingRead, false, 2);
-  expect(archives.applyRow(pendingRead).archived).toBe(true);
-
-  const freshRead = { ...value, updatedAt: 4 };
-  observe(freshRead, false, 4);
-  expect(archives.applyRow(freshRead).archived).toBe(false);
+  expect(archives.applyRow({ ...value, label: "Updated title", updatedAt: 3 }).archived).toBe(true);
+  for (const updatedAt of [1, 4]) {
+    const read = { ...value, updatedAt };
+    archives.observe(read.key, false, read);
+    expect(archives.applyRow(read).archived).toBe(updatedAt === 1);
+  }
 });
