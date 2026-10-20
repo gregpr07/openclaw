@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import type { Worker } from "node:worker_threads";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createDeferredCore } from "../shared/deferred.js";
 import { probeSqliteNativeClose } from "./bun-sqlite-close-probe.js";
@@ -10,18 +11,12 @@ vi.mock("./runtime-worker-url.js", () => ({
   resolveRuntimeWorkerUrl: () => new URL("file:///fixture/sqlite-close-probe.js"),
 }));
 
-const state = vi.hoisted(() => {
-  const workers: (EventEmitter & {
-    terminate: ReturnType<typeof vi.fn>;
-    unref: ReturnType<typeof vi.fn>;
-  })[] = [];
-  return {
-    workers,
-    join: Promise.resolve(1),
-    remove: vi.fn(async () => {}),
-    warn: vi.fn(),
-  };
-});
+const workers: Pick<Worker, "emit" | "terminate" | "unref">[] = [];
+const state = vi.hoisted(() => ({
+  join: Promise.resolve(1),
+  remove: vi.fn(async () => {}),
+  warn: vi.fn(),
+}));
 vi.mock("node:fs/promises", () => ({
   mkdtemp: async () => "/private/close-probe",
   realpath: async (path: string) => path,
@@ -35,14 +30,14 @@ vi.mock("node:worker_threads", async (importOriginal) => ({
     unref = vi.fn(() => this);
     constructor() {
       super();
-      state.workers.push(this);
+      workers.push(this);
     }
   },
 }));
 
 beforeEach(() => {
   vi.useFakeTimers();
-  state.workers.length = 0;
+  workers.length = 0;
   state.join = Promise.resolve(1);
   state.remove.mockClear();
   state.warn.mockClear();
@@ -62,7 +57,7 @@ async function start(stuck = false) {
   const settled = vi.fn();
   void result.then(settled);
   await vi.advanceTimersByTimeAsync(0);
-  const worker = state.workers[0];
+  const worker = workers[0];
   assert(worker);
   return { worker, result, settled, join };
 }

@@ -15,14 +15,22 @@ describe("brew helpers", () => {
     await fs.chmod(filePath, 0o755);
   }
 
-  it("resolves brew from absolute PATH entries for non-standard installs", async () => {
+  it.each(["process", "workspace"])("trusts only the process PATH (%s)", async (source) => {
     await withBrewDir(async (tmp) => {
-      const customBin = path.join(tmp, "custom-homebrew", "bin");
-      const customBrew = path.join(customBin, "brew");
-      await writeExecutable(customBrew);
+      const bin = path.join(tmp, "custom-homebrew", "bin");
+      const executable = path.join(bin, "brew");
+      await writeExecutable(executable);
 
-      await withEnvAsync({ PATH: customBin }, async () => {
-        expect(resolveBrewExecutable({ homeDir: path.join(tmp, "home") })).toBe(customBrew);
+      await withEnvAsync(source === "process" ? { PATH: bin } : {}, async () => {
+        const resolved = resolveBrewExecutable({
+          homeDir: path.join(tmp, "home"),
+          ...(source === "workspace" ? { env: { PATH: bin } } : {}),
+        });
+        if (source === "process") {
+          expect(resolved).toBe(executable);
+        } else {
+          expect(resolved).not.toBe(executable);
+        }
       });
     });
   });
@@ -47,18 +55,6 @@ describe("brew helpers", () => {
         expect(resolveBrewExecutable({ homeDir: tmp, env })).toBe(homebrewBrew);
         expect(resolveBrewPathDirs({ homeDir: tmp, env })).not.toContain(prefixBin);
       });
-    });
-  });
-
-  it("does not resolve brew from PATH entries", async () => {
-    await withBrewDir(async (tmp) => {
-      const pathBin = path.join(tmp, "path-bin");
-      const pathBrew = path.join(pathBin, "brew");
-      await writeExecutable(pathBrew);
-
-      expect(
-        resolveBrewExecutable({ homeDir: path.join(tmp, "home"), env: { PATH: pathBin } }),
-      ).not.toBe(pathBrew);
     });
   });
 

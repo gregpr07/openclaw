@@ -73,35 +73,27 @@ it.each([true, false])("resolves ancestor identity with a reachable ancestor: %s
   expect(calls).toEqual(expectedCalls);
 });
 
-it("blocks dangling symlink leaf escapes outside root", async () => {
+it.each(["dangling", "file"])("blocks symlink escapes (%s)", async (kind) => {
   if (process.platform === "win32") {
     return;
   }
 
   await withBoundaryDir(async ({ root, outside }) => {
     const linkPath = path.join(root, "alias-out");
-    await fs.symlink(outside, linkPath);
-    const options = boundaryOptions(root, path.join(linkPath, "missing.txt"));
-
-    await expect(resolveRootPath(options)).rejects.toThrow(/Symlink escapes sandbox root/i);
-    expect(() => resolveRootPathSync(options)).toThrow(/Symlink escapes sandbox root/i);
-  });
-});
-
-it("allows final symlink only when unlink policy opts in", async () => {
-  if (process.platform === "win32") {
-    return;
-  }
-
-  await withBoundaryDir(async ({ root, outside }) => {
     const outsideFile = path.join(outside, "target.txt");
-    const linkPath = path.join(root, "link.txt");
-    await fs.writeFile(outsideFile, "x", "utf8");
-    await fs.symlink(outsideFile, linkPath);
-
-    const options = boundaryOptions(root, linkPath);
+    if (kind === "file") {
+      await fs.writeFile(outsideFile, "x", "utf8");
+    }
+    await fs.symlink(kind === "file" ? outsideFile : outside, linkPath);
+    const options = boundaryOptions(
+      root,
+      kind === "file" ? linkPath : path.join(linkPath, "missing.txt"),
+    );
     await expect(resolveRootPath(options)).rejects.toThrow(/Symlink escapes sandbox root/i);
-
+    if (kind === "dangling") {
+      expect(() => resolveRootPathSync(options)).toThrow(/Symlink escapes sandbox root/i);
+      return;
+    }
     const allowed = await resolveRootPath({
       ...options,
       policy: { allowFinalSymlinkForUnlink: true },
@@ -109,7 +101,7 @@ it("allows final symlink only when unlink policy opts in", async () => {
     expect(allowed).toMatchObject({
       exists: true,
       kind: "symlink",
-      canonicalPath: path.join(await fs.realpath(root), "link.txt"),
+      canonicalPath: path.join(await fs.realpath(root), "alias-out"),
     });
   });
 });

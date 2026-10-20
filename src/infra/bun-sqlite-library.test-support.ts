@@ -86,30 +86,24 @@ export const {
   initializeSqliteRuntimeCapabilities,
 } = await import("./bun-sqlite-library.js");
 
-let restore: () => void;
+function snapshotProperty(target: object, key: PropertyKey) {
+  const descriptor = Object.getOwnPropertyDescriptor(target, key);
+  return () =>
+    descriptor
+      ? Object.defineProperty(target, key, descriptor)
+      : Reflect.deleteProperty(target, key);
+}
+let restore: (() => unknown)[];
 beforeEach(() => {
-  const originals = [
-    [globalThis, sqliteSelectionKey],
-    [globalThis, "__openclawStandaloneRootUrl"],
-    [process, "versions"],
-    [process, "platform"],
-  ] as const;
-  const descriptors = originals.map(([target, key]) =>
-    Object.getOwnPropertyDescriptor(target, key),
-  );
-  restore = () => {
-    originals.forEach(([target, key], index) => {
-      const descriptor = descriptors[index];
-      if (descriptor) {
-        Object.defineProperty(target, key, descriptor);
-      } else {
-        Reflect.deleteProperty(target, key);
-      }
-    });
-  };
+  restore = [
+    snapshotProperty(globalThis, sqliteSelectionKey),
+    snapshotProperty(globalThis, "__openclawStandaloneRootUrl"),
+    snapshotProperty(process, "versions"),
+    snapshotProperty(process, "platform"),
+  ];
 });
 afterEach(() => {
-  restore();
+  restore.forEach((property) => property());
   native.enabled = false;
   native.environment.clear();
   vi.unstubAllEnvs();
