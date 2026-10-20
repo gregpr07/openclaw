@@ -23,21 +23,12 @@ try {
 const runGatewayFixtureFork = createGatewayFixtureFork(fixtureWorkers, afterAll);
 
 // Each retained failure needs its own fork: a later case must not reset the failed owner.
-for (const scenario of [
-  { id: "public clean cleanup", missingTls: false, failCleanup: false, requiredJoin: false },
-  {
-    id: "public required cleanup failure",
-    missingTls: false,
-    failCleanup: true,
-    requiredJoin: true,
-  },
-  {
-    id: "kernel required cleanup failure",
-    missingTls: true,
-    failCleanup: true,
-    requiredJoin: true,
-  },
-]) {
+for (const [id, missingTls, failCleanup] of [
+  ["public clean cleanup", false, false],
+  ["public required cleanup failure", false, true],
+  ["kernel required cleanup failure", true, true],
+] as const) {
+  const scenario = { id, missingTls, failCleanup, requiredJoin: failCleanup };
   test(`startup fixture ownership: ${scenario.id}`, (context) =>
     runGatewayFixtureFork(
       context,

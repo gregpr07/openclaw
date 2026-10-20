@@ -17,16 +17,21 @@ import { installGatewayTestHooks, startTestGatewayServer } from "./test-helpers.
 installGatewayTestHooks({ scope: "suite" });
 
 const SESSION_KEY = "agent:main:generated-identity-restart";
+const widgets = [
+  { title: "売上レポート 2024", key: "a", fallbackName: "2024-aaaaaaaa", html: "sales" },
+  { title: "在庫レポート 2024", key: "b", fallbackName: "2024-bbbbbbbb", html: "inventory" },
+] as const;
 
 function putGeneratedWidget(
   client: Awaited<ReturnType<typeof connectGatewayClient>>,
-  params: { title: string; key: string; fallbackName: string; html: string },
+  params: (typeof widgets)[number],
+  revised = false,
 ) {
   return client.request<BoardWidgetPutResult>("board.widget.put", {
     sessionKey: SESSION_KEY,
     name: "2024",
     title: params.title,
-    content: { kind: "html", html: params.html },
+    content: { kind: "html", html: `<p>${params.html}${revised ? " revised" : ""}</p>` },
     generatedIdentity: {
       source: "show_widget",
       key: params.key.repeat(64),
@@ -88,18 +93,8 @@ it(
         connect(first.port, "generated-b"),
       ]);
       const initial = await Promise.all([
-        putGeneratedWidget(firstClient, {
-          title: "売上レポート 2024",
-          key: "a",
-          fallbackName: "2024-aaaaaaaa",
-          html: "<p>sales</p>",
-        }),
-        putGeneratedWidget(secondClient, {
-          title: "在庫レポート 2024",
-          key: "b",
-          fallbackName: "2024-bbbbbbbb",
-          html: "<p>inventory</p>",
-        }),
+        putGeneratedWidget(firstClient, widgets[0]),
+        putGeneratedWidget(secondClient, widgets[1]),
       ]);
       const initialNames = initial.map((result) => result.resolvedWidgetName);
       expect(new Set(initialNames).size).toBe(2);
@@ -118,45 +113,29 @@ it(
 
       const restarted = await start();
       restartedServer = restarted.server;
-      restartedClient = await connect(restarted.port, "generated-restart");
+      const reconnected = (restartedClient = await connect(restarted.port, "generated-restart"));
       const snapshot = await restartedClient.request<BoardSnapshot>("board.get", {
         sessionKey: SESSION_KEY,
       });
       expect(new Set(snapshot.widgets.map((widget) => widget.name))).toEqual(new Set(initialNames));
 
-      const reloaded = await Promise.all([
-        putGeneratedWidget(restartedClient, {
-          title: "売上レポート 2024",
-          key: "a",
-          fallbackName: "2024-aaaaaaaa",
-          html: "<p>sales revised</p>",
-        }),
-        putGeneratedWidget(restartedClient, {
-          title: "在庫レポート 2024",
-          key: "b",
-          fallbackName: "2024-bbbbbbbb",
-          html: "<p>inventory revised</p>",
-        }),
-      ]);
+      const reloaded = await Promise.all(
+        widgets.map((widget) => putGeneratedWidget(reconnected, widget, true)),
+      );
       expect(new Set(reloaded.map((result) => result.resolvedWidgetName))).toEqual(
         new Set(initialNames),
       );
       expect(events).toEqual(expect.arrayContaining(initialNames));
     } finally {
-      if (firstClient) {
-        await disconnectGatewayClient(firstClient).catch(() => undefined);
+      for (const client of [firstClient, secondClient, restartedClient]) {
+        if (client) {
+          await disconnectGatewayClient(client).catch(() => undefined);
+        }
       }
-      if (secondClient) {
-        await disconnectGatewayClient(secondClient).catch(() => undefined);
-      }
-      if (restartedClient) {
-        await disconnectGatewayClient(restartedClient).catch(() => undefined);
-      }
-      if (firstServer) {
-        await firstServer.close().catch(() => undefined);
-      }
-      if (restartedServer) {
-        await restartedServer.close().catch(() => undefined);
+      for (const server of [firstServer, restartedServer]) {
+        if (server) {
+          await server.close().catch(() => undefined);
+        }
       }
       closeOpenClawAgentDatabasesForTest();
       closeOpenClawStateDatabaseForTest();

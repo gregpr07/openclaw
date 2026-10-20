@@ -37,14 +37,6 @@ afterAll(() => {
   cleanupPluginLoaderFixturesForTest();
 });
 
-function requireStorePath(): string {
-  expect(typeof testState.sessionStorePath).toBe("string");
-  if (typeof testState.sessionStorePath !== "string") {
-    throw new Error("expected test session store path");
-  }
-  return testState.sessionStorePath;
-}
-
 async function resetMainSession(): Promise<void> {
   const result = await directSessionReq("sessions.reset", { key: "main", reason: "new" });
   expect(result.ok).toBe(true);
@@ -80,24 +72,24 @@ module.exports = {
 
 test("sessions.reset delivers the ended SQLite window only to a loaded granted plugin", async () => {
   await createSessionStoreDir();
-  const storePath = requireStorePath();
+  const storePath = testState.sessionStorePath;
+  expect(typeof storePath).toBe("string");
+  if (typeof storePath !== "string") {
+    throw new Error("expected test session store path");
+  }
   await writeSessionStore({ entries: { main: sessionStoreEntry("sess-main") } });
   const latestEndedContent = "latest ended interval ".padEnd(3_600, "x");
-  await seedSessionTranscript({
-    agentId: "main",
-    sessionId: "sess-main",
-    sessionKey: "agent:main:main",
-    storePath,
-    messages: [{ role: "user", content: "first closed interval", id: "m1" }],
-  });
+  const seed = (content: string, id: string) =>
+    seedSessionTranscript({
+      agentId: "main",
+      sessionId: "sess-main",
+      sessionKey: "agent:main:main",
+      storePath,
+      messages: [{ role: "user", content, id }],
+    });
+  await seed("first closed interval", "m1");
   await resetMainSession();
-  await seedSessionTranscript({
-    agentId: "main",
-    sessionId: "sess-main",
-    sessionKey: "agent:main:main",
-    storePath,
-    messages: [{ role: "user", content: latestEndedContent, id: "m2" }],
-  });
+  await seed(latestEndedContent, "m2");
 
   useNoBundledPlugins();
   const grantedPlugin = writeReaderPlugin("granted");

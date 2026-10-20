@@ -16,13 +16,7 @@ export type StoredChatSessionEntry = Parameters<typeof writeSessionStore>[0]["en
 
 export async function writeStoredMainSession(entry: StoredChatSessionEntry = {}) {
   await writeSessionStore({
-    entries: {
-      main: {
-        sessionId: "sess-main",
-        updatedAt: Date.now(),
-        ...entry,
-      },
-    },
+    entries: { main: { sessionId: "sess-main", updatedAt: Date.now(), ...entry } },
   });
 }
 
@@ -56,12 +50,8 @@ function createPersistentChatSessionStore() {
     prepare(this: void) {
       directory = directories.make("openclaw-chat-persistent-");
     },
-    directory(this: void) {
-      return directory;
-    },
-    async reset(this: void) {
-      await resetPersistentGatewaySessionStore(directory);
-    },
+    directory: () => directory,
+    reset: () => resetPersistentGatewaySessionStore(directory),
     async dispose(this: void) {
       await releaseSessionTestDirectories(directories.dirs);
       directories.cleanup();
@@ -114,15 +104,10 @@ export function createMainChatSessionStoreFixture(settleGatewayFixture: () => Pr
       try {
         const sessionId = options?.sessionId ?? "sess-main";
         testState.sessionStorePath = path.join(dir, "sessions.json");
-        await writeSessionStore({
-          entries: {
-            main: {
-              sessionId,
-              sessionFile: path.join(dir, `${sessionId}.jsonl`),
-              updatedAt: Date.now(),
-              ...(options?.archivedAt !== undefined ? { archivedAt: options.archivedAt } : {}),
-            },
-          },
+        await writeStoredMainSession({
+          sessionId,
+          sessionFile: path.join(dir, `${sessionId}.jsonl`),
+          ...(options?.archivedAt !== undefined ? { archivedAt: options.archivedAt } : {}),
         });
         return await run(dir);
       } finally {
@@ -150,27 +135,21 @@ export async function writeMainChatSessionTranscript(
   if (!storePath) {
     throw new Error("session store path was not initialized");
   }
-  // These fixtures always seed a complete fresh transcript. Replace it in one
-  // transaction so large history cases do not pay one SQLite commit per event.
+  // Seed fresh transcripts in one transaction instead of one commit per event.
   const transcriptEvents = events
     .filter((event) => typeof event !== "string" || event.trim())
     .map((event) => (typeof event === "string" ? JSON.parse(event) : event)) as Parameters<
     typeof replaceTranscriptEvents
   >[1];
-  await replaceTranscriptEvents(
-    {
-      agentId: opts?.agentId ?? "main",
-      sessionId,
-      sessionKey: opts?.sessionKey ?? "agent:main:main",
-      storePath,
-    },
-    transcriptEvents,
-  );
-  // Oversized fixture transcripts take the deferred rebuild path; history
-  // reads need the projection converged before the case under test runs.
-  await waitForSessionTranscriptProjection({
+  const scope = {
     agentId: opts?.agentId ?? "main",
     sessionId,
     storePath,
-  });
+  };
+  await replaceTranscriptEvents(
+    { ...scope, sessionKey: opts?.sessionKey ?? "agent:main:main" },
+    transcriptEvents,
+  );
+  // Large transcripts rebuild asynchronously; converge before history reads.
+  await waitForSessionTranscriptProjection(scope);
 }
