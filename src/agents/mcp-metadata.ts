@@ -13,7 +13,7 @@ export const MCP_ENTERPRISE_AUTH_CLIENT_EXTENSION =
   "io.modelcontextprotocol/enterprise-managed-authorization";
 const MCP_APP_RESOURCE_MIME_TYPE = "text/html;profile=mcp-app";
 
-export function withMcpEnterpriseClientCapability(
+function withMcpEnterpriseClientCapability(
   capabilities: ClientCapabilities,
   enabled: boolean,
 ): ClientCapabilities {
@@ -29,7 +29,7 @@ export function withMcpEnterpriseClientCapability(
 }
 
 /** The SDK's legacy fallback omits per-request capabilities; preserve them on both protocol eras. */
-export function advertiseMcpEnterpriseOnRequests(transport: Transport): void {
+function advertiseMcpEnterpriseOnRequests(transport: Transport): void {
   const send = transport.send.bind(transport);
   transport.send = (message, options) => {
     if (!("id" in message) || !("method" in message)) {

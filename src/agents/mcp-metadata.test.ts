@@ -2,10 +2,9 @@ import { Client, InMemoryTransport, type JSONRPCMessage } from "@modelcontextpro
 import { Server } from "@modelcontextprotocol/server";
 import { describe, expect, it } from "vitest";
 import {
-  advertiseMcpEnterpriseOnRequests,
   buildMcpClientCapabilities,
   MCP_ENTERPRISE_AUTH_CLIENT_EXTENSION,
-  withMcpEnterpriseClientCapability,
+  prepareMcpCaps,
 } from "./mcp-metadata.js";
 
 describe("enterprise MCP client capability", () => {
@@ -18,8 +17,10 @@ describe("enterprise MCP client capability", () => {
   });
 
   it("preserves host-provided client extensions", () => {
+    const [transport] = InMemoryTransport.createLinkedPair();
     expect(
-      withMcpEnterpriseClientCapability(
+      prepareMcpCaps(
+        { transport, enterpriseAuth: true },
         { extensions: { "io.modelcontextprotocol/ui": { mimeTypes: ["text/html"] } } },
         true,
       ).extensions,
@@ -46,7 +47,7 @@ describe("enterprise MCP client capability", () => {
       sent.push(message);
       return send(message, options);
     };
-    advertiseMcpEnterpriseOnRequests(clientTransport);
+    prepareMcpCaps({ transport: clientTransport, enterpriseAuth: true }, undefined, false);
     try {
       await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
       await client.listTools();
