@@ -11,6 +11,7 @@ import { loadPluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapsh
 import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { prepareSystemAgentRunAdmission } from "../admitted-run-context.js";
 import { resolveLegacyInheritedAuthDir } from "../legacy-inherited-auth-dir.js";
+import { configFor, modelDefinition } from "../model-auth.fixtures.test-support.js";
 import {
   getPreparedModelRuntimeSnapshot,
   refreshPreparedModelRuntimeSnapshots,
@@ -45,6 +46,18 @@ it("reuses configured plugins for runs outside the canonical workspace", async (
   await fs.writeFile(path.join(taskWorkspace, "task.txt"), "task fixture");
   const toolsAllow = ["read", "write", "session_status", "llm-task", "memory-core"];
   const config: OpenClawConfig = {
+    ...configFor("proof", "http://127.0.0.1:1/v1", {
+      apiKey: "synthetic-proof-key",
+      api: "openai-completions",
+      models: [
+        modelDefinition("model", {
+          name: "proof",
+          reasoning: false,
+          contextWindow: 128000,
+          maxTokens: 4096,
+        }),
+      ],
+    }),
     agents: {
       entries: { main: { workspace: state.workspaceDir, agentDir: state.agentDir() } },
       defaults: {
@@ -52,26 +65,6 @@ it("reuses configured plugins for runs outside the canonical workspace", async (
         models: { "proof/model": { agentRuntime: { id: "openclaw" } } },
         sandbox: { mode: "off" },
         skipBootstrap: true,
-      },
-    },
-    models: {
-      providers: {
-        proof: {
-          baseUrl: "http://127.0.0.1:1/v1",
-          apiKey: "synthetic-proof-key",
-          api: "openai-completions",
-          models: [
-            {
-              id: "model",
-              name: "proof",
-              contextWindow: 128000,
-              maxTokens: 4096,
-              reasoning: false,
-              input: ["text"],
-              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-            },
-          ],
-        },
       },
     },
     plugins: {

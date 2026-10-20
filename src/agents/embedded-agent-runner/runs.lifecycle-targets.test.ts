@@ -239,11 +239,8 @@ describe("native lifecycle admission and cancellation", () => {
         () => {},
         () => attachActiveEmbeddedRun(sessionId, handle),
       );
-      let returned = false;
-      const draining = drain({ forceClear: true }).then((result) => {
-        returned = true;
-        return result;
-      });
+      let completed: Awaited<ReturnType<typeof drain>> | undefined;
+      const draining = drain({ forceClear: true }).then((result) => (completed = result));
       try {
         await awaitGateBeforeSettlement(
           cleanupEntered.promise,
@@ -258,7 +255,7 @@ describe("native lifecycle admission and cancellation", () => {
         } else {
           await vi.advanceTimersByTimeAsync(100);
         }
-        expect(returned).toBe(false);
+        expect(completed).toBeUndefined();
         releaseCleanup.resolve();
         await expect(draining).resolves.toEqual({ ...undrained, drained: producerSettles });
         expect(isEmbeddedAgentRunHandleActive(sessionId)).toBe(!producerSettles);

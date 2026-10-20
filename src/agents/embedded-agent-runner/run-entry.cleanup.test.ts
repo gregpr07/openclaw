@@ -46,7 +46,7 @@ it.each(cleanupCases)(
       "test:cleanup-probe",
     );
     const cleanupScope = createAgentCleanupScope();
-    let returned = false;
+    let completed: Awaited<ReturnType<typeof runEmbeddedAgentEntry>> | undefined;
     const entry = cleanupScope
       .run(() =>
         runEmbeddedAgentEntry({
@@ -80,10 +80,7 @@ it.each(cleanupCases)(
             }),
         }),
       )
-      .then((result) => {
-        returned = true;
-        return result;
-      });
+      .then((result) => (completed = result));
     try {
       await awaitGateBeforeSettlement(
         disposalStarted.promise,
@@ -96,8 +93,7 @@ it.each(cleanupCases)(
         disposal.reject(new Error("Context engine disposal failed"));
       }
       await vi.advanceTimersByTimeAsync(25);
-      expect(returned).toBe(true);
-      expect((await entry).result.payloads).toEqual([{ text: "Completed answer" }]);
+      expect(completed?.result.payloads).toEqual([{ text: "Completed answer" }]);
       expect(dispose).toHaveBeenCalledOnce();
       expect(cleanupScope.outcome).toBe(settlement === "success" ? "closed" : "uncertain");
       if (settlement.startsWith("late-")) {

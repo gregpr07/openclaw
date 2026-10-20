@@ -1,36 +1,15 @@
-import type { FailoverReason } from "../failover/signal.js";
 import type { ContextEngineTurnAttemptFacts } from "../harness/context-engine-turn-attempt.js";
-import type { ModelFallbackRunOptions } from "../model-fallback-attempt.js";
 import type { runWithModelFallback } from "../model-fallback-runner.js";
 import type { EmbeddedAgentRunResult } from "./types.js";
+
+export {
+  initialModelFallbackAttemptOptions as initialAttemptOptions,
+  fallbackModelAttemptOptions as fallbackAttemptOptions,
+} from "../test-helpers/model-fallback-runner.test-support.js";
 
 export type FallbackRunnerParams = Parameters<
   typeof runWithModelFallback<EmbeddedAgentRunResult>
 >[0];
-
-export function initialAttemptOptions(params: FallbackRunnerParams): ModelFallbackRunOptions {
-  const { provider, model } = params;
-  return {
-    modelRoutingProvenance: {
-      requestedProvider: provider,
-      requestedModel: model,
-      stage: "initial",
-    },
-  };
-}
-
-export function fallbackAttemptOptions(
-  params: FallbackRunnerParams,
-  fallbackReason: FailoverReason,
-): ModelFallbackRunOptions {
-  return {
-    modelRoutingProvenance: {
-      ...initialAttemptOptions(params).modelRoutingProvenance,
-      stage: "fallback",
-      fallbackReason,
-    },
-  };
-}
 
 export function recordTurnAttempt(
   record: ((facts: ContextEngineTurnAttemptFacts) => void) | undefined,

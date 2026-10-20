@@ -1,7 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
 import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
-import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { withClaimingHookAdmission } from "../../plugins/hook-claim-admission.js";
 import {
   initializeGlobalHookRunner,
@@ -12,6 +11,7 @@ import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../p
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { FailoverError } from "../failover-error.js";
 import { resetFallbackSkipCacheForTest } from "../fallback-skip-cache.test-support.js";
+import { createModelFallbackConfig } from "../test-helpers/model-fallback-config-fixture.js";
 import { runEmbeddedAgentEntry } from "./run-entry.js";
 import { createDirectHarness, makeResult } from "./run-entry.test-support.js";
 
@@ -37,14 +37,7 @@ it.each<[string, string[] | undefined, string[], boolean, boolean]>([
   "uses the %s hook fallback chain at the logical run boundary",
   async (name, fallbacksOverride, expected, succeeds, locked) => {
     await withOpenClawTestState({ label: "hook-fallback-chain" }, async (state) => {
-      const cfg: OpenClawConfig = {
-        agents: {
-          defaults: {
-            workspace: state.workspaceDir,
-            model: { primary: "fixture/primary", fallbacks: ["fixture/configured-backup"] },
-          },
-        },
-      };
+      const cfg = createModelFallbackConfig("fixture/primary", ["fixture/configured-backup"]);
       setRuntimeConfigSnapshot(cfg);
       const dispatchOrder: string[] = [];
       const hook = vi.fn(() => {
@@ -79,11 +72,7 @@ it.each<[string, string[] | undefined, string[], boolean, boolean]>([
           prompt: "Synthetic local-only request",
           context: withClaimingHookAdmission(
             {},
-            {
-              prepare: async () => {
-                dispatchOrder.push("adopt");
-              },
-            },
+            { prepare: async () => void dispatchOrder.push("adopt") },
           ),
           modelSelectionLocked: locked,
           awaitSessionDiffBaseline: () => {
