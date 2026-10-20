@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { resolveDoctorContributionHealthChecks } from "../flows/doctor-health-contributions.js";
 import * as runtimeGuard from "../infra/runtime-guard.js";
@@ -70,102 +70,99 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("Node runtime diagnostics command surfaces", () => {
-  it.each(["invalid config", "snapshot failure"])(
-    "renders informational Node findings without a missing fix hint after %s",
-    async (failure) => {
-      useInvalidConfig();
-      const originalIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
-      Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
-      mockCliRuntime("24.15.0");
-      if (failure === "snapshot failure") {
-        vi.spyOn(fs, "mkdtempSync").mockImplementationOnce(() => {
-          throw new Error("No space left for private snapshot");
-        });
-      }
-      try {
-        expect(
-          await runDoctorLintCli(runtime, {
-            severityMin: "info",
-            ...(failure === "snapshot failure" ? { updateReadiness: "post-plugin" } : {}),
-          }),
-        ).toBe(1);
-        expect(runtime.error).toHaveBeenCalledWith(
-          expect.stringContaining(
-            failure === "snapshot failure"
-              ? "No space left for private snapshot"
-              : "config file exists but does not parse cleanly",
-          ),
-        );
-        expect(runtime.error).toHaveBeenCalledWith(expect.stringContaining("Node 24.15.0:"));
-        expect(runtime.error).toHaveBeenCalledWith(expect.stringContaining("nvm install 26"));
-        expect(runtime.error).not.toHaveBeenCalledWith(expect.stringContaining("undefined"));
-      } finally {
-        if (originalIsTTY) {
-          Object.defineProperty(process.stdout, "isTTY", originalIsTTY);
-        } else {
-          Reflect.deleteProperty(process.stdout, "isTTY");
-        }
-      }
-    },
-  );
-
-  it("keeps Node repair guidance visible when config validation fails", async () => {
+it.each(["invalid config", "snapshot failure"])(
+  "renders informational Node findings without a missing fix hint after %s",
+  async (failure) => {
     useInvalidConfig();
-    mockCliRuntime("22.23.2", false);
-    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-    expect(await runDoctorLintCli(runtime, { json: true })).toBe(1);
-    const payload = JSON.parse(String(stdout.mock.calls.at(-1)?.[0]));
-    expect(payload.findings).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ checkId: "core/doctor/final-config-validation" }),
-        expect.objectContaining({
-          checkId: "core/doctor/node-runtime",
-          fixHint: expect.stringContaining("nvm install 26"),
+    const originalIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+    Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
+    mockCliRuntime("24.15.0");
+    if (failure === "snapshot failure") {
+      vi.spyOn(fs, "mkdtempSync").mockImplementationOnce(() => {
+        throw new Error("No space left for private snapshot");
+      });
+    }
+    try {
+      expect(
+        await runDoctorLintCli(runtime, {
+          severityMin: "info",
+          ...(failure === "snapshot failure" ? { updateReadiness: "post-plugin" } : {}),
         }),
-      ]),
-    );
-  });
+      ).toBe(1);
+      expect(runtime.error).toHaveBeenCalledWith(
+        expect.stringContaining(
+          failure === "snapshot failure"
+            ? "No space left for private snapshot"
+            : "config file exists but does not parse cleanly",
+        ),
+      );
+      expect(runtime.error).toHaveBeenCalledWith(expect.stringContaining("Node 24.15.0:"));
+      expect(runtime.error).toHaveBeenCalledWith(expect.stringContaining("nvm install 26"));
+      expect(runtime.error).not.toHaveBeenCalledWith(expect.stringContaining("undefined"));
+    } finally {
+      if (originalIsTTY) {
+        Object.defineProperty(process.stdout, "isTTY", originalIsTTY);
+      } else {
+        Reflect.deleteProperty(process.stdout, "isTTY");
+      }
+    }
+  },
+);
 
-  it("registers canonical Doctor findings for CLI and recorded service runtimes", async () => {
-    mockCliRuntime("26.0.0", false);
-    const checks = await resolveDoctorContributionHealthChecks();
-    const check = checks.find((entry) => entry.id === "core/doctor/node-runtime");
-    expect(check).toBeDefined();
-    const findings = await check?.detect({ mode: "lint", cfg: {}, runtime, env: {} });
-    expect(findings).toEqual([
+it("keeps Node repair guidance visible when config validation fails", async () => {
+  useInvalidConfig();
+  mockCliRuntime("22.23.2", false);
+  const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+  expect(await runDoctorLintCli(runtime, { json: true })).toBe(1);
+  const payload = JSON.parse(String(stdout.mock.calls.at(-1)?.[0]));
+  expect(payload.findings).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ checkId: "core/doctor/final-config-validation" }),
       expect.objectContaining({
-        message: expect.stringContaining("26.0.0"),
+        checkId: "core/doctor/node-runtime",
         fixHint: expect.stringContaining("nvm install 26"),
       }),
-      expect.objectContaining({
-        source: "gateway-service",
-        message: expect.stringContaining("22.23.2"),
-        fixHint: expect.stringContaining("nvm install 26"),
-      }),
-    ]);
-  });
+    ]),
+  );
+});
 
-  it("renders an admitted out-of-table service runtime as information", async () => {
-    mocks.readCommand.mockResolvedValue({ programArguments: ["/fixture/node", "gateway"] });
-    mocks.resolveNodeRuntimeInfo.mockResolvedValue({
-      status: "supported",
-      version: "24.15.0",
-      note: "Node 24.15.0: unsupported version, capability check passed.",
-    });
-    await statusCommand({ json: true }, runtime);
-    expect(runtime.error).toHaveBeenCalledWith(expect.stringContaining("[info] Node 24.15.0:"));
-    expect(runtime.error).not.toHaveBeenCalledWith(expect.stringContaining("[warning]"));
-    expect(runtime.error).not.toHaveBeenCalledWith(expect.stringContaining("undefined"));
-  });
+it("registers canonical Doctor findings for CLI and recorded service runtimes", async () => {
+  mockCliRuntime("26.0.0", false);
+  const checks = await resolveDoctorContributionHealthChecks();
+  const check = checks.find((entry) => entry.id === "core/doctor/node-runtime");
+  const findings = await check?.detect({ mode: "lint", cfg: {}, runtime, env: {} });
+  expect(findings).toMatchObject([
+    {
+      message: expect.stringContaining("26.0.0"),
+      fixHint: expect.stringContaining("nvm install 26"),
+    },
+    {
+      source: "gateway-service",
+      message: expect.stringContaining("22.23.2"),
+      fixHint: expect.stringContaining("nvm install 26"),
+    },
+  ]);
+});
 
-  it("reports an uninspectable service without claiming its Node is unsupported", async () => {
-    mocks.resolveNodeRuntimeInfo.mockResolvedValue({
-      status: "probe-failed",
-      error: new Error("unavailable"),
-    });
-    await statusCommand({ json: true }, runtime);
-    expect(runtime.error).toHaveBeenCalledWith(expect.stringContaining("could not be inspected"));
-    expect(runtime.error).not.toHaveBeenCalledWith(expect.stringContaining("is unsupported"));
+it("renders an admitted out-of-table service runtime as information", async () => {
+  mocks.readCommand.mockResolvedValue({ programArguments: ["/fixture/node", "gateway"] });
+  mocks.resolveNodeRuntimeInfo.mockResolvedValue({
+    status: "supported",
+    version: "24.15.0",
+    note: "Node 24.15.0: unsupported version, capability check passed.",
   });
+  await statusCommand({ json: true }, runtime);
+  expect(runtime.error).toHaveBeenCalledWith(expect.stringContaining("[info] Node 24.15.0:"));
+  expect(runtime.error).not.toHaveBeenCalledWith(expect.stringContaining("[warning]"));
+  expect(runtime.error).not.toHaveBeenCalledWith(expect.stringContaining("undefined"));
+});
+
+it("reports an uninspectable service without claiming its Node is unsupported", async () => {
+  mocks.resolveNodeRuntimeInfo.mockResolvedValue({
+    status: "probe-failed",
+    error: new Error("unavailable"),
+  });
+  await statusCommand({ json: true }, runtime);
+  expect(runtime.error).toHaveBeenCalledWith(expect.stringContaining("could not be inspected"));
+  expect(runtime.error).not.toHaveBeenCalledWith(expect.stringContaining("is unsupported"));
 });

@@ -1,8 +1,8 @@
 import "../test-utils/prepare-compiled-subprocesses.js";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
+import { createTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { createWizardPrompter } from "../../test/helpers/wizard-prompter.js";
 import type { GuidedOrchestrationFixture as GuidedOnboardingDeps } from "./onboard-guided-runtime.test-support.js";
 
@@ -19,7 +19,7 @@ vi.mock("../plugins/provider-setup-availability.js", () => ({
   detectAvailableSetupProviderIds: async () => new Set(),
 }));
 
-let root: string | undefined;
+const tempDirs = createTempDirTracker();
 afterEach(async () => {
   const { closeOpenClawStateDatabaseAsync, closeOpenClawStateDatabaseForTest } =
     await import("../state/openclaw-state-db.js");
@@ -30,16 +30,13 @@ afterEach(async () => {
   closeOpenClawAgentDatabasesForTest();
   closeOpenClawStateDatabaseForTest();
   vi.unstubAllEnvs();
-  if (root) {
-    await fs.rm(root, { recursive: true, force: true });
-    root = undefined;
-  }
+  tempDirs.cleanup();
 });
 
 it.each(["interrupted", "replaced"] as const)(
   "keeps skipped baseline setup owner-fenced and resumable: %s",
   async (scenario) => {
-    root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-onboard-skip-"));
+    const root = tempDirs.make("openclaw-onboard-skip-");
     const workspace = path.join(root, "workspace");
     const configPath = path.join(root, "openclaw.json");
     vi.stubEnv("OPENCLAW_STATE_DIR", root);

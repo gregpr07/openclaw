@@ -20,9 +20,6 @@ const { serviceInstall, writeJson } = vi.hoisted(() => ({
 vi.mock("../daemon/node-service.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../daemon/node-service.js")>()),
   resolveNodeService: () => ({
-    label: "Node service",
-    loadedText: "loaded",
-    notLoadedText: "not loaded",
     readCommand: async () => null,
     isLoaded: async () => true,
     install: serviceInstall,

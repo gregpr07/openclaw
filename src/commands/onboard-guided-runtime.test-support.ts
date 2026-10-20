@@ -1,5 +1,6 @@
-import { vi } from "vitest";
+import { vi, type MockInstance } from "vitest";
 import { runGuidedOnboarding, type GuidedOnboardingDeps } from "./onboard-guided.js";
+import type { GuidedOnboardingHandoff } from "./onboard-interactive-runner.js";
 
 export type GuidedOrchestrationFixture = GuidedOnboardingDeps & {
   createPrompter?: typeof import("../wizard/clack-prompter.js").createClackPrompter;
@@ -10,11 +11,7 @@ export type GuidedOrchestrationFixture = GuidedOnboardingDeps & {
   runBrowserHandoff?: typeof import("./onboard-browser-handoff.js").runBrowserHatchHandoff;
   launchHatchTui?: typeof import("../tui/tui-launch.js").launchTuiCli;
   runForegroundGateway?: typeof import("./onboard-quickstart-host.js").runQuickstartForegroundGateway;
-  observeHandoff?: (
-    handoff: Parameters<
-      typeof import("./onboard-interactive-runner.js").runGuidedOnboardingHandoff
-    >[0],
-  ) => void;
+  observeHandoff?: (handoff: GuidedOnboardingHandoff) => void;
 };
 
 export async function runGuidedOnboardingWithFixtures(
@@ -35,6 +32,14 @@ export async function runGuidedOnboardingWithFixtures(
     ...servingDeps
   } = fixtures;
   const restore: Array<{ mockRestore(): void }> = [];
+  async function replace<T extends (...args: never[]) => unknown>(
+    value: Parameters<MockInstance<T>["mockImplementation"]>[0] | undefined,
+    target: () => Promise<MockInstance<T>>,
+  ) {
+    if (value) {
+      restore.push((await target()).mockImplementation(value));
+    }
+  }
   try {
     if (observeHandoff) {
       const owner = await import("./onboard-interactive-runner.js");
@@ -46,44 +51,33 @@ export async function runGuidedOnboardingWithFixtures(
         }),
       );
     }
-    if (createPrompter) {
-      const owner = await import("../wizard/clack-prompter.js");
-      restore.push(vi.spyOn(owner, "createClackPrompter").mockImplementation(createPrompter));
-    }
-    if (listManualOptions) {
-      const owner = await import("../system-agent/setup-inference.js");
-      restore.push(
-        vi.spyOn(owner, "listManualSetupInferenceOptions").mockImplementation(listManualOptions),
-      );
-    }
-    if (applySetup) {
-      const owner = await import("../system-agent/setup-apply.js");
-      restore.push(vi.spyOn(owner, "applySystemAgentSetup").mockImplementation(applySetup));
-    }
-    if (runMemorySetupFlow) {
-      const owner = await import("../flows/memory-setup.js");
-      restore.push(vi.spyOn(owner, "runMemorySetupFlow").mockImplementation(runMemorySetupFlow));
-    }
-    if (runAppRecommendations) {
-      const owner = await import("../wizard/setup.app-recommendations.js");
-      restore.push(
-        vi.spyOn(owner, "setupAppRecommendations").mockImplementation(runAppRecommendations),
-      );
-    }
-    if (runBrowserHandoff) {
-      const owner = await import("./onboard-browser-handoff.js");
-      restore.push(vi.spyOn(owner, "runBrowserHatchHandoff").mockImplementation(runBrowserHandoff));
-    }
-    if (launchHatchTui) {
-      const owner = await import("../tui/tui-launch.js");
-      restore.push(vi.spyOn(owner, "launchTuiCli").mockImplementation(launchHatchTui));
-    }
-    if (runForegroundGateway) {
-      const owner = await import("./onboard-quickstart-host.js");
-      restore.push(
-        vi.spyOn(owner, "runQuickstartForegroundGateway").mockImplementation(runForegroundGateway),
-      );
-    }
+    await replace(createPrompter, async () =>
+      vi.spyOn(await import("../wizard/clack-prompter.js"), "createClackPrompter"),
+    );
+    await replace(listManualOptions, async () =>
+      vi.spyOn(
+        await import("../system-agent/setup-inference.js"),
+        "listManualSetupInferenceOptions",
+      ),
+    );
+    await replace(applySetup, async () =>
+      vi.spyOn(await import("../system-agent/setup-apply.js"), "applySystemAgentSetup"),
+    );
+    await replace(runMemorySetupFlow, async () =>
+      vi.spyOn(await import("../flows/memory-setup.js"), "runMemorySetupFlow"),
+    );
+    await replace(runAppRecommendations, async () =>
+      vi.spyOn(await import("../wizard/setup.app-recommendations.js"), "setupAppRecommendations"),
+    );
+    await replace(runBrowserHandoff, async () =>
+      vi.spyOn(await import("./onboard-browser-handoff.js"), "runBrowserHatchHandoff"),
+    );
+    await replace(launchHatchTui, async () =>
+      vi.spyOn(await import("../tui/tui-launch.js"), "launchTuiCli"),
+    );
+    await replace(runForegroundGateway, async () =>
+      vi.spyOn(await import("./onboard-quickstart-host.js"), "runQuickstartForegroundGateway"),
+    );
     return await runGuidedOnboarding(opts, runtime, servingDeps);
   } finally {
     for (const reset of restore.toReversed()) {
