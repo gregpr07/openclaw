@@ -14,16 +14,10 @@ const workerFactory = vi.hoisted(() => vi.fn());
 vi.mock("./audio-worker-thread.js", () => ({ createDiscordAudioWorkerThread: workerFactory }));
 
 class ControlledWorker extends EventEmitter {
-  readonly sent: DiscordAudioCommand[] = [];
-  postMessage(command: DiscordAudioCommand): void {
-    this.sent.push(command);
-  }
+  postMessage = vi.fn<(command: DiscordAudioCommand) => void>();
   async terminate(): Promise<number> {
     this.emit("exit", 0);
     return 0;
-  }
-  message(event: DiscordAudioEvent): void {
-    this.emit("message", event);
   }
 }
 const options: DiscordAudioWorkerOptions = {
@@ -41,7 +35,7 @@ const owned: Array<{ audio: DiscordAudioTransport; worker: ControlledWorker }> =
 afterEach(async () => {
   for (const { audio, worker } of owned.splice(0)) {
     const stopped = audio.stop();
-    worker.message({ type: "stopped" });
+    worker.emit("message", { type: "stopped" });
     worker.emit("exit", 0);
     await stopped;
   }
@@ -56,7 +50,7 @@ function fixture(sendPayload = vi.fn(() => true)) {
 }
 async function readyFixture(sendPayload?: Parameters<typeof fixture>[0]) {
   const result = fixture(sendPayload);
-  result.worker.message({ type: "ready" });
+  result.worker.emit("message", { type: "ready" });
   await result.audio.ready;
   return result;
 }
@@ -82,7 +76,7 @@ describe("Discord audio worker control boundary", () => {
     await expect(audio.ready).rejects.toThrow("codec startup failed");
     expect(stopped).toHaveBeenCalledOnce();
     expect(destroy).toHaveBeenCalledOnce();
-    worker.message({ type: "ready" });
+    worker.emit("message", { type: "ready" });
   });
 
   it("stops the allocated worker if gateway adapter registration throws", () => {
@@ -100,14 +94,14 @@ describe("Discord audio worker control boundary", () => {
 
   it("reports definite main-gateway send failure back to the media owner", async () => {
     const { worker } = await readyFixture(vi.fn(() => false));
-    worker.message({
+    worker.emit("message", {
       type: "gateway-send",
       payload: {
         op: 4,
         d: { guild_id: "guild", channel_id: "voice", self_mute: false, self_deaf: false },
       },
     });
-    expect(worker.sent.at(-1)).toEqual({ type: "gateway-failed" });
+    expect(worker.postMessage).toHaveBeenLastCalledWith({ type: "gateway-failed" });
   });
 
   it("waits for physical termination when the worker exceeds its stop grace", async () => {
@@ -148,9 +142,11 @@ describe("Discord audio worker control boundary", () => {
     });
     expect(capture.destroyed).toBe(true);
     expect(errors).toHaveBeenCalledOnce();
-    worker.message(frame(capture.id, [0, 0, 0, 0], [0], 0n));
+    worker.emit("message", frame(capture.id, [0, 0, 0, 0], [0], 0n));
     expect(capture.readableLength).toBe(0);
-    expect(worker.sent.filter((command) => command.type === "stop")).toHaveLength(1);
+    expect(
+      worker.postMessage.mock.calls.filter(([command]) => command.type === "stop"),
+    ).toHaveLength(1);
   });
 
   it("releases physical shutdown before draining admitted recording frames without an error", async () => {
@@ -165,14 +161,14 @@ describe("Discord audio worker control boundary", () => {
       }
     })();
     const stopped = audio.stop();
-    worker.message({ type: "gateway-destroy" });
+    worker.emit("message", { type: "gateway-destroy" });
     await stopped;
     expect(destroy).toHaveBeenCalledOnce();
     expect(capture.destroyed).toBe(false);
-    worker.message({ type: "capture-finalized", id: capture.id });
-    worker.message(frame(capture.id, [7, 0], [1], 1n));
-    worker.message({ type: "capture-end", id: capture.id });
-    worker.message({ type: "stopped" });
+    worker.emit("message", { type: "capture-finalized", id: capture.id });
+    worker.emit("message", frame(capture.id, [7, 0], [1], 1n));
+    worker.emit("message", { type: "capture-end", id: capture.id });
+    worker.emit("message", { type: "stopped" });
     worker.emit("exit", 0);
     await recording;
     expect(received).toEqual([7]);

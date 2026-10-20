@@ -19,7 +19,6 @@ vi.mock("./audio-worker-thread.js", async () => {
 });
 import { DiscordRealtimePlayback } from "./realtime-playback.js";
 import { DiscordRealtimePlayer } from "./realtime-player.js";
-import { loadDiscordVoiceSdk } from "./sdk-runtime.js";
 import type { VoiceSessionEntry } from "./session.js";
 import { DiscordVoiceConversationQueue } from "./voice-conversation-input.js";
 
@@ -27,7 +26,7 @@ export function createRealtimePlaybackFixture(
   onTalkEvent?: (event: TalkEvent) => void,
   options: { outputAudioMode?: "response" | "continuous"; bargeIn?: boolean } = {},
 ) {
-  const voiceSdk = loadDiscordVoiceSdk();
+  const voiceSdk = sdkRuntime.loadDiscordVoiceSdk();
   const noop = () => {};
   const connectionOptions = {
     guildId: "guild",

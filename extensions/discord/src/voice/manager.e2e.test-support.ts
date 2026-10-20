@@ -1,6 +1,6 @@
 import type { createRealtimeVoiceBridgeSession } from "openclaw/plugin-sdk/realtime-voice";
 import { vi, type Mock } from "vitest";
-import { ChannelType, type APIVoiceState } from "../internal/discord.js";
+import { ChannelType } from "../internal/discord.js";
 import { DiscordGatewayVoiceStateCache } from "../internal/gateway-voice-state-cache.js";
 import type { voiceTestMocks } from "./voice-test-mocks.test-support.js";
 
@@ -97,10 +97,8 @@ export function createDiscordVoiceTestHelpers(updateVoiceStateMock: ReturnType<t
       getPlugin: vi.fn((id?: string): unknown =>
         id === "gateway"
           ? {
-              listVoiceChannelStates: (guildId: string, channelId: string) =>
-                voiceStateCache.listVoiceChannelStates(guildId, channelId),
-              takeVoiceStateTransition: (state: APIVoiceState) =>
-                voiceStateCache.takeTransition(state),
+              listVoiceChannelStates: voiceStateCache.listVoiceChannelStates.bind(voiceStateCache),
+              takeVoiceStateTransition: voiceStateCache.takeTransition.bind(voiceStateCache),
             }
           : id === "voice"
             ? voicePlugin()
