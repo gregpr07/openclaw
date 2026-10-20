@@ -1,6 +1,6 @@
 // Prompt-cache invariant: per-turn facts must not change tool definitions.
 import path from "node:path";
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../config/io.js";
 import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
@@ -23,7 +23,6 @@ const config: OpenClawConfig = {
   tools: { codeMode: false, toolSearch: false },
 };
 
-// Facts shared by every turn of one owner DM session.
 const session: ToolOptions = {
   config,
   agentId: "main",
@@ -36,7 +35,6 @@ const session: ToolOptions = {
   sourceReplyDeliveryMode: "automatic",
 };
 
-// Per-turn facts, as each caller sets them today.
 function completionTurn(sourceTool: string): ToolOptions {
   return {
     ...session,
@@ -45,12 +43,7 @@ function completionTurn(sourceTool: string): ToolOptions {
   };
 }
 const turns: Record<string, ToolOptions> = {
-  user: {
-    ...session,
-    runId: "run-user",
-    senderId: "owner",
-    senderIsOwner: true,
-  },
+  user: { ...session, runId: "run-user", senderId: "owner", senderIsOwner: true },
   subagentCompletion: {
     ...completionTurn("subagent_announce"),
     sourceReplyDeliveryMode: "message_tool_only",
@@ -78,19 +71,15 @@ beforeEach(() => {
 });
 afterEach(() => clearRuntimeConfigSnapshot());
 
-describe("session tool surface", () => {
-  const baseline = () => surface(createOpenClawCodingTools(turns.user!));
-
-  it.each(Object.keys(turns).filter((kind) => kind !== "user"))(
-    "offers the user turn's exact tool definitions on a %s turn",
-    (kind) => {
-      expect(surface(createOpenClawCodingTools(turns[kind]!))).toEqual(baseline());
-    },
-  );
-});
-
-describe("source-bound completion tool surface", () => {
-  // A completion handoff is source-bound; the message tool enforces that per call.
+it.each(Object.keys(turns).filter((kind) => kind !== "user"))(
+  "offers the user turn's exact tool definitions on a %s turn",
+  (kind) => {
+    expect(surface(createOpenClawCodingTools(turns[kind]!))).toEqual(
+      surface(createOpenClawCodingTools(turns.user!)),
+    );
+  },
+);
+it("offers the same message definition on a source-bound completion turn", () => {
   const assemble = (sourceReplyOnly: boolean) =>
     surface(
       createOpenClawTools({
@@ -102,79 +91,72 @@ describe("source-bound completion tool surface", () => {
       }),
     );
 
-  it("offers the same message definition on a source-bound completion turn", () => {
-    expect(assemble(true)).toEqual(assemble(false));
-  });
+  expect(assemble(true)).toEqual(assemble(false));
 });
 
-describe("verified subagent completion handoff tool surface", () => {
-  const sessionDirs = useSessionStoreTempDirs(afterAll, "openclaw-prefix-handoff-");
-
-  it("offers the session's tool definitions and refuses tools outside the replayed authority", async () => {
-    const store = path.join(sessionDirs.make(), "{agentId}", "sessions.json");
-    const handoffConfig: OpenClawConfig = { ...config, session: { store } };
-    setRuntimeConfigSnapshot(handoffConfig);
-    const requesterSessionKey = session.sessionKey!;
-    const childSessionKey = "agent:main:subagent:child";
-    await replaceSessionEntry(
-      {
-        agentId: "main",
-        sessionKey: childSessionKey,
-        storePath: store.replaceAll("{agentId}", "main"),
-      },
-      {
-        sessionId: "child-session",
-        updatedAt: Date.now(),
-        spawnedBy: requesterSessionKey,
-        spawnDepth: 1,
-        subagentRole: "orchestrator",
-        subagentControlScope: "children",
-        inheritedToolPolicyVersion: 1,
-        inheritedToolAllow: ["read", "message", "sessions_spawn"],
-      },
-    );
-    const request = {
-      ...session,
-      config: handoffConfig,
-      sessionId: "requester-session",
-      modelProvider: "openai",
-      modelId: "gpt-5.4",
-      inputProvenance: {
-        kind: "inter_session" as const,
-        sourceSessionKey: childSessionKey,
-        sourceTool: "subagent_announce",
-      },
-      trustedInternalHandoff: {
-        kind: "subagent-completion" as const,
-        sourceSessionKey: childSessionKey,
-        sourceSessionId: "child-session",
-        targetSessionKey: requesterSessionKey,
-        targetSessionId: "requester-session",
-        provider: "openai",
-        model: "gpt-5.4",
-      },
-    };
-    const conversationCapabilityProfile = await prepareConversationCapabilityProfile(request);
-    expect(conversationCapabilityProfile.policy.requesterPolicySource).toBe("completion-handoff");
-    const completion = createOpenClawCodingTools({
-      ...request,
-      runId: "run-handoff",
-      senderIsOwner: false,
-      sourceReplyDeliveryMode: "message_tool_only",
-      conversationCapabilityProfile,
-    });
-    const user = createOpenClawCodingTools({
-      ...turns.user!,
-      config: handoffConfig,
-      sessionId: "requester-session",
-    });
-    expect(surface(completion)).toEqual(surface(user));
-    const refused = await completion
-      .find((tool) => tool.name === "write")!
-      .execute("refused-write", {});
-    expect(refused.details).toMatchObject({ gated: true });
-    expect(JSON.stringify(refused.content)).toContain(
-      "write is outside the authority this completion turn carries",
-    );
+const sessionDirs = useSessionStoreTempDirs(afterAll, "openclaw-prefix-handoff-");
+it("offers the session's tool definitions and refuses tools outside the replayed authority", async () => {
+  const store = path.join(sessionDirs.make(), "{agentId}", "sessions.json");
+  const handoffConfig: OpenClawConfig = { ...config, session: { store } };
+  setRuntimeConfigSnapshot(handoffConfig);
+  const requesterSessionKey = session.sessionKey!;
+  const childSessionKey = "agent:main:subagent:child";
+  await replaceSessionEntry(
+    {
+      agentId: "main",
+      sessionKey: childSessionKey,
+      storePath: store.replaceAll("{agentId}", "main"),
+    },
+    {
+      sessionId: "child-session",
+      updatedAt: Date.now(),
+      spawnedBy: requesterSessionKey,
+      spawnDepth: 1,
+      subagentRole: "orchestrator",
+      subagentControlScope: "children",
+      inheritedToolPolicyVersion: 1,
+      inheritedToolAllow: ["read", "message", "sessions_spawn"],
+    },
+  );
+  const request = {
+    ...session,
+    config: handoffConfig,
+    sessionId: "requester-session",
+    modelProvider: "openai",
+    modelId: "gpt-5.4",
+    inputProvenance: {
+      kind: "inter_session" as const,
+      sourceSessionKey: childSessionKey,
+      sourceTool: "subagent_announce",
+    },
+    trustedInternalHandoff: {
+      kind: "subagent-completion" as const,
+      sourceSessionKey: childSessionKey,
+      sourceSessionId: "child-session",
+      targetSessionKey: requesterSessionKey,
+      targetSessionId: "requester-session",
+      provider: "openai",
+      model: "gpt-5.4",
+    },
+  };
+  const conversationCapabilityProfile = await prepareConversationCapabilityProfile(request);
+  expect(conversationCapabilityProfile.policy.requesterPolicySource).toBe("completion-handoff");
+  const completion = createOpenClawCodingTools({
+    ...request,
+    runId: "run-handoff",
+    senderIsOwner: false,
+    sourceReplyDeliveryMode: "message_tool_only",
+    conversationCapabilityProfile,
   });
+  const user = createOpenClawCodingTools({
+    ...turns.user!,
+    config: handoffConfig,
+    sessionId: "requester-session",
+  });
+  expect(surface(completion)).toEqual(surface(user));
+  const refused = await completion.find((tool) => tool.name === "write")!.execute("write", {});
+  expect(refused.details).toMatchObject({ gated: true });
+  expect(JSON.stringify(refused.content)).toContain(
+    "write is outside the authority this completion turn carries",
+  );
 });

@@ -1,11 +1,12 @@
 import { expectDefined } from "@openclaw/normalization-core";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import "./test-helpers/fast-coding-tools.js";
 import "./test-helpers/fast-openclaw-tools.js";
 import { createOpenClawCodingTools } from "./agent-tools.js";
 import type { ExecToolDefaults } from "./bash-tools.exec-types.js";
 import { pinExecToolTarget } from "./exec-tool-target-pinning.js";
 import { createOpenClawTools } from "./openclaw-tools.js";
+import { createStubTool } from "./test-helpers/agent-tool-stubs.js";
 import type { AnyAgentTool } from "./tools/common.js";
 
 const shellSpies = vi.hoisted(() => ({
@@ -22,13 +23,9 @@ vi.mock("./bash-tools.js", () => ({
       description: "exec test double",
       parameters: {
         type: "object",
-        properties: {
-          command: { type: "string" },
-          host: { type: "string" },
-          security: { type: "string" },
-          ask: { type: "string" },
-          node: { type: "string" },
-        },
+        properties: Object.fromEntries(
+          ["command", "host", "security", "ask", "node"].map((name) => [name, { type: "string" }]),
+        ),
         required: ["command", "host"],
       },
       execute: shellSpies.exec,
@@ -62,114 +59,94 @@ function scheduledExec(options: Parameters<typeof createOpenClawCodingTools>[0] 
   );
 }
 
-describe("createOpenClawCodingTools scheduled exec target", () => {
-  beforeEach(() => vi.clearAllMocks());
+beforeEach(() => vi.clearAllMocks());
 
-  it("uses the scheduled Gateway pin when no target is requested", async () => {
-    const execTool = scheduledExec();
-    const properties = Object.keys(
-      (execTool.parameters as { properties?: Record<string, unknown> }).properties ?? {},
-    );
-    expect(properties).toContain("command");
-    for (const name of ["host", "security", "ask", "node"]) {
-      expect(properties).not.toContain(name);
-    }
+it("uses the scheduled Gateway pin when no target is requested", async () => {
+  const execTool = scheduledExec();
+  const properties = Object.keys(
+    (execTool.parameters as { properties?: Record<string, unknown> }).properties ?? {},
+  );
+  expect(properties).toEqual(["command"]);
 
-    await execTool.execute("call-1", { ...command, security: "full", ask: "off" });
-    expect(shellSpies.defaults).toHaveBeenCalledWith(expect.objectContaining(pinnedTarget));
-    expectExecution("call-1", pinnedArgs);
-  });
+  await execTool.execute("call-1", { ...command, security: "full", ask: "off" });
+  expect(shellSpies.defaults).toHaveBeenCalledWith(expect.objectContaining(pinnedTarget));
+  expectExecution("call-1", pinnedArgs);
+});
 
-  it.each([
-    { host: "node", node: "remote" },
-    { node: "remote" },
-    { host: "gateway", node: "remote" },
-    { host: "sandbox" },
-  ])("refuses a conflicting scheduled exec target before execution: %j", async (target) => {
-    const execTool = scheduledExec();
-    await expect(async () =>
-      execTool.execute("call-conflict", { ...command, ...target }),
-    ).rejects.toThrow(/pinned to host=gateway;.*host or node is not allowed for this job/);
-    expect(shellSpies.exec).not.toHaveBeenCalled();
-  });
+it.each([
+  { host: "node", node: "remote" },
+  { node: "remote" },
+  { host: "gateway", node: "remote" },
+  { host: "sandbox" },
+])("refuses a conflicting scheduled exec target before execution: %j", async (target) => {
+  const execTool = scheduledExec();
+  await expect(async () =>
+    execTool.execute("call-conflict", { ...command, ...target }),
+  ).rejects.toThrow(/pinned to host=gateway;.*host or node is not allowed for this job/);
+  expect(shellSpies.exec).not.toHaveBeenCalled();
+});
 
-  it("pins the whole tool lifecycle, including execution preparation", async () => {
-    const prepare = vi.fn(async (args: unknown) => args);
-    const finalize = vi.fn((params: unknown) => params);
+it.each(["prepareBeforeToolCallParams", "finalizeBeforeToolCallParams"] as const)(
+  "pins lifecycle arguments before %s",
+  async (phase) => {
+    const preparing = phase === "prepareBeforeToolCallParams";
+    const hook = preparing ? vi.fn(async (args: unknown) => args) : vi.fn((args: unknown) => args);
     const source: AnyAgentTool = {
-      name: "exec",
-      label: "Exec",
-      description: "exec",
-      parameters: { type: "object", properties: {} },
-      prepareBeforeToolCallParams: prepare,
-      finalizeBeforeToolCallParams: finalize,
+      ...createStubTool("exec"),
+      [phase]: hook,
       execute: shellSpies.exec,
     };
 
     const pinned = pinExecToolTarget(source, pinnedTarget);
-    expect(() =>
-      pinned.prepareBeforeToolCallParams?.(
-        { ...command, host: "node", node: "remote" },
-        { hookContext: undefined },
-      ),
-    ).toThrow("pinned to host=gateway");
-    expect(prepare).not.toHaveBeenCalled();
-    await pinned.prepareBeforeToolCallParams?.(
-      { ...command, security: "full", ask: "off" },
-      { hookContext: undefined },
-    );
-    expect(() => pinned.finalizeBeforeToolCallParams?.({ ...command, host: "node" }, {})).toThrow(
-      "pinned to host=gateway",
-    );
-    expect(finalize).not.toHaveBeenCalled();
-    pinned.finalizeBeforeToolCallParams?.({ ...command, host: "gateway", ask: "off" }, {});
+    const context = preparing ? { hookContext: undefined } : {};
+    const conflict = { ...command, host: "node", ...(preparing ? { node: "remote" } : {}) };
+    const override = {
+      ...command,
+      ask: "off",
+      ...(preparing ? { security: "full" } : { host: "gateway" }),
+    };
+    const invoke = pinned[phase]!;
+    expect(() => invoke(conflict, context)).toThrow("pinned to host=gateway");
+    expect(hook).not.toHaveBeenCalled();
+    await invoke(override, context);
+    expect(hook).toHaveBeenCalledWith(pinnedArgs, context);
+  },
+);
 
-    expect(prepare).toHaveBeenCalledWith(pinnedArgs, { hookContext: undefined });
-    expect(finalize).toHaveBeenCalledWith(pinnedArgs, {});
+it("keeps the scheduled approval floor in a reused full-permission session", async () => {
+  const exec = scheduledExec({ sessionPermissionPolicy: { root: process.cwd(), mode: "full" } });
+  await exec.execute("call-full-session", command);
+  const overrides = { ...pinnedTarget, mode: undefined, security: "full" };
+  expect(shellSpies.defaults.mock.lastCall?.[0]).toMatchObject({
+    ...overrides,
+    bypassHostApprovalFloors: false,
   });
-
-  it("keeps the scheduled approval floor in a reused full-permission session", async () => {
-    const exec = scheduledExec({ sessionPermissionPolicy: { root: process.cwd(), mode: "full" } });
-    await exec.execute("call-full-session", command);
-    const overrides = { ...pinnedTarget, mode: undefined, security: "full" };
-    expect(shellSpies.defaults).toHaveBeenCalledWith(
-      expect.objectContaining({
-        ...overrides,
-        bypassHostApprovalFloors: false,
-      }),
-    );
-    expect(createOpenClawTools).toHaveBeenCalledWith(
-      expect.objectContaining({
-        execOverrides: expect.objectContaining(overrides),
-      }),
-    );
-  });
-
-  it.each([
-    { host: "sandbox", source: "global" },
-    { host: "node", source: "agent" },
-    { host: "sandbox", source: "run" },
-  ] as const)(
-    "preserves the current $source host=$host restriction beside a saved pin",
-    async ({ host, source }) => {
-      const exec = scheduledExec({
-        ...(source === "run"
-          ? { exec: { host } }
-          : source === "agent"
-            ? {
-                agentId: "main",
-                config: { agents: { entries: { main: { tools: { exec: { host } } } } } },
-              }
-            : { config: { tools: { exec: { host } } } }),
-        scheduledToolPolicy: {
-          version: 1,
-          mode: "trusted",
-          execTarget: { host: "gateway" },
-        },
-      });
-      await exec.execute("call-restricted-host", command);
-      expect(shellSpies.defaults.mock.lastCall?.[0]?.host).toBe(host);
-      expectExecution("call-restricted-host", { ...command, host: "gateway" });
-    },
-  );
+  expect(vi.mocked(createOpenClawTools).mock.lastCall?.[0]?.execOverrides).toMatchObject(overrides);
 });
+
+it.each([
+  ["global", "sandbox", { config: { tools: { exec: { host: "sandbox" } } } }],
+  [
+    "agent",
+    "node",
+    {
+      agentId: "main",
+      config: { agents: { entries: { main: { tools: { exec: { host: "node" } } } } } },
+    },
+  ],
+  ["run", "sandbox", { exec: { host: "sandbox" } }],
+] as const)(
+  "preserves the current %s host=%s restriction beside a saved pin",
+  async (_source, host, options) => {
+    const exec = scheduledExec({
+      ...options,
+      scheduledToolPolicy: {
+        ...scheduledToolPolicy,
+        execTarget: { host: "gateway" },
+      },
+    });
+    await exec.execute("call-restricted-host", command);
+    expect(shellSpies.defaults.mock.lastCall?.[0]?.host).toBe(host);
+    expectExecution("call-restricted-host", { ...command, host: "gateway" });
+  },
+);

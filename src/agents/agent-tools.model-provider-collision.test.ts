@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
@@ -63,99 +63,86 @@ const leanConfig: OpenClawConfig = {
   },
 };
 
-describe("applyModelProviderToolPolicy", () => {
-  it("keeps web_search for OpenRouter xAI model ids so OpenClaw tool routing stays authoritative", () => {
+it("keeps web_search for OpenRouter xAI model ids so OpenClaw tool routing stays authoritative", () => {
+  const filtered = selectedTools(baseTools, {
+    modelCompat: { toolSchemaProfile: "xai", toolCallArgumentsEncoding: "html-entities" },
+  });
+
+  expect(toolNames(filtered)).toEqual(["read", "web_search", "exec"]);
+});
+
+it.each(["resolved custom endpoint", "disabled plugin"])(
+  "uses one search route before tool discovery for OpenAI %s",
+  (route) => {
+    const customEndpoint = route === "resolved custom endpoint";
     const filtered = selectedTools(baseTools, {
-      modelCompat: {
-        toolSchemaProfile: "xai",
-        toolCallArgumentsEncoding: "html-entities",
-      },
-    });
-
-    expect(toolNames(filtered)).toEqual(["read", "web_search", "exec"]);
-  });
-
-  it.each<{
-    label: string;
-    baseUrl: string;
-    modelBaseUrl?: string;
-    plugins?: OpenClawConfig["plugins"];
-  }>([
-    {
-      label: "resolved custom endpoint",
-      baseUrl: "https://api.openai.com/v1",
-      modelBaseUrl: "https://proxy.example/v1",
-    },
-
-    {
-      label: "disabled plugin",
-      plugins: { entries: { openai: { enabled: false } } },
-      baseUrl: "https://api.openai.com/v1",
-    },
-  ])(
-    "uses one search route before tool discovery for OpenAI $label",
-    ({ baseUrl, modelBaseUrl, plugins }) => {
-      const filtered = selectedTools(baseTools, {
-        config: {
-          plugins,
-          tools: { web: { search: { provider: undefined } } },
-          models: { providers: { openai: { api: "openai-responses", baseUrl, models: [] } } },
-        },
-        modelProvider: "openai",
-        modelApi: "openai-responses",
-        modelBaseUrl,
-        modelId: "gpt-5.4",
-      });
-
-      expect(toolNames(filtered)).toEqual(baseTools);
-      const catalogRef = createToolSearchCatalogRef();
-      registerHeadlessToolSearchCatalog({ catalogRef, tools: filtered });
-      const projection = createCodeModeCatalogProjection(catalogRef.current?.entries ?? []);
-      expect(projection.byCallableName.has("web_search")).toBe(true);
-    },
-  );
-
-  it.each([true, false])(
-    "selects the admitted Codex transport's search route (auth metadata: %s)",
-    (auth) => {
-      const filtered = selectedTools(baseTools, {
-        config: {
-          tools: {
-            web: { search: { enabled: true, openaiCodex: { enabled: true, mode: "cached" } } },
+      config: {
+        plugins: customEndpoint ? undefined : { entries: { openai: { enabled: false } } },
+        tools: { web: { search: { provider: undefined } } },
+        models: {
+          providers: {
+            openai: {
+              api: "openai-responses",
+              baseUrl: "https://api.openai.com/v1",
+              models: [],
+            },
           },
-          ...(auth
-            ? { auth: { profiles: { "openai:default": { provider: "openai", mode: "oauth" } } } }
-            : {}),
         },
-        modelProvider: "openai",
-        modelApi: "openai-chatgpt-responses",
-        modelId: "gpt-5.4",
-      });
-      expect(toolNames(filtered)).toEqual(["read", "exec"]);
-    },
-  );
-
-  it("applies inherited lean mode to the session agent", () => {
-    const filtered = selectedTools(["read", "browser", "automations", "message", "exec"], {
-      config: leanConfig,
-      sessionKey: "agent:gemma:main",
-      modelProvider: "lmstudio",
-      modelApi: "openai-compatible",
-      modelId: "gemma-4-e4b-it",
-    });
-
-    expect(toolNames(filtered)).toEqual(["read", "exec"]);
-  });
-
-  it("lets a current agent disable inherited lean local-model mode", () => {
-    const filtered = selectedTools(["read", "browser", "automations", "message", "exec"], {
-      config: leanConfig,
-      agentId: "main",
+      },
       modelProvider: "openai",
       modelApi: "openai-responses",
+      modelBaseUrl: customEndpoint ? "https://proxy.example/v1" : undefined,
       modelId: "gpt-5.4",
     });
 
-    expect(toolNames(filtered)).toEqual(["read", "browser", "automations", "message", "exec"]);
+    expect(toolNames(filtered)).toEqual(baseTools);
+    const catalogRef = createToolSearchCatalogRef();
+    registerHeadlessToolSearchCatalog({ catalogRef, tools: filtered });
+    const projection = createCodeModeCatalogProjection(catalogRef.current?.entries ?? []);
+    expect(projection.byCallableName.has("web_search")).toBe(true);
+  },
+);
+
+it.each([true, false])(
+  "selects the admitted Codex transport's search route (auth metadata: %s)",
+  (auth) => {
+    const filtered = selectedTools(baseTools, {
+      config: {
+        tools: {
+          web: { search: { enabled: true, openaiCodex: { enabled: true, mode: "cached" } } },
+        },
+        ...(auth
+          ? { auth: { profiles: { "openai:default": { provider: "openai", mode: "oauth" } } } }
+          : {}),
+      },
+      modelProvider: "openai",
+      modelApi: "openai-chatgpt-responses",
+      modelId: "gpt-5.4",
+    });
+    expect(toolNames(filtered)).toEqual(["read", "exec"]);
+  },
+);
+
+it("applies inherited lean mode to the session agent", () => {
+  const filtered = selectedTools(["read", "browser", "automations", "message", "exec"], {
+    config: leanConfig,
+    sessionKey: "agent:gemma:main",
+    modelProvider: "lmstudio",
+    modelApi: "openai-compatible",
+    modelId: "gemma-4-e4b-it",
   });
+
+  expect(toolNames(filtered)).toEqual(["read", "exec"]);
+});
+
+it("lets a current agent disable inherited lean local-model mode", () => {
+  const filtered = selectedTools(["read", "browser", "automations", "message", "exec"], {
+    config: leanConfig,
+    agentId: "main",
+    modelProvider: "openai",
+    modelApi: "openai-responses",
+    modelId: "gpt-5.4",
+  });
+
+  expect(toolNames(filtered)).toEqual(["read", "browser", "automations", "message", "exec"]);
 });
