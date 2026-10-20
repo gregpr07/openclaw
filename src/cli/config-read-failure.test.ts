@@ -13,45 +13,31 @@ afterEach(() => {
   testApi.resetConfigGuardStateForTests();
 });
 
-function runtime() {
-  return {
-    log: vi.fn(),
-    error: vi.fn(),
-    exit: vi.fn((code: number): never => {
-      throw new ExitError(code);
-    }),
-  };
-}
+const runtime = () => ({
+  log: vi.fn(),
+  error: vi.fn(),
+  exit: vi.fn((code: number): never => {
+    throw new ExitError(code);
+  }),
+});
+const ready = (commandPath: string[]) => (host: RuntimeEnv) =>
+  ensureConfigReady({ runtime: host, commandPath });
 
 const entrypoints = [
-  {
-    name: "gateway restart readiness",
-    run: (host: RuntimeEnv) =>
-      ensureConfigReady({ runtime: host, commandPath: ["gateway", "restart"] }),
-  },
-  {
-    name: "command readiness",
-    run: (host: RuntimeEnv) => ensureConfigReady({ runtime: host, commandPath: ["config", "get"] }),
-  },
-  {
-    name: "JSON command readiness",
-    json: true,
-    run: (host: RuntimeEnv) => ensureConfigReady({ runtime: host, commandPath: ["config", "get"] }),
-  },
-  {
-    name: "command config validation",
-    run: (host: RuntimeEnv) => requireValidConfigFileSnapshot(host, { observe: false }),
-  },
-  {
-    name: "config mutation validation",
-    run: async (host: RuntimeEnv) =>
+  ["gateway restart readiness", ready(["gateway", "restart"])],
+  ["command readiness", ready(["config", "get"])],
+  ["JSON command readiness", ready(["config", "get"]), true],
+  ["command config validation", (host) => requireValidConfigFileSnapshot(host, { observe: false })],
+  [
+    "config mutation validation",
+    async (host) =>
       ensureValidConfigSnapshotForCli(await readConfigFileSnapshot({ observe: false }), host),
-  },
-];
+  ],
+] satisfies [string, (host: RuntimeEnv) => unknown, boolean?][];
 
 it.each(entrypoints)(
-  "$name reports unavailable metadata without suggesting config repair",
-  async ({ run, json }) => {
+  "%s reports unavailable metadata without suggesting config repair",
+  async (_name, run, json) => {
     await withOpenClawTestState({}, async (state) => {
       await state.writeConfig({ $include: "missing.json" });
       const before = await fs.readFile(state.configPath);

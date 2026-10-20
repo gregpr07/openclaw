@@ -64,14 +64,11 @@ describe.skipIf(process.platform !== "win32")("PowerShell profile encoding", () 
           await installCompletion("powershell", true, "openclaw");
           const bytes = await fs.readFile(profilePath);
           const content = new TextDecoder(encoding.decoder).decode(bytes);
-          const prefix = bytes.subarray(0, 3).toString("hex");
-          const observedBom = prefix.startsWith("fffe")
-            ? "fffe"
-            : prefix.startsWith("feff")
-              ? "feff"
-              : prefix === "efbbbf"
-                ? "efbbbf"
-                : "";
+          const observedBom =
+            bytes
+              .subarray(0, 3)
+              .toString("hex")
+              .match(/^(fffe|feff|efbbbf)/)?.[0] ?? "";
           const loaded = runPowerShell(
             `
         $ErrorActionPreference = 'Stop'

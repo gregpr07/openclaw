@@ -17,12 +17,14 @@ const database = {
     connection: { source: "env", provider: "default", id: "OPENCLAW_MISSING_REPAIR_DSN" },
   },
 };
+const writeJson = (file: string, value: unknown) => fs.writeFile(file, JSON.stringify(value));
 
 async function fixture() {
   const root = roots.make("openclaw-database-config-repair-");
   const configPath = path.join(root, "openclaw.json");
   const statePath = path.join(root, "state", "openclaw.sqlite");
-  await fs.writeFile(configPath, JSON.stringify({ database, gateway: { mode: "local" } }));
+  const originalConfig = JSON.stringify({ database, gateway: { mode: "local" } });
+  await fs.writeFile(configPath, originalConfig);
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH,
     SystemRoot: process.env.SystemRoot,
@@ -36,14 +38,34 @@ async function fixture() {
     OPENCLAW_DEBUG: "1",
     NODE_DISABLE_COMPILE_CACHE: "1",
   };
-  return { root, configPath, statePath, env };
+  return {
+    root,
+    configPath,
+    statePath,
+    env,
+    run: (args: string[], input?: string) =>
+      runCliProcessChild({ nodeArgs: [...entrypoint, ...args], env, input }),
+    unchanged: async () => expect(await fs.readFile(configPath, "utf8")).toBe(originalConfig),
+    noState: () => expect(fs.access(statePath)).rejects.toMatchObject({ code: "ENOENT" }),
+  };
+}
+
+function expectExit(
+  result: Awaited<ReturnType<typeof runCliProcessChild>>,
+  code: number,
+  error?: string,
+) {
+  expect(result.code, result.stderr).toBe(code);
+  if (error) {
+    expect(result.stderr).toContain(error);
+  }
 }
 
 describe("database-only config repair without a PostgreSQL connection", () => {
   it.each(["set", "batch", "patch", "unset", "fast unset"])(
     "repairs through %s without creating or opening shared state",
     async (command) => {
-      const { configPath, statePath, root, env } = await fixture();
+      const { configPath, statePath, root, run, noState } = await fixture();
       // Existing state is deliberately unreadable: config-only repair must not inspect it.
       const originalState = Buffer.from("unavailable shared state\n");
       if (command === "patch") {
@@ -65,20 +87,16 @@ describe("database-only config repair without a PostgreSQL connection", () => {
         ];
       } else if (command === "patch") {
         const patchPath = path.join(root, "patch.json");
-        await fs.writeFile(
-          patchPath,
-          JSON.stringify({
-            database: { postgres: { connection: { id: "OPENCLAW_REPAIRED_DSN" } } },
-          }),
-        );
+        await writeJson(patchPath, {
+          database: { postgres: { connection: { id: "OPENCLAW_REPAIRED_DSN" } } },
+        });
         args = ["config", "patch", "--file", patchPath];
       } else if (command === "fast unset") {
         args = ["config-unset-route", "database"];
       } else {
         args = ["config", "unset", "database"];
       }
-      const result = await runCliProcessChild({ nodeArgs: [...entrypoint, ...args], env });
-      expect(result.code, result.stderr).toBe(0);
+      expectExit(await run(args), 0);
       const config = JSON.parse(await fs.readFile(configPath, "utf8"));
       if (command.endsWith("unset")) {
         expect(config.database).toBeUndefined();
@@ -90,14 +108,13 @@ describe("database-only config repair without a PostgreSQL connection", () => {
         expect(await fs.readFile(statePath)).toEqual(originalState);
         expect(await fs.readdir(path.dirname(statePath))).toEqual(["openclaw.sqlite"]);
       } else {
-        await expect(fs.access(statePath)).rejects.toMatchObject({ code: "ENOENT" });
+        await noState();
       }
     },
   );
 
   it.each(["batch", "patch"])("requires the selected engine for a mixed %s", async (mode) => {
-    const { configPath, statePath, env } = await fixture();
-    const originalConfig = await fs.readFile(configPath, "utf8");
+    const { run, unchanged, noState } = await fixture();
     const args =
       mode === "batch"
         ? [
@@ -110,49 +127,41 @@ describe("database-only config repair without a PostgreSQL connection", () => {
             ]),
           ]
         : ["config", "patch", "--stdin"];
-    const result = await runCliProcessChild({
-      nodeArgs: [...entrypoint, ...args],
-      env,
-      ...(mode === "patch"
-        ? {
-            input: '{"database":{"postgres":{"schemaPrefix":"repaired"}},"gateway":{"port":19002}}',
-          }
-        : {}),
-    });
-    expect(result.code, result.stderr).toBe(1);
-    expect(result.stderr).toContain("SecretRef is unresolved");
-    expect(await fs.readFile(configPath, "utf8")).toBe(originalConfig);
-    await expect(fs.access(statePath)).rejects.toMatchObject({ code: "ENOENT" });
+    const result = await run(
+      args,
+      mode === "patch"
+        ? '{"database":{"postgres":{"schemaPrefix":"repaired"}},"gateway":{"port":19002}}'
+        : undefined,
+    );
+    expectExit(result, 1, "SecretRef is unresolved");
+    await unchanged();
+    await noState();
   });
 
   it.each(["set", "patch", "unset"])(
     "requires PostgreSQL selection for a %s preview without writing local state",
     async (command) => {
-      const { configPath, statePath, env } = await fixture();
-      const originalConfig = await fs.readFile(configPath, "utf8");
+      const { run, unchanged, noState } = await fixture();
       const args =
         command === "set"
           ? ["config", "set", "gateway.port", "19002"]
           : command === "patch"
             ? ["config", "patch", "--stdin"]
             : ["config", "unset", "gateway.mode"];
-      const result = await runCliProcessChild({
-        nodeArgs: [...entrypoint, ...args, "--dry-run"],
-        env,
-        ...(command === "patch" ? { input: '{"gateway":{"port":19002}}' } : {}),
-      });
-      expect(result.code, result.stderr).toBe(1);
-      expect(result.stderr).toContain("SecretRef is unresolved");
-      expect(await fs.readFile(configPath, "utf8")).toBe(originalConfig);
-      await expect(fs.access(statePath)).rejects.toMatchObject({ code: "ENOENT" });
+      const result = await run(
+        [...args, "--dry-run"],
+        command === "patch" ? '{"gateway":{"port":19002}}' : undefined,
+      );
+      expectExit(result, 1, "SecretRef is unresolved");
+      await unchanged();
+      await noState();
     },
   );
 
   it.each(["set", "patch", "unset"])(
     "previews a database-only %s without credentials or database access",
     async (command) => {
-      const { configPath, statePath, env } = await fixture();
-      const originalConfig = await fs.readFile(configPath, "utf8");
+      const { statePath, run, unchanged } = await fixture();
       const originalState = Buffer.from("unavailable shared state\n");
       await fs.mkdir(path.dirname(statePath));
       await fs.writeFile(statePath, originalState);
@@ -162,30 +171,24 @@ describe("database-only config repair without a PostgreSQL connection", () => {
           : command === "patch"
             ? ["config", "patch", "--stdin"]
             : ["config", "unset", "database"];
-      const result = await runCliProcessChild({
-        nodeArgs: [...entrypoint, ...args, "--dry-run", "--json"],
-        env,
-        ...(command === "patch"
-          ? { input: '{"database":{"postgres":{"schemaPrefix":"repaired"}}}' }
-          : {}),
-      });
-      expect(result.code, result.stderr).toBe(0);
+      const result = await run(
+        [...args, "--dry-run", "--json"],
+        command === "patch" ? '{"database":{"postgres":{"schemaPrefix":"repaired"}}}' : undefined,
+      );
+      expectExit(result, 0);
       expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, operations: 1 });
-      expect(await fs.readFile(configPath, "utf8")).toBe(originalConfig);
+      await unchanged();
       expect(await fs.readFile(statePath)).toEqual(originalState);
       expect(await fs.readdir(path.dirname(statePath))).toEqual(["openclaw.sqlite"]);
     },
   );
 
   it("reports malformed PostgreSQL config before resolving its missing credentials", async () => {
-    const { configPath, statePath, env } = await fixture();
+    const { configPath, run, noState } = await fixture();
     const malformed = (await fs.readFile(configPath, "utf8")).slice(0, -1);
     await fs.writeFile(configPath, malformed);
-    const result = await runCliProcessChild({
-      nodeArgs: [...entrypoint, "config", "validate", "--json"],
-      env,
-    });
-    expect(result.code, result.stderr).toBe(1);
+    const result = await run(["config", "validate", "--json"]);
+    expectExit(result, 1);
     expect(JSON.parse(result.stdout)).toMatchObject({
       valid: false,
       path: configPath,
@@ -194,7 +197,7 @@ describe("database-only config repair without a PostgreSQL connection", () => {
       ]),
     });
     expect(await fs.readFile(configPath, "utf8")).toBe(malformed);
-    await expect(fs.access(statePath)).rejects.toMatchObject({ code: "ENOENT" });
+    await noState();
   });
 
   it("validates the redirected source after selecting its engine", async () => {
@@ -204,65 +207,53 @@ describe("database-only config repair without a PostgreSQL connection", () => {
     const targetPath = path.join(targetDir, "openclaw.json");
     await fs.mkdir(bootstrapDir);
     await fs.mkdir(targetDir);
-    await fs.writeFile(
-      path.join(bootstrapDir, "openclaw.json"),
-      JSON.stringify({ env: { vars: { OPENCLAW_STATE_DIR: targetDir } } }),
-    );
-    await fs.writeFile(targetPath, JSON.stringify({ gateway: { port: "invalid" } }));
+    await writeJson(path.join(bootstrapDir, "openclaw.json"), {
+      env: { vars: { OPENCLAW_STATE_DIR: targetDir } },
+    });
+    await writeJson(targetPath, { gateway: { port: "invalid" } });
     const result = await runCliProcessChild({
       nodeArgs: [...entrypoint, "config", "validate", "--json"],
       env: { ...env, OPENCLAW_CONFIG_PATH: undefined, OPENCLAW_STATE_DIR: undefined },
     });
     expect(result.code, result.stderr).toBe(1);
     expect(JSON.parse(result.stdout)).toMatchObject({ valid: false, path: targetPath });
-    await expect(
-      fs.access(path.join(bootstrapDir, "state", "openclaw.sqlite")),
-    ).rejects.toMatchObject({
-      code: "ENOENT",
-    });
-    await expect(fs.access(path.join(targetDir, "state", "openclaw.sqlite"))).rejects.toMatchObject(
-      {
+    for (const dir of [bootstrapDir, targetDir]) {
+      await expect(fs.access(path.join(dir, "state", "openclaw.sqlite"))).rejects.toMatchObject({
         code: "ENOENT",
-      },
-    );
+      });
+    }
   });
 
   it("requires PostgreSQL selection to validate a readable config", async () => {
-    const { configPath, statePath, env } = await fixture();
-    const originalConfig = await fs.readFile(configPath, "utf8");
-    const result = await runCliProcessChild({
-      nodeArgs: [...entrypoint, "config", "validate", "--json"],
-      env,
-    });
-    expect(result.code, result.stderr).toBe(1);
+    const { run, unchanged, noState } = await fixture();
+    const result = await run(["config", "validate", "--json"]);
+    expectExit(result, 1);
     expect(JSON.parse(result.stdout)).toMatchObject({
       valid: false,
       error: { message: expect.stringContaining("SecretRef is unresolved") },
     });
-    expect(await fs.readFile(configPath, "utf8")).toBe(originalConfig);
-    await expect(fs.access(statePath)).rejects.toMatchObject({ code: "ENOENT" });
+    await unchanged();
+    await noState();
   });
 
   it("retains live-owner refusal for database-only repairs", async () => {
-    const { configPath, env } = await fixture();
-    const originalConfig = await fs.readFile(configPath, "utf8");
+    const { env, run, unchanged } = await fixture();
     const owner = await acquireGatewayLock({ env, allowInTests: true, timeoutMs: 0 });
     expect(owner).not.toBeNull();
     try {
-      const result = await runCliProcessChild({
-        nodeArgs: [...entrypoint, "config", "unset", "database"],
-        env,
-      });
-      expect(result.code, result.stderr).toBe(1);
-      expect(result.stderr).toContain("exclusive offline state ownership");
-      expect(await fs.readFile(configPath, "utf8")).toBe(originalConfig);
+      expectExit(
+        await run(["config", "unset", "database"]),
+        1,
+        "exclusive offline state ownership",
+      );
+      await unchanged();
     } finally {
       await owner?.release();
     }
   });
 
   it("preserves configured providers without loading their shared metadata", async () => {
-    const { configPath, statePath, env } = await fixture();
+    const { configPath, run, noState } = await fixture();
     const models = {
       providers: {
         example: {
@@ -272,73 +263,55 @@ describe("database-only config repair without a PostgreSQL connection", () => {
         },
       },
     };
-    await fs.writeFile(
-      configPath,
-      JSON.stringify({ database, gateway: { mode: "local" }, models }),
-    );
-    const result = await runCliProcessChild({
-      nodeArgs: [...entrypoint, "config", "set", "database.postgres.schemaPrefix", "repaired"],
-      env,
-    });
-    expect(result.code, result.stderr).toBe(0);
+    await writeJson(configPath, { database, gateway: { mode: "local" }, models });
+    expectExit(await run(["config", "set", "database.postgres.schemaPrefix", "repaired"]), 0);
     const config = JSON.parse(await fs.readFile(configPath, "utf8"));
     expect(config.database.postgres.schemaPrefix).toBe("repaired");
     expect(config.models).toEqual(models);
-    await expect(fs.access(statePath)).rejects.toMatchObject({ code: "ENOENT" });
+    await noState();
   });
 
   it("repairs an included database config without shared state", async () => {
-    const { root, configPath, statePath, env } = await fixture();
+    const { root, configPath, run, noState } = await fixture();
     const includePath = path.join(root, "database.json");
-    await fs.writeFile(includePath, JSON.stringify(database));
+    await writeJson(includePath, database);
     const originalRoot = JSON.stringify({
       database: { $include: "./database.json" },
       gateway: { mode: "local" },
     });
     await fs.writeFile(configPath, originalRoot);
-    const result = await runCliProcessChild({
-      nodeArgs: [...entrypoint, "config", "set", "database.postgres.schemaPrefix", "repaired"],
-      env,
-    });
-    expect(result.code, result.stderr).toBe(0);
+    expectExit(await run(["config", "set", "database.postgres.schemaPrefix", "repaired"]), 0);
     expect(JSON.parse(await fs.readFile(includePath, "utf8")).postgres.schemaPrefix).toBe(
       "repaired",
     );
     expect(await fs.readFile(configPath, "utf8")).toBe(originalRoot);
-    await expect(fs.access(statePath)).rejects.toMatchObject({ code: "ENOENT" });
+    await noState();
   });
 
   it("still validates the database config before publishing a repair", async () => {
-    const { configPath, statePath, env } = await fixture();
-    const originalConfig = await fs.readFile(configPath, "utf8");
-    const result = await runCliProcessChild({
-      nodeArgs: [...entrypoint, "config", "set", "database.engine", "unsupported"],
-      env,
-    });
-    expect(result.code, result.stderr).toBe(1);
-    expect(result.stderr).toContain("database.engine");
-    expect(await fs.readFile(configPath, "utf8")).toBe(originalConfig);
-    await expect(fs.access(statePath)).rejects.toMatchObject({ code: "ENOENT" });
+    const { run, unchanged, noState } = await fixture();
+    expectExit(
+      await run(["config", "set", "database.engine", "unsupported"]),
+      1,
+      "database.engine",
+    );
+    await unchanged();
+    await noState();
   });
 
   it("denies database work inside config-only custody", async () => {
-    const { statePath, env } = await fixture();
-    const result = await runCliProcessChild({
-      nodeArgs: [...entrypoint, "config-only-denial"],
-      env,
-    });
-    expect(result.code, result.stderr).toBe(1);
-    expect(result.stderr).toContain("Config-only ownership does not admit database access");
-    await expect(fs.access(statePath)).rejects.toMatchObject({ code: "ENOENT" });
+    const { run, noState } = await fixture();
+    expectExit(
+      await run(["config-only-denial"]),
+      1,
+      "Config-only ownership does not admit database access",
+    );
+    await noState();
   });
 
   it("validates core config without resolving the database connection", async () => {
-    const { statePath, env } = await fixture();
-    const result = await runCliProcessChild({
-      nodeArgs: [...entrypoint, "config-validation-only"],
-      env,
-    });
-    expect(result.code, result.stderr).toBe(0);
-    await expect(fs.access(statePath)).rejects.toMatchObject({ code: "ENOENT" });
+    const { run, noState } = await fixture();
+    expectExit(await run(["config-validation-only"]), 0);
+    await noState();
   });
 });
