@@ -1,5 +1,3 @@
-// Attachment URL fallback tests cover blocked local paths falling back to
-// remote media fetches and temp-file materialization.
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -77,21 +75,11 @@ describe("media understanding attachment URL fallback", () => {
     });
   });
 
-  it("falls back to URL fetch when local attachment canonicalization fails", async () => {
-    await withFallback(false, async (cache) => {
+  it.each([false, true])("getBuffer falls back to URL (missing local path=%s)", async (missing) => {
+    await withFallback(missing, async (cache) => {
       const result = await cache.getBuffer(readOptions);
       expect(result.buffer.toString()).toBe("fallback-buffer");
       expectFetch();
-    });
-  });
-
-  it("keeps HTTP fallback when the supplied local path is missing", async () => {
-    await withFallback(true, async (cache) => {
-      const result = await cache.getBuffer(readOptions);
-      expect(result.buffer.toString()).toBe("fallback-buffer");
-      expect(readRemoteMediaBufferMock).toHaveBeenCalledWith(
-        expect.objectContaining({ url: fallbackUrl }),
-      );
     });
   });
 });

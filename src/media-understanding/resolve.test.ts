@@ -1,4 +1,3 @@
-// Media-understanding resolve tests cover timeout clamping and capability filtering.
 import { MAX_TIMER_TIMEOUT_MS } from "@openclaw/normalization-core/number-coercion";
 import { describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../config/types.js";
@@ -36,11 +35,12 @@ describe("resolveModelEntries", () => {
   it("uses provider capabilities for shared entries without explicit caps", () => {
     const models = [{ provider: "openai", model: "gpt-5.4" }];
     const imageEntries = resolve(models, "image");
-    expect(imageEntries).toHaveLength(1);
-    expect(imageEntries[0]).toMatchObject({
-      entry: { provider: "openai", model: "gpt-5.4" },
-      secretOwnerId: "media-model:shared:0",
-    });
+    expect(imageEntries).toMatchObject([
+      {
+        entry: { provider: "openai", model: "gpt-5.4" },
+        secretOwnerId: "media-model:shared:0",
+      },
+    ]);
 
     expect(resolve(models, "audio")).toHaveLength(0);
   });
@@ -55,15 +55,10 @@ describe("resolveModelEntries", () => {
       "image",
       "openai/gpt-5.4",
     );
-    expect(imageEntries).toHaveLength(2);
-    expect(imageEntries[0]).toMatchObject({
-      entry: { model: "gpt-5.4" },
-      secretOwnerId: "media-model:shared:2",
-    });
-    expect(imageEntries[1]).toMatchObject({
-      entry: { model: "gpt-5.4-mini" },
-      secretOwnerId: "media-model:shared:1",
-    });
+    expect(imageEntries).toMatchObject([
+      { entry: { model: "gpt-5.4" }, secretOwnerId: "media-model:shared:2" },
+      { entry: { model: "gpt-5.4-mini" }, secretOwnerId: "media-model:shared:1" },
+    ]);
   });
 
   it("ranks an exact provider-qualified preference above a matching bare model id", () => {

@@ -1,5 +1,3 @@
-// OpenAI-compatible audio tests cover attribution headers,
-// filename normalization, and stable malformed-response errors.
 import { describe, expect, it, vi } from "vitest";
 import { VERSION } from "../version.js";
 import {
@@ -10,10 +8,8 @@ import { transcribeOpenAiCompatibleAudio } from "./openai-compatible-audio.js";
 
 installPinnedHostnameTestHooks();
 
-function transcribe(
-  fetchFn: typeof fetch,
-  overrides: Partial<Parameters<typeof transcribeOpenAiCompatibleAudio>[0]> = {},
-) {
+type AudioParams = Parameters<typeof transcribeOpenAiCompatibleAudio>[0];
+function transcribe(fetchFn: typeof fetch, overrides: Partial<AudioParams> = {}) {
   return transcribeOpenAiCompatibleAudio({
     buffer: Buffer.from("audio"),
     fileName: "note.mp3",
@@ -60,27 +56,24 @@ describe("transcribeOpenAiCompatibleAudio", () => {
     expect((file as File).name).toBe("voice-note.m4a");
   });
 
-  it.each([undefined, "ru"])(
-    "omits the optional prompt field with language %j",
-    async (language) => {
-      const { fetchFn, getRequest } = createRequestCaptureJsonFetch({ text: "ok" });
+  it.each([undefined, "ru"])("omits prompt with language %j", async (language) => {
+    const { fetchFn, getRequest } = createRequestCaptureJsonFetch({ text: "ok" });
 
-      await transcribe(fetchFn, {
-        fileName: "note.ogg",
-        mime: "audio/ogg",
-        provider: "groq",
-        baseUrl: "https://api.groq.com/openai/v1",
-        defaultBaseUrl: "https://api.groq.com/openai/v1",
-        defaultModel: "whisper-large-v3-turbo",
-        language,
-      });
+    await transcribe(fetchFn, {
+      fileName: "note.ogg",
+      mime: "audio/ogg",
+      provider: "groq",
+      baseUrl: "https://api.groq.com/openai/v1",
+      defaultBaseUrl: "https://api.groq.com/openai/v1",
+      defaultModel: "whisper-large-v3-turbo",
+      language,
+    });
 
-      const form = getRequest().init?.body;
-      expect(form).toBeInstanceOf(FormData);
-      expect((form as FormData).get("language")).toBe(language ?? null);
-      expect((form as FormData).get("prompt")).toBeNull();
-    },
-  );
+    const form = getRequest().init?.body;
+    expect(form).toBeInstanceOf(FormData);
+    expect((form as FormData).get("language")).toBe(language ?? null);
+    expect((form as FormData).get("prompt")).toBeNull();
+  });
 
   it("rejects non-object successful transcription JSON with a stable provider error", async () => {
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify([])));
