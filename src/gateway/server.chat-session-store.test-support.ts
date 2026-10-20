@@ -25,10 +25,7 @@ export function futureFixtureUpdatedAt(): number {
 }
 
 export async function writeMainSessionStore(sessionId = "sess-main") {
-  await writeStoredMainSession({
-    sessionId,
-    updatedAt: futureFixtureUpdatedAt(),
-  });
+  await writeStoredMainSession({ sessionId, updatedAt: futureFixtureUpdatedAt() });
 }
 
 export async function prepareMainHistoryHarness(params: {
@@ -126,26 +123,18 @@ export function createMainChatSessionStoreFixture(settleGatewayFixture: () => Pr
 export async function writeMainChatSessionTranscript(
   events: unknown[],
   sessionId = "sess-main",
-  opts?: {
-    agentId?: string;
-    sessionKey?: string;
-  },
+  opts?: { agentId?: string; sessionKey?: string },
 ) {
   const storePath = testState.sessionStorePath;
   if (!storePath) {
     throw new Error("session store path was not initialized");
   }
-  // Seed fresh transcripts in one transaction instead of one commit per event.
   const transcriptEvents = events
     .filter((event) => typeof event !== "string" || event.trim())
     .map((event) => (typeof event === "string" ? JSON.parse(event) : event)) as Parameters<
     typeof replaceTranscriptEvents
   >[1];
-  const scope = {
-    agentId: opts?.agentId ?? "main",
-    sessionId,
-    storePath,
-  };
+  const scope = { agentId: opts?.agentId ?? "main", sessionId, storePath };
   await replaceTranscriptEvents(
     { ...scope, sessionKey: opts?.sessionKey ?? "agent:main:main" },
     transcriptEvents,

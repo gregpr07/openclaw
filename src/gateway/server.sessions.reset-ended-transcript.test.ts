@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { afterAll, afterEach, expect, test, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import * as sessionHistoryWorkers from "../config/sessions/session-history-worker-runtime.js";
@@ -33,9 +34,7 @@ afterEach(() => {
   }
 });
 
-afterAll(() => {
-  cleanupPluginLoaderFixturesForTest();
-});
+afterAll(cleanupPluginLoaderFixturesForTest);
 
 async function resetMainSession(): Promise<void> {
   const result = await directSessionReq("sessions.reset", { key: "main", reason: "new" });
@@ -73,10 +72,7 @@ module.exports = {
 test("sessions.reset delivers the ended SQLite window only to a loaded granted plugin", async () => {
   await createSessionStoreDir();
   const storePath = testState.sessionStorePath;
-  expect(typeof storePath).toBe("string");
-  if (typeof storePath !== "string") {
-    throw new Error("expected test session store path");
-  }
+  assert(typeof storePath === "string", "expected test session store path");
   await writeSessionStore({ entries: { main: sessionStoreEntry("sess-main") } });
   const latestEndedContent = "latest ended interval ".padEnd(3_600, "x");
   const seed = (content: string, id: string) =>
@@ -112,13 +108,8 @@ test("sessions.reset delivers the ended SQLite window only to a loaded granted p
   const hookSettled = createDeferred();
   setSessionLifecycleHookRunnerForTest({
     ...runner,
-    runSessionEnd: async (...args: Parameters<typeof runner.runSessionEnd>) => {
-      try {
-        await runner.runSessionEnd(...args);
-      } finally {
-        hookSettled.resolve();
-      }
-    },
+    runSessionEnd: (...args: Parameters<typeof runner.runSessionEnd>) =>
+      runner.runSessionEnd(...args).finally(() => hookSettled.resolve()),
   });
   const grantedResult = createDeferred<PluginHookEndedTranscriptReadResult>();
   const ungrantedResult = createDeferred<unknown>();

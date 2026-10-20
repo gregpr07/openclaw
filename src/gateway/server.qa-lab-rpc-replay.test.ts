@@ -19,26 +19,12 @@ type QaGatewayFixture = {
   pid: number | null;
   call(method: string, params?: unknown, options?: { timeoutMs?: number }): Promise<unknown>;
 };
-type QaGatewayFixtureOwner = {
-  start(params: {
-    repoRoot: string;
-    providerMode: "mock-openai";
-    controlUiEnabled: boolean;
-    transportBaseUrl: string;
-    command: {
-      executablePath: string;
-      argsPrefix: string[];
-      tempParentDir: string;
-      usePackagedPlugins: boolean;
-    };
-    onListening: (context: { token: string }) => Promise<void>;
-  }): Promise<QaGatewayFixture>;
-  stop(): Promise<{ process: string; errors: unknown[] }>;
-};
-
 const qaModule = "../../extensions/qa-lab/api.js";
 const { createQaGatewayChild } = (await import(qaModule)) as {
-  createQaGatewayChild: () => QaGatewayFixtureOwner;
+  createQaGatewayChild(): {
+    start(params: ReturnType<typeof gatewayOptions>): Promise<QaGatewayFixture>;
+    stop(): Promise<{ process: string; errors: unknown[] }>;
+  };
 };
 installGatewayTestHooks({ scope: "suite" });
 
@@ -50,6 +36,34 @@ let backend: Awaited<ReturnType<typeof startTestGatewayServer>> | undefined;
 let observer: WebSocket | undefined;
 let childPid: number | null;
 let token: string;
+let claimHandedOff = false;
+
+function gatewayOptions(root: string, claim: Awaited<ReturnType<typeof acquireTestPortBlock>>) {
+  return {
+    repoRoot: process.cwd(),
+    providerMode: "mock-openai" as const,
+    controlUiEnabled: false,
+    transportBaseUrl: "http://127.0.0.1:1",
+    command: {
+      executablePath: process.execPath,
+      argsPrefix: [
+        path.resolve("test/fixtures/qa-gateway-rpc-proxy.mjs"),
+        String(claim.port),
+        process.cwd(),
+        path.join(root, "proxy-events.jsonl"),
+      ],
+      tempParentDir: root,
+      usePackagedPlugins: true,
+    },
+    onListening: async (context: { token: string }) => {
+      token = context.token;
+      testState.gatewayAuth = { mode: "token", token };
+      vi.stubEnv("OPENCLAW_GATEWAY_TOKEN", token);
+      claimHandedOff = true;
+      backend = await startTestGatewayServer(claim, { auth: { mode: "token", token } });
+    },
+  };
+}
 
 async function control(action = "snapshot"): Promise<ProxySnapshot> {
   const response = await fetch(`${child.baseUrl}/__fixture`, {
@@ -70,34 +84,8 @@ beforeAll(async () => {
   const root = dirs.make("qa-rpc-replay-");
   const backendPortClaim = await acquireTestPortBlock({ offsets: [0, 1, 2, 3, 4] });
   const backendPort = backendPortClaim.port;
-  let claimHandedOff = false;
   try {
-    child = await owner.start({
-      repoRoot: process.cwd(),
-      providerMode: "mock-openai",
-      controlUiEnabled: false,
-      transportBaseUrl: "http://127.0.0.1:1",
-      command: {
-        executablePath: process.execPath,
-        argsPrefix: [
-          path.resolve("test/fixtures/qa-gateway-rpc-proxy.mjs"),
-          String(backendPort),
-          process.cwd(),
-          path.join(root, "proxy-events.jsonl"),
-        ],
-        tempParentDir: root,
-        usePackagedPlugins: true,
-      },
-      onListening: async (context) => {
-        token = context.token;
-        testState.gatewayAuth = { mode: "token", token };
-        vi.stubEnv("OPENCLAW_GATEWAY_TOKEN", token);
-        claimHandedOff = true;
-        backend = await startTestGatewayServer(backendPortClaim, {
-          auth: { mode: "token", token },
-        });
-      },
-    });
+    child = await owner.start(gatewayOptions(root, backendPortClaim));
   } finally {
     if (!claimHandedOff) {
       await backendPortClaim.release();
@@ -114,29 +102,18 @@ beforeAll(async () => {
 }, 180_000);
 
 afterAll(async () => {
-  const cleanupErrors: unknown[] = [];
-  let stopped = false;
-  try {
-    const result = await owner.stop();
-    stopped = result.process === "confirmed-stopped";
-    cleanupErrors.push(...result.errors);
-  } catch (error) {
-    cleanupErrors.push(error);
-  }
+  const result = await owner
+    .stop()
+    .catch((error: unknown) => ({ process: "failed", errors: [error] }));
   if (observer && observer.readyState !== WebSocket.CLOSED) {
     const closed = once(observer, "close");
     observer.terminate();
     await closed;
   }
-  try {
-    await backend?.close();
-  } catch (error) {
-    cleanupErrors.push(error);
-  }
+  await backend?.close().catch((error: unknown) => result.errors.push(error));
   dirs.cleanup();
   vi.unstubAllEnvs();
-  expect(cleanupErrors).toEqual([]);
-  expect(stopped).toBe(true);
+  expect(result).toMatchObject({ process: "confirmed-stopped", errors: [] });
 }, 30_000);
 
 it("does not replay a committed create after losing its response", async () => {

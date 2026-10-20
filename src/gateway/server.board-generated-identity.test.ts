@@ -1,3 +1,4 @@
+import { asOptionalRecord } from "@openclaw/normalization-core";
 import { expect, it } from "vitest";
 import type {
   BoardSnapshot,
@@ -40,105 +41,85 @@ function putGeneratedWidget(
   });
 }
 
-it(
-  "preserves generated identities across two connections and a real gateway restart",
-  { timeout: 120_000 },
-  async () => {
-    const env = { ...process.env };
-    const database = openOpenClawAgentDatabase({ agentId: "main", env });
-    replaceSessionEntrySync(
-      { agentId: "main", sessionKey: SESSION_KEY, storePath: database.path },
-      { sessionId: "generated-identity-restart", updatedAt: Date.now() },
+it("preserves concurrent generated identities across restart", { timeout: 120_000 }, async () => {
+  const database = openOpenClawAgentDatabase({ agentId: "main", env: { ...process.env } });
+  replaceSessionEntrySync(
+    { agentId: "main", sessionKey: SESSION_KEY, storePath: database.path },
+    { sessionId: "generated-identity-restart", updatedAt: Date.now() },
+  );
+
+  const events: string[] = [];
+  const start = async () => {
+    const portClaim = await acquireTestPortBlock({ offsets: [0, 1, 2, 3, 4] });
+    const server = await startTestGatewayServer(portClaim, {
+      auth: { mode: "none" },
+      bind: "loopback",
+      controlUiEnabled: false,
+      sidecarStartup: "defer",
+    });
+    return { port: portClaim.port, server };
+  };
+  const connect = (port: number, deviceFamily: string) =>
+    connectGatewayClient({
+      url: `ws://127.0.0.1:${port}`,
+      deviceFamily,
+      scopes: [READ_SCOPE, WRITE_SCOPE],
+      onEvent: (event) => {
+        const widget = asOptionalRecord(event.payload)?.widget;
+        if (event.event === "board.changed" && typeof widget === "string") {
+          events.push(widget);
+        }
+      },
+      timeoutMs: 30_000,
+    });
+
+  let server: Awaited<ReturnType<typeof startTestGatewayServer>> | undefined;
+  let clients: Awaited<ReturnType<typeof connectGatewayClient>>[] = [];
+  try {
+    const first = await start();
+    server = first.server;
+    const [firstClient, secondClient] = await Promise.all([
+      connect(first.port, "generated-a"),
+      connect(first.port, "generated-b"),
+    ]);
+    clients = [firstClient, secondClient];
+    const initial = await Promise.all([
+      putGeneratedWidget(firstClient, widgets[0]),
+      putGeneratedWidget(secondClient, widgets[1]),
+    ]);
+    const initialNames = initial.map((result) => result.resolvedWidgetName);
+    expect(new Set(initialNames).size).toBe(2);
+    expect(initialNames).toContain("2024");
+
+    await Promise.all(clients.map(disconnectGatewayClient));
+    clients = [];
+    await server.close();
+    server = undefined;
+    closeOpenClawAgentDatabasesForTest();
+    closeOpenClawStateDatabaseForTest();
+
+    const restarted = await start();
+    server = restarted.server;
+    const reconnected = await connect(restarted.port, "generated-restart");
+    clients = [reconnected];
+    const snapshot = await reconnected.request<BoardSnapshot>("board.get", {
+      sessionKey: SESSION_KEY,
+    });
+    expect(new Set(snapshot.widgets.map((widget) => widget.name))).toEqual(new Set(initialNames));
+
+    const reloaded = await Promise.all(
+      widgets.map((widget) => putGeneratedWidget(reconnected, widget, true)),
     );
-
-    const events: string[] = [];
-    const start = async () => {
-      const portClaim = await acquireTestPortBlock({ offsets: [0, 1, 2, 3, 4] });
-      const server = await startTestGatewayServer(portClaim, {
-        auth: { mode: "none" },
-        bind: "loopback",
-        controlUiEnabled: false,
-        sidecarStartup: "defer",
-      });
-      return { port: portClaim.port, server };
-    };
-    const connect = (port: number, deviceFamily: string) =>
-      connectGatewayClient({
-        url: `ws://127.0.0.1:${port}`,
-        deviceFamily,
-        scopes: [READ_SCOPE, WRITE_SCOPE],
-        onEvent: (event) => {
-          if (
-            event.event === "board.changed" &&
-            event.payload &&
-            typeof event.payload === "object" &&
-            typeof (event.payload as { widget?: unknown }).widget === "string"
-          ) {
-            events.push((event.payload as { widget: string }).widget);
-          }
-        },
-        timeoutMs: 30_000,
-      });
-
-    let firstServer: Awaited<ReturnType<typeof startTestGatewayServer>> | undefined;
-    let firstClient: Awaited<ReturnType<typeof connectGatewayClient>> | undefined;
-    let secondClient: Awaited<ReturnType<typeof connectGatewayClient>> | undefined;
-    let restartedServer: Awaited<ReturnType<typeof startTestGatewayServer>> | undefined;
-    let restartedClient: Awaited<ReturnType<typeof connectGatewayClient>> | undefined;
-    try {
-      const first = await start();
-      firstServer = first.server;
-      [firstClient, secondClient] = await Promise.all([
-        connect(first.port, "generated-a"),
-        connect(first.port, "generated-b"),
-      ]);
-      const initial = await Promise.all([
-        putGeneratedWidget(firstClient, widgets[0]),
-        putGeneratedWidget(secondClient, widgets[1]),
-      ]);
-      const initialNames = initial.map((result) => result.resolvedWidgetName);
-      expect(new Set(initialNames).size).toBe(2);
-      expect(initialNames).toContain("2024");
-
-      await Promise.all([
-        disconnectGatewayClient(firstClient),
-        disconnectGatewayClient(secondClient),
-      ]);
-      firstClient = undefined;
-      secondClient = undefined;
-      await firstServer.close();
-      firstServer = undefined;
-      closeOpenClawAgentDatabasesForTest();
-      closeOpenClawStateDatabaseForTest();
-
-      const restarted = await start();
-      restartedServer = restarted.server;
-      const reconnected = (restartedClient = await connect(restarted.port, "generated-restart"));
-      const snapshot = await restartedClient.request<BoardSnapshot>("board.get", {
-        sessionKey: SESSION_KEY,
-      });
-      expect(new Set(snapshot.widgets.map((widget) => widget.name))).toEqual(new Set(initialNames));
-
-      const reloaded = await Promise.all(
-        widgets.map((widget) => putGeneratedWidget(reconnected, widget, true)),
-      );
-      expect(new Set(reloaded.map((result) => result.resolvedWidgetName))).toEqual(
-        new Set(initialNames),
-      );
-      expect(events).toEqual(expect.arrayContaining(initialNames));
-    } finally {
-      for (const client of [firstClient, secondClient, restartedClient]) {
-        if (client) {
-          await disconnectGatewayClient(client).catch(() => undefined);
-        }
-      }
-      for (const server of [firstServer, restartedServer]) {
-        if (server) {
-          await server.close().catch(() => undefined);
-        }
-      }
-      closeOpenClawAgentDatabasesForTest();
-      closeOpenClawStateDatabaseForTest();
+    expect(new Set(reloaded.map((result) => result.resolvedWidgetName))).toEqual(
+      new Set(initialNames),
+    );
+    expect(events).toEqual(expect.arrayContaining(initialNames));
+  } finally {
+    for (const client of clients) {
+      await disconnectGatewayClient(client).catch(() => undefined);
     }
-  },
-);
+    await server?.close().catch(() => undefined);
+    closeOpenClawAgentDatabasesForTest();
+    closeOpenClawStateDatabaseForTest();
+  }
+});
