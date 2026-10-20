@@ -54,6 +54,7 @@ export const workflowOperator = {
 } as const;
 
 type PageOptions = {
+  clawIconUrl?: string;
   clawsEnabled?: boolean;
   workspaceFileNames?: string[];
   applyResult?: {
@@ -172,7 +173,7 @@ export function createPage(options: PageOptions = {}) {
           !workflowOperator.displayName.toLowerCase().includes(query) &&
           !workflowOperator.packageName.toLowerCase().includes(query)
             ? []
-            : [workflowOperator],
+            : [{ ...workflowOperator, iconUrl: options.clawIconUrl }],
       };
     }
     if (method === "claws.catalog.detail") {
@@ -182,6 +183,7 @@ export function createPage(options: PageOptions = {}) {
       return {
         detail: {
           ...workflowOperator,
+          iconUrl: options.clawIconUrl,
           version: "1.2.0",
           agentName: "Workflow Operator",
           workspaceFiles: instructions.length,

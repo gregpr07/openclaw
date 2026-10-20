@@ -348,3 +348,21 @@ describe("Claws on Agents Home", () => {
     expect(applyParams).toHaveProperty("planIntegrity", "sha256:reviewed-plan");
   });
 });
+
+it.each(["card", "detail"])(
+  "shows Claw artwork and falls back on an image error in the %s",
+  async (surface) => {
+    const clawIconUrl = `https://clawhub.ai/api/v1/skill-icons/${"a".repeat(64)}`;
+    const options = { clawsEnabled: true, clawIconUrl };
+    const container = surface === "card" ? createPage(options).page : createDetail(options).detail;
+    const selector = surface === "card" ? ".agents-home__claw-art" : ".plugin-catalog-detail__icon";
+    await waitForSolid(() =>
+      expect(container.querySelector(`${selector} img`)?.getAttribute("src")).toBe(clawIconUrl),
+    );
+    const image = container.querySelector(`${selector} img`)!;
+    expect(image.getAttribute("referrerpolicy")).toBe("no-referrer");
+    image.dispatchEvent(new Event("error"));
+    await waitForSolid(() => expect(container.querySelector(`${selector} img`)).toBeNull());
+    expect(container.querySelector(`${selector} svg`)).not.toBeNull();
+  },
+);
