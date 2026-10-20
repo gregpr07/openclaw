@@ -39,17 +39,6 @@ afterAll(async () => {
   vi.restoreAllMocks();
 });
 
-async function readText(
-  tools: SessionRuntimeInput["toolBase"]["toolsRaw"],
-  file: string,
-): Promise<unknown> {
-  const read = tools.find((tool) => tool.name === "read");
-  if (!read) {
-    throw new Error("Run did not expose its read tool");
-  }
-  return await read.execute(file, { path: file });
-}
-
 it("reuses configured plugins for runs outside the canonical workspace", async () => {
   const taskWorkspace = state.path("cron-task");
   await fs.mkdir(taskWorkspace, { recursive: true });
@@ -123,20 +112,29 @@ it("reuses configured plugins for runs outside the canonical workspace", async (
   const runtimeLoad = vi.spyOn(runtimePlugins, "acquireAgentRuntimePluginRegistry");
   const syncRuntimeLoad = vi.spyOn(runtimePlugins, "loadAgentRuntimePluginRegistryHandle");
   const metadataBuild = vi.spyOn(metadataInput, "loadPluginMetadataSnapshotInput");
-  const expectConfiguredGeneration = ({ attempt, toolBase }: SessionRuntimeInput) => {
-    expect(attempt.preparedModelRuntime?.pluginRegistry === configured?.pluginRegistry).toBe(true);
-    expect(attempt.preparedModelRuntime?.metadataSnapshot === configured?.metadataSnapshot).toBe(
-      true,
-    );
-    expect(attempt.preparedModelRuntime?.workspaceDir).toBe(state.workspaceDir);
-    expect(toolBase.toolsRaw.some((tool) => tool.name === "llm-task")).toBe(true);
-  };
-  const run = async (name: string, params: { workspaceDir: string }) => {
+  try {
+    // Cron and subagent workspaces stay local while reusing the configured plugin generation.
+    preparation.mockImplementationOnce(async ({ attempt, toolBase, setup }) => {
+      expect(attempt.workspaceDir).toBe(taskWorkspace);
+      expect(attempt.preparedModelRuntime?.pluginRegistry).toBe(configured?.pluginRegistry);
+      expect(attempt.preparedModelRuntime?.metadataSnapshot).toBe(configured?.metadataSnapshot);
+      expect(attempt.preparedModelRuntime?.workspaceDir).toBe(state.workspaceDir);
+      expect(toolBase.toolsRaw.some((tool) => tool.name === "llm-task")).toBe(true);
+      expect(setup).toMatchObject({ effectiveWorkspace: taskWorkspace });
+      const read = toolBase.toolsRaw.find((tool) => tool.name === "read");
+      if (!read) {
+        throw new Error("Run did not expose its read tool");
+      }
+      expect(await read.execute("task.txt", { path: "task.txt" })).toMatchObject({
+        content: [expect.objectContaining({ text: expect.stringContaining("task fixture") })],
+      });
+    });
+    const name = "task-workspace-proof";
     const admission = prepareSystemAgentRunAdmission(config, name, "main", name);
     try {
       await expect(
         runEmbeddedAgent({
-          ...params,
+          workspaceDir: taskWorkspace,
           config,
           agentId: "main",
           agentDir: state.agentDir(),
@@ -157,18 +155,6 @@ it("reuses configured plugins for runs outside the canonical workspace", async (
     } finally {
       admission.close();
     }
-  };
-  try {
-    // Cron and subagent workspaces without a bootstrap stay bound to their own directory.
-    preparation.mockImplementationOnce(async (input) => {
-      expect(input.attempt.workspaceDir).toBe(taskWorkspace);
-      expectConfiguredGeneration(input);
-      expect(input.setup).toMatchObject({ effectiveWorkspace: taskWorkspace });
-      expect(await readText(input.toolBase.toolsRaw, "task.txt")).toMatchObject({
-        content: [expect.objectContaining({ text: expect.stringContaining("task fixture") })],
-      });
-    });
-    await run("task-workspace-proof", { workspaceDir: taskWorkspace });
     expect(preparation).toHaveBeenCalledTimes(1);
     expect(runtimeLoad).not.toHaveBeenCalled();
     expect(syncRuntimeLoad).not.toHaveBeenCalled();

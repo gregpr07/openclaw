@@ -22,6 +22,24 @@ import { createEmbeddedRunHandle, testing } from "./runs.test-support.js";
 const sessionId = "native-lifecycle-session";
 const sessionKey = "agent:main:native-lifecycle";
 
+function drain(
+  options: Omit<Parameters<typeof abortAndDrainEmbeddedAgentRun>[0], "sessionId"> = {},
+) {
+  return abortAndDrainEmbeddedAgentRun({ sessionId, settleMs: 100, ...options });
+}
+
+function expectDrainResult(
+  result: ReturnType<typeof drain>,
+  overrides: Partial<Awaited<ReturnType<typeof drain>>> = {},
+) {
+  return expect(result).resolves.toEqual({
+    aborted: false,
+    drained: false,
+    forceCleared: false,
+    ...overrides,
+  });
+}
+
 afterEach(() => {
   testing.resetActiveEmbeddedRuns();
   replyTesting.resetSessionControllerForTest();
@@ -88,18 +106,11 @@ describe("native lifecycle admission and cancellation", () => {
           ),
       );
       vi.setSystemTime(6 * 60_000);
-      const recovering = abortAndDrainEmbeddedAgentRun({
-        sessionId,
-        reason: "stuck_recovery",
-        forceClear: true,
-        settleMs: 100,
-      });
+      const recovering = drain({ reason: "stuck_recovery", forceClear: true });
       try {
         await vi.advanceTimersByTimeAsync(100);
-        await expect(recovering).resolves.toEqual({
+        await expectDrainResult(recovering, {
           aborted: true,
-          drained: false,
-          forceCleared: false,
           recoveringModelAttempt: true,
         });
         expect(recoverStalledModelCall).toHaveBeenCalledOnce();
@@ -130,18 +141,10 @@ describe("native lifecycle admission and cancellation", () => {
         operation.watchdog.beginExecution(() => 1, recoverExecution);
       }
       vi.setSystemTime(kind === "execution_recovery" ? 1 : 6 * 60_000);
-      const draining = abortAndDrainEmbeddedAgentRun({
-        sessionId,
-        reason: "stuck_recovery",
-        settleMs: 100,
-      });
+      const draining = drain({ reason: "stuck_recovery" });
       try {
         await vi.advanceTimersByTimeAsync(100);
-        await expect(draining).resolves.toEqual({
-          aborted: kind === "model_refusal",
-          drained: false,
-          forceCleared: false,
-        });
+        await expectDrainResult(draining, { aborted: kind === "model_refusal" });
         expect(recoverStalledModelCall).toHaveBeenCalledTimes(kind === "model_refusal" ? 1 : 0);
         expect(recoverExecution).toHaveBeenCalledTimes(kind === "execution_recovery" ? 1 : 0);
         expect(abort).toHaveBeenCalledTimes(kind === "model_refusal" ? 1 : 0);
@@ -267,11 +270,7 @@ describe("native lifecycle admission and cancellation", () => {
         () => attachActiveEmbeddedRun(sessionId, handle),
       );
       let returned = false;
-      const draining = abortAndDrainEmbeddedAgentRun({
-        sessionId,
-        forceClear: true,
-        settleMs: 100,
-      }).then((result) => {
+      const draining = drain({ forceClear: true }).then((result) => {
         returned = true;
         return result;
       });
@@ -295,11 +294,7 @@ describe("native lifecycle admission and cancellation", () => {
         }
         expect(returned).toBe(false);
         releaseCleanup.resolve();
-        await expect(draining).resolves.toEqual({
-          aborted: false,
-          drained: producerSettles,
-          forceCleared: false,
-        });
+        await expectDrainResult(draining, { drained: producerSettles });
         expect(isEmbeddedAgentRunHandleActive(sessionId)).toBe(!producerSettles);
       } finally {
         releaseCleanup.resolve();
@@ -316,13 +311,9 @@ describe("native lifecycle admission and cancellation", () => {
       const abort = vi.fn();
       const handle = createEmbeddedRunHandle({ abort, isAbortable: false });
       attachActiveEmbeddedRun(sessionId, handle);
-      const draining = abortAndDrainEmbeddedAgentRun({ sessionId, settleMs: 100, reason });
+      const draining = drain({ reason });
       await vi.advanceTimersByTimeAsync(100);
-      await expect(draining).resolves.toEqual({
-        aborted: false,
-        drained: false,
-        forceCleared: false,
-      });
+      await expectDrainResult(draining);
       expect(abort).not.toHaveBeenCalled();
       expect(isEmbeddedAgentRunHandleActive(sessionId)).toBe(true);
       detachActiveEmbeddedRun(sessionId, handle);
