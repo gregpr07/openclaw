@@ -57,8 +57,8 @@ afterEach(clearGatewayAgentCliShim);
 describe.skipIf(process.platform !== "win32")("native Windows source CLI shim", () => {
   it.each(["off", "on"])(
     "preserves source paths and caller cwd with delayed expansion %s",
-    async (expansion) => {
-      await withTempDir("openclaw-source-cli-win-", async (root) => {
+    (expansion) =>
+      withTempDir("openclaw-source-cli-win-", async (root) => {
         const f = await sourceFixture(root);
         const args = ["--profile", "work", "probe"];
         f.control(args);
@@ -69,12 +69,11 @@ describe.skipIf(process.platform !== "win32")("native Windows source CLI shim", 
           args,
           process.versions.bun ? {} : { tsconfigPath: path.join(f.checkout, "tsconfig.json") },
         );
-      });
-    },
+      }),
   );
 
-  it("preserves literal forwarded bangs and percent signs", async () => {
-    await withTempDir("openclaw-source-cli-args-win-", async (root) => {
+  it("preserves literal forwarded bangs and percent signs", () =>
+    withTempDir("openclaw-source-cli-args-win-", async (root) => {
       const f = await sourceFixture(root);
       const shim = await f.shim();
       const caller = path.join(root, "caller.cmd");
@@ -89,13 +88,12 @@ describe.skipIf(process.platform !== "win32")("native Windows source CLI shim", 
         ].join("\r\n"),
       );
       f.check(f.cmd(caller, []), f.callerCwd, ["probe", "literal!%USERPROFILE%!"]);
-    });
-  });
+    }));
 
   it.each(["generic Node host", "bare TSX source parent"])(
     "launches source mode outside the checkout from a %s",
-    async (parent) => {
-      await withTempDir("openclaw-source-cli-host-win-", async (root) => {
+    (parent) =>
+      withTempDir("openclaw-source-cli-host-win-", async (root) => {
         const f = await sourceFixture(root);
         const modulesDir = path.join(f.checkout, "node_modules");
         await fs.mkdir(modulesDir);
@@ -123,7 +121,6 @@ describe.skipIf(process.platform !== "win32")("native Windows source CLI shim", 
           f.callerCwd,
           ["probe"],
         );
-      });
-    },
+      }),
   );
 });

@@ -62,43 +62,39 @@ it.each([
   ["restore-race", "restoration", "concurrent destination\n"],
   ["retained-sync", "sync failure", "export {};\n"],
   ["published-sync", "sync failure", "export {};\n"],
-])(
-  "preserves newer bytes or restores the original after %s",
-  async (scenario, markerText, contents) => {
-    await withTestDir({ prefix: "openclaw-override-publication-" }, async (base) => {
-      const requestedRoot = path.join(base, "package");
-      await writePackageRoot(requestedRoot, "1.0.0");
-      const packageRoot = await fs.realpath(requestedRoot);
-      const indexPath = path.join(packageRoot, "dist/index.js");
-      await fs.writeFile(indexPath, "operator override\n");
-      const plan = await captureLocalPackageOverrides({ packageRoot });
-      expect(plan).not.toBeNull();
-      await writePackageRoot(packageRoot, "2.0.0");
-      const marker = path.join(base, "injected");
-      const preload = `data:text/javascript,${encodeURIComponent(publicationFaultPreload(packageRoot, marker, scenario))}`;
-      const actual =
-        await vi.importActual<typeof import("node:child_process")>("node:child_process");
-      vi.mocked(execFile).mockImplementation((file, args, options, callback) => {
-        if (file !== process.execPath || !args?.includes("--eval")) {
-          throw new Error("Unexpected child process in replay publication test");
-        }
-        return actual.execFile(file, ["--import", preload, ...args], options, callback);
-      });
-      const result = await applyLocalPackageOverrides({ packageRoot, plan, reapply: true });
-      const injected = await fs.readFile(marker, "utf8");
-      expect(injected).toBe(markerText);
-      expect(result).toMatchObject({ status: "error", applied: 0 });
-      await expect(fs.readFile(indexPath, "utf8")).resolves.toBe(contents);
-      if (scenario === "restore-race") {
-        const entries = await fs.readdir(path.dirname(indexPath));
-        const previous = entries.find((entry) => entry.startsWith(".openclaw-override-previous-"));
-        if (!previous) {
-          throw new Error("Concurrent source was not retained for recovery");
-        }
-        await expect(
-          fs.readFile(path.join(path.dirname(indexPath), previous), "utf8"),
-        ).resolves.toBe("concurrent source\n");
+])("preserves newer bytes or restores the original after %s", (scenario, markerText, contents) =>
+  withTestDir({ prefix: "openclaw-override-publication-" }, async (base) => {
+    const requestedRoot = path.join(base, "package");
+    await writePackageRoot(requestedRoot, "1.0.0");
+    const packageRoot = await fs.realpath(requestedRoot);
+    const indexPath = path.join(packageRoot, "dist/index.js");
+    await fs.writeFile(indexPath, "operator override\n");
+    const plan = await captureLocalPackageOverrides({ packageRoot });
+    expect(plan).not.toBeNull();
+    await writePackageRoot(packageRoot, "2.0.0");
+    const marker = path.join(base, "injected");
+    const preload = `data:text/javascript,${encodeURIComponent(publicationFaultPreload(packageRoot, marker, scenario))}`;
+    const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    vi.mocked(execFile).mockImplementation((file, args, options, callback) => {
+      if (file !== process.execPath || !args?.includes("--eval")) {
+        throw new Error("Unexpected child process in replay publication test");
       }
+      return actual.execFile(file, ["--import", preload, ...args], options, callback);
     });
-  },
+    const result = await applyLocalPackageOverrides({ packageRoot, plan, reapply: true });
+    const injected = await fs.readFile(marker, "utf8");
+    expect(injected).toBe(markerText);
+    expect(result).toMatchObject({ status: "error", applied: 0 });
+    await expect(fs.readFile(indexPath, "utf8")).resolves.toBe(contents);
+    if (scenario === "restore-race") {
+      const entries = await fs.readdir(path.dirname(indexPath));
+      const previous = entries.find((entry) => entry.startsWith(".openclaw-override-previous-"));
+      if (!previous) {
+        throw new Error("Concurrent source was not retained for recovery");
+      }
+      await expect(fs.readFile(path.join(path.dirname(indexPath), previous), "utf8")).resolves.toBe(
+        "concurrent source\n",
+      );
+    }
+  }),
 );
