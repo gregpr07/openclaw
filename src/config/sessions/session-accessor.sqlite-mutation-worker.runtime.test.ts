@@ -73,14 +73,13 @@ vi.mock("./session-accessor.sqlite-reclamation.js", () => ({
 
 it("keeps idle collection after buffered admission replies and cancels it for the next request", async () => {
   const { port1: parentPort, port2: worker } = new MessageChannel();
+  const post = (message: unknown) => parentPort.postMessage(message, []);
   const replies = on(parentPort, "message");
   const databaseOptions = { agentId: "fixture", path: "/fixture/agent.sqlite", env: {} };
   const coordination = {
     actorId: "fixture",
     databasePath: "/fixture/state.sqlite",
-    stateContext: {
-      environment: { OPENCLAW_STATE_DIR: "/fixture" },
-    },
+    stateContext: { environment: { OPENCLAW_STATE_DIR: "/fixture" } },
   };
   const running = runReclamationWorkerPort(worker, databaseOptions);
   let operationId = 0;
@@ -95,31 +94,21 @@ it("keeps idle collection after buffered admission replies and cancels it for th
     return reply;
   };
   const request = () =>
-    parentPort.postMessage(
-      {
-        type: "reclaim",
-        operationId: ++operationId,
-        plan: {
-          kind: "maintenance-finalize",
-          agentId: databaseOptions.agentId,
-          databaseOptions,
-          entries: [],
-          materializedPlans: [],
-        },
-        coordination,
-      } satisfies SqliteReclamationWorkerRequest,
-      [],
-    );
+    post({
+      type: "reclaim",
+      operationId: ++operationId,
+      plan: {
+        kind: "maintenance-finalize",
+        agentId: databaseOptions.agentId,
+        databaseOptions,
+        entries: [],
+        materializedPlans: [],
+      },
+      coordination,
+    } satisfies SqliteReclamationWorkerRequest);
   const admit = (reply: Record<string, unknown>) => {
     pendingAdmission = undefined;
-    parentPort.postMessage(
-      {
-        type: "admission",
-        operationId: reply.operationId,
-        allowed: true,
-      },
-      [],
-    );
+    post({ type: "admission", operationId: reply.operationId, allowed: true });
   };
   try {
     request();
@@ -141,14 +130,11 @@ it("keeps idle collection after buffered admission replies and cancels it for th
     if (pendingAdmission) {
       admit(pendingAdmission);
     }
-    parentPort.postMessage(
-      {
-        type: "close",
-        operationId: ++operationId,
-        coordination,
-      } satisfies SqliteReclamationWorkerCloseRequest,
-      [],
-    );
+    post({
+      type: "close",
+      operationId: ++operationId,
+      coordination,
+    } satisfies SqliteReclamationWorkerCloseRequest);
     try {
       await running;
     } finally {

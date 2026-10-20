@@ -32,11 +32,9 @@ vi.mock("node:sqlite", () => ({
   },
 }));
 vi.mock("../../auto-reply/internal-turn-source.js", () => ({}));
-vi.mock("../../infra/sqlite-number.js", () => ({}));
 vi.mock("../../state/openclaw-agent-db-identity.js", () => ({}));
 vi.mock("../../state/openclaw-agent-db-readonly-scope.js", () => ({}));
 vi.mock("../../state/openclaw-agent-db-readonly.js", () => ({}));
-// mock-isolation: A native write must fail instead of opening the fixture's synthetic store.
 vi.mock("../../state/openclaw-agent-db-transaction.js", () => ({
   runOpenClawAgentWriteWithYieldingAdmission: () => {
     throw new Error("native entry writes are outside this worker environment-capture test");
@@ -49,7 +47,6 @@ vi.mock("../../state/openclaw-agent-db.js", () => ({
   resolveOpenClawAgentSqlitePath: (options: OpenClawAgentDatabaseOptions) =>
     options.path ?? `${options.env?.OPENCLAW_STATE_DIR}/${options.agentId}.sqlite`,
 }));
-// mock-isolation: The capture producer reaches the worker boundary without acquiring real leases.
 vi.mock("../../state/openclaw-agent-execution.js", () => ({
   captureOpenClawAgentDatabaseExecution: () => ({ release: async () => {} }),
   supportsOpenClawAgentDatabaseExecution: () => true,
@@ -60,11 +57,8 @@ vi.mock("../future-version-guard.js", () => ({
 vi.mock("../paths.js", async () => ({
   resolveStateDir: (await import("../state-dir.js")).resolveStateDir,
 }));
-vi.mock("./internal-session-key.js", () => ({}));
 vi.mock("./metadata.js", () => ({}));
 vi.mock("./session-accessor.sqlite-entry-cache.js", () => ({}));
-vi.mock("./session-accessor.sqlite-entry-equality.js", () => ({}));
-// mock-isolation: Synthetic capture paths must not load the native entry store or open SQLite.
 vi.mock("./session-accessor.sqlite-entry-store.js", () => ({
   readSessionEntrySelectionSnapshot: () => [],
   writeSessionEntry: (_database: unknown, _key: string, entry: InternalSessionEntry) => entry,
@@ -78,7 +72,6 @@ vi.mock("./session-accessor.sqlite-initial-entry.js", () => ({}));
 vi.mock("./session-accessor.sqlite-maintenance-kick.js", () => ({
   kickSessionEntryMaintenanceAfterWrite: boundary.maintain,
 }));
-vi.mock("./session-accessor.sqlite-normalize.js", () => ({}));
 vi.mock("./session-accessor.sqlite-scope.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./session-accessor.sqlite-scope.js")>()),
   resolveSqliteTranscriptArchiveDirectory: () => "/synthetic/archive",
@@ -86,17 +79,14 @@ vi.mock("./session-accessor.sqlite-scope.js", async (importOriginal) => ({
 }));
 vi.mock("./session-accessor.sqlite-status.js", () => ({}));
 vi.mock("./session-canonical-key.js", () => ({ assertCanonicalSessionKeyWrite() {} }));
-vi.mock("./session-entry-lineage.js", () => ({}));
 // mock-isolation: Observe captured worker inputs without starting persistence on synthetic paths.
 vi.mock("./session-entry-patch.js", () => ({ patchSessionEntryInWorker: boundary.worker }));
-vi.mock("./session-entry-provenance.js", () => ({}));
 vi.mock("./session-history-eviction.js", () => ({
   kickSessionHistoryDiskBudgetMaintenance: boundary.history,
 }));
 vi.mock("./session-store-path.js", () => ({
   resolveSessionStorePathForScope: () => "/synthetic/store",
 }));
-vi.mock("./types.js", () => ({}));
 
 afterEach(() => {
   boundary.ready = Promise.resolve();

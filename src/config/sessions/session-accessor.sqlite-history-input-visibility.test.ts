@@ -33,33 +33,28 @@ it.each([false, true])(
         sourceTool: "sessions_send",
         sourceRole: "subagent",
       };
-      const report = (content: string, runId: string) => ({
+      const user = (content: string, fields: Record<string, unknown>) => ({
         role: "user",
         content,
-        idempotencyKey: `${runId}:user`,
-        provenance,
+        ...fields,
       });
-      const answer = (content: string, runId: string) => ({
+      const answer = (runId: string) => ({
         role: "assistant",
-        content,
+        content: "reply",
         __openclaw: { runId },
       });
-      const steer = (content: string) => ({
-        role: "user",
-        content,
-        __openclaw: { steerTargetRunId: "steered-run" },
-      });
+      const steering = { __openclaw: { steerTargetRunId: "steered-run" } };
       const messages = [
-        report("Child report with no later human steering", "quiet-run"),
-        answer("Quiet acknowledgement", "quiet-run"),
-        report("Child report followed by steering", "steered-run"),
-        answer("Initial acknowledgement", "steered-run"),
-        { ...steer("Counted hidden steering input"), provenance },
-        answer("Internal checkpoint", "steered-run"),
-        steer("Now answer my question"),
-        answer("Visible answer", "steered-run"),
-        { role: "user", content: "Ordinary question", idempotencyKey: "visible-run:user" },
-        answer("Ordinary answer", "visible-run"),
+        user("report", { idempotencyKey: "quiet-run:user", provenance }),
+        answer("quiet-run"),
+        user("report", { idempotencyKey: "steered-run:user", provenance }),
+        answer("steered-run"),
+        user("Counted hidden steering input", { ...steering, provenance }),
+        answer("steered-run"),
+        user("human steering", steering),
+        answer("steered-run"),
+        user("ordinary input", { idempotencyKey: "visible-run:user" }),
+        answer("visible-run"),
         ...Array.from({ length: 2_000 }, (_, index) => ({
           role: "user",
           content: `Unrelated later input ${index}`,
@@ -69,24 +64,22 @@ it.each([false, true])(
       await replaceSessionEntry(scope, { sessionId: scope.sessionId, updatedAt: 1 });
       const events: Parameters<typeof replaceTranscriptEvents>[1] = [
         { type: "session", version: 3, id: scope.sessionId },
-      ];
-      for (const [index, message] of messages.entries()) {
-        events.push({
+        ...messages.map((message, index) => ({
           type: "message",
           id: `message-${index}`,
           parentId:
             index === 0 ? null : compacted && index === 1 ? "compaction" : `message-${index - 1}`,
           message,
+        })),
+      ];
+      if (compacted) {
+        events.splice(2, 0, {
+          type: "compaction",
+          id: "compaction",
+          parentId: "message-0",
+          firstKeptEntryId: "message-0",
+          summary: "Retained worker report",
         });
-        if (compacted && index === 0) {
-          events.push({
-            type: "compaction",
-            id: "compaction",
-            parentId: "message-0",
-            firstKeptEntryId: "message-0",
-            summary: "Retained worker report",
-          });
-        }
       }
       for (let index = 0; index < 16; index++) {
         events.push({
@@ -102,15 +95,14 @@ it.each([false, true])(
       await waitForSessionTranscriptProjection(scope);
       if (compacted) {
         runOpenClawAgentWriteTransaction(
-          (writeDatabase) => {
+          (writeDatabase) =>
             writeDatabase.db
               .prepare(`UPDATE transcript_events
             SET navigation_type = NULL, navigation_custom_type = NULL,
                 navigation_display = 0, message_role = NULL, navigation_last_type = NULL,
                 navigation_last_custom_type = NULL, navigation_valid = 1
             WHERE session_id = ?`)
-              .run(scope.sessionId);
-          },
+              .run(scope.sessionId),
           { agentId: database.agentId, path: database.path },
         );
       }

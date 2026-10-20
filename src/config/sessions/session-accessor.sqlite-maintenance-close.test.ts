@@ -104,10 +104,7 @@ it.for([
           throw new Error("Automatic maintenance omitted its live owner predicate");
         }
         finalizerEntered.resolve(isCurrent);
-        finalization = (async () => {
-          await releaseFinalizer.promise;
-          return finalize(...args);
-        })();
+        finalization = releaseFinalizer.promise.then(() => finalize(...args));
         return finalization;
       });
       const reclaim = vi.spyOn(reclamationRun, "runSqliteSessionReclamation");
