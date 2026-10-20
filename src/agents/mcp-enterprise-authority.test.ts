@@ -4,7 +4,7 @@ import { createDeferredCore } from "../shared/deferred.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { withMcpEnterpriseBearer } from "./mcp-enterprise-fetch.js";
 import { mcpEnterpriseIdpStoreKey, type McpEnterpriseConfig } from "./mcp-enterprise.js";
-import { clearMcpOAuthStore } from "./mcp-oauth-store.js";
+import { clearMcpOAuthStore, mutateMcpOAuthStore } from "./mcp-oauth-store.js";
 import { seedMcpOAuthStoreForTest, withMcpOAuthTestLease } from "./mcp-oauth.test-support.js";
 
 const resource = "http://127.0.0.1:40101/mcp";
@@ -23,14 +23,20 @@ const config: McpEnterpriseConfig = {
 };
 
 it.each([
-  ["idp", "logout"],
-  ["idp", "replacement"],
-  ["resource-as", "logout"],
-  ["resource-as", "replacement"],
-] as const)(
-  "stops enterprise redemption after %s response during %s",
-  async (blockedAt, change) => {
-    await withOpenClawTestState({ label: `mcp-enterprise-${blockedAt}-${change}` }, async () => {
+  ["idp", "response", "logout"],
+  ["idp", "response", "replacement"],
+  ["resource-as", "response", "logout"],
+  ["resource-as", "response", "replacement"],
+  ["idp", "preparation", "logout"],
+  ["idp", "preparation", "replacement"],
+  ["resource-as", "preparation", "logout"],
+  ["resource-as", "preparation", "replacement"],
+  ["resource-retry", "preparation", "logout"],
+  ["resource-retry", "preparation", "replacement"],
+] as const)("stops enterprise %s at %s during %s", async (blockedAt, pauseAt, change) => {
+  await withOpenClawTestState(
+    { label: `mcp-enterprise-${blockedAt}-${pauseAt}-${change}` },
+    async () => {
       const storeKey = mcpEnterpriseIdpStoreKey(config);
       const seed = (authorizationId: string) =>
         seedMcpOAuthStoreForTest(storeKey, {
@@ -46,13 +52,22 @@ it.each([
       const entered = createDeferredCore<void>();
       const release = createDeferredCore<void>();
       const requests: string[] = [];
-      const blockedUrl = blockedAt === "idp" ? `${idp}/token` : `${authorizationServer}/token`;
+      const blockedUrl =
+        blockedAt === "idp"
+          ? `${idp}/token`
+          : blockedAt === "resource-as"
+            ? `${authorizationServer}/token`
+            : resource;
       let blocked = false;
+      const shouldBlock = (request: Request) =>
+        request.url === blockedUrl &&
+        (blockedAt !== "resource-retry" ||
+          request.headers.get("authorization") === "Bearer fixture-resource-token");
       const fetchFn = async (input: string | URL | Request, init?: RequestInit) => {
         const request = new Request(input, init);
         const url = request.url;
         requests.push(url);
-        if (url === blockedUrl && !blocked) {
+        if (pauseAt === "response" && shouldBlock(request) && !blocked) {
           blocked = true;
           entered.resolve();
           await release.promise;
@@ -108,7 +123,21 @@ it.each([
         resourceUrl: resource,
         config,
         fetchFn,
-        authFetchFn: fetchFn,
+        createAuthenticatedFetches: (assertCurrent) => {
+          const guardedFetch: typeof fetchFn = async (input, init) => {
+            // Model the guarded HTTP transport's asynchronous DNS/preparation
+            // immediately before its synchronous final-effect hook.
+            const request = new Request(input, init);
+            if (pauseAt === "preparation" && shouldBlock(request) && !blocked) {
+              blocked = true;
+              entered.resolve();
+              await release.promise;
+            }
+            assertCurrent();
+            return fetchFn(input, init);
+          };
+          return { resourceFetch: guardedFetch, authFetch: guardedFetch };
+        },
       });
       const first = fetch(resource);
       await awaitGateBeforeSettlement(
@@ -121,20 +150,41 @@ it.each([
           clearMcpOAuthStore({ storeKey, lease, context }),
         );
       } else {
-        seed("replacement-account");
+        await withMcpOAuthTestLease(storeKey, (lease, context) =>
+          mutateMcpOAuthStore(
+            { storeKey, lease, context },
+            {
+              kind: "tokens",
+              tokens: {
+                access_token: "fixture-idp-access",
+                id_token: "fixture-id-token",
+                token_type: "Bearer",
+              },
+              tokenExpiresAt: Date.now() + 300_000,
+              replaceAuthorization: true,
+            },
+          ),
+        );
       }
       release.resolve();
-      await expect(first).rejects.toThrow(/expired|changed/i);
+      await expect(first).rejects.toThrow(/expired|changed|disconnected|replaced/i);
       expect(requests.filter((url) => url === resource)).toHaveLength(1);
       expect(requests.filter((url) => url === `${authorizationServer}/token`)).toHaveLength(
-        blockedAt === "idp" ? 0 : 1,
+        blockedAt === "resource-retry" || (blockedAt === "resource-as" && pauseAt === "response")
+          ? 1
+          : 0,
       );
+      if (pauseAt === "preparation") {
+        expect(requests.filter((url) => url === blockedUrl)).toHaveLength(
+          blockedAt === "resource-retry" ? 1 : 0,
+        );
+      }
 
       if (change === "logout") {
         seed("replacement-account");
       }
       expect((await fetch(resource)).status).toBe(200);
       expect(requests.filter((url) => url === resource)).toHaveLength(3);
-    });
-  },
-);
+    },
+  );
+});

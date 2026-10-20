@@ -1,9 +1,11 @@
 import { auth, extractWWWAuthenticateParams, type FetchLike } from "@modelcontextprotocol/client";
 import {
   createMcpEnterpriseProvider,
+  mcpEnterpriseIdpIdentity,
   readMcpEnterpriseAuthorizationId,
   type McpEnterpriseConfig,
 } from "./mcp-enterprise.js";
+import { captureMcpOAuthAuthorization } from "./mcp-oauth-authorization.js";
 
 async function requestInit(request: Request): Promise<RequestInit> {
   return {
@@ -18,8 +20,13 @@ async function requestInit(request: Request): Promise<RequestInit> {
 export function withMcpEnterpriseBearer(params: {
   resourceUrl: string;
   config: McpEnterpriseConfig;
+  /** Unauthenticated foreign-origin requests still use the guarded transport fetch. */
   fetchFn: FetchLike;
-  authFetchFn: FetchLike;
+  /** Build final-effect guards bound to the credential incarnation for this request. */
+  createAuthenticatedFetches: (assertCurrent: () => void) => {
+    resourceFetch: FetchLike;
+    authFetch: FetchLike;
+  };
 }): FetchLike {
   const resourceOrigin = new URL(params.resourceUrl).origin;
   let cached: { authorizationId: string; token: string; expiresAt: number } | undefined;
@@ -32,6 +39,7 @@ export function withMcpEnterpriseBearer(params: {
   };
   const authorize = async (
     authorizationId: string,
+    authFetchFn: FetchLike,
     challenge?: ReturnType<typeof extractWWWAuthenticateParams>,
   ): Promise<string> => {
     const grantedScopes = new Set(params.config.scope.split(/\s+/).filter(Boolean));
@@ -48,7 +56,7 @@ export function withMcpEnterpriseBearer(params: {
         // must retain the login that began this authorization.
         const authFetch: FetchLike = async (input, init) => {
           await assertAuthorization(authorizationId);
-          const response = await params.authFetchFn(input, init);
+          const response = await authFetchFn(input, init);
           try {
             await assertAuthorization(authorizationId);
           } catch (error) {
@@ -95,30 +103,42 @@ export function withMcpEnterpriseBearer(params: {
     if (new URL(request.url).origin !== resourceOrigin) {
       return params.fetchFn(request.url, await requestInit(request));
     }
-    const authorizationId = await readMcpEnterpriseAuthorizationId(params.config);
-    if (cached?.authorizationId !== authorizationId) {
+    const authority = await captureMcpOAuthAuthorization({
+      identity: mcpEnterpriseIdpIdentity(params.config),
+      assertCurrent() {},
+    });
+    try {
+      const { resourceFetch, authFetch } = params.createAuthenticatedFetches(
+        authority.assertCurrent,
+      );
+      authority.assertCurrent();
+      const authorizationId = authority.authorizationId;
+      if (cached?.authorizationId !== authorizationId) {
+        cached = undefined;
+      }
+      const original = await requestInit(request);
+      const token = cached && cached.expiresAt > Date.now() ? cached.token : undefined;
+      const firstHeaders = new Headers(original.headers);
+      if (token) {
+        firstHeaders.set("authorization", `Bearer ${token}`);
+      }
+      const response = await resourceFetch(request.url, { ...original, headers: firstHeaders });
+      if (response.status !== 401 && response.status !== 403) {
+        return response;
+      }
+      const challenge = extractWWWAuthenticateParams(response);
+      if (response.status === 403 && challenge.error !== "insufficient_scope") {
+        return response;
+      }
+      await response.body?.cancel().catch(() => undefined);
       cached = undefined;
+      const freshToken = await authorize(authorizationId, authFetch, challenge);
+      await assertAuthorization(authorizationId);
+      const retryHeaders = new Headers(original.headers);
+      retryHeaders.set("authorization", `Bearer ${freshToken}`);
+      return resourceFetch(request.url, { ...original, headers: retryHeaders });
+    } finally {
+      authority.dispose();
     }
-    const original = await requestInit(request);
-    const token = cached && cached.expiresAt > Date.now() ? cached.token : undefined;
-    const firstHeaders = new Headers(original.headers);
-    if (token) {
-      firstHeaders.set("authorization", `Bearer ${token}`);
-    }
-    const response = await params.fetchFn(request.url, { ...original, headers: firstHeaders });
-    if (response.status !== 401 && response.status !== 403) {
-      return response;
-    }
-    const challenge = extractWWWAuthenticateParams(response);
-    if (response.status === 403 && challenge.error !== "insufficient_scope") {
-      return response;
-    }
-    await response.body?.cancel().catch(() => undefined);
-    cached = undefined;
-    const freshToken = await authorize(authorizationId, challenge);
-    await assertAuthorization(authorizationId);
-    const retryHeaders = new Headers(original.headers);
-    retryHeaders.set("authorization", `Bearer ${freshToken}`);
-    return params.fetchFn(request.url, { ...original, headers: retryHeaders });
   };
 }

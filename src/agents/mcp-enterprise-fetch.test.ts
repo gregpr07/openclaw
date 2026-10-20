@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { withMcpEnterpriseBearer } from "./mcp-enterprise-fetch.js";
 
 const oauthStore = vi.hoisted(() => ({ authorizationId: "first-login" as string | undefined }));
@@ -16,11 +16,33 @@ vi.mock("./mcp-oauth-store.js", () => ({
   })),
   mutateMcpOAuthStore: vi.fn(),
 }));
+vi.mock("./mcp-oauth-authorization.js", () => ({
+  captureMcpOAuthAuthorization: vi.fn(async () => {
+    const authorizationId = oauthStore.authorizationId;
+    if (!authorizationId) {
+      throw new Error("Enterprise SSO has expired. Sign in again.");
+    }
+    return {
+      authorizationId,
+      assertCurrent() {
+        if (oauthStore.authorizationId !== authorizationId) {
+          throw new Error("Enterprise SSO changed.");
+        }
+      },
+      revalidate: async () => {},
+      dispose() {},
+    };
+  }),
+}));
 
 const resource = "http://127.0.0.1:40101/mcp";
 const authorizationServer = "http://127.0.0.1:40102";
 const idp = "http://127.0.0.1:40103";
 const metadata = `${resource}/metadata`;
+
+beforeEach(() => {
+  oauthStore.authorizationId = "first-login";
+});
 
 function fixture(
   expectedIssuer = authorizationServer,
@@ -113,7 +135,13 @@ function fixture(
       resourceUrl: resource,
       config,
       fetchFn,
-      authFetchFn: fetchFn,
+      createAuthenticatedFetches: (assertCurrent) => {
+        const guardedFetch = async (input: string | URL | Request, init?: RequestInit) => {
+          assertCurrent();
+          return fetchFn(input, init);
+        };
+        return { resourceFetch: guardedFetch, authFetch: guardedFetch };
+      },
     }),
   };
 }

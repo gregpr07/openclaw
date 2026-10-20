@@ -191,15 +191,34 @@ export function resolveMcpTransport(
             resourceUrl: resolved.url,
             config: resolved.enterprise,
             fetchFn: resourceFetch,
-            authFetchFn: buildMcpOAuthHttpFetch({
-              sslVerify: resolved.sslVerify,
-              clientCert: resolved.clientCert,
-              clientKey: resolved.clientKey,
-              resourceUrl: resolved.url,
-              timeoutMs: resolved.requestTimeoutMs,
-              beforeRequest: options?.beforeRequest,
-              headers,
-            }),
+            createAuthenticatedFetches: (assertCurrent) => {
+              const beforeRequest = () => {
+                options?.beforeRequest?.();
+                assertCurrent();
+              };
+              const guardedResourceFetch = withSameOriginMcpHttpHeaders({
+                fetchFn: buildMcpHttpFetch({
+                  sslVerify: resolved.sslVerify,
+                  clientCert: resolved.clientCert,
+                  clientKey: resolved.clientKey,
+                  resourceUrl: resolved.url,
+                  requestTimeoutMs: resolved.requestTimeoutMs,
+                  beforeRequest,
+                }),
+                headers,
+                resourceUrl: resolved.url,
+              });
+              const authFetch = buildMcpOAuthHttpFetch({
+                sslVerify: resolved.sslVerify,
+                clientCert: resolved.clientCert,
+                clientKey: resolved.clientKey,
+                resourceUrl: resolved.url,
+                timeoutMs: resolved.requestTimeoutMs,
+                beforeRequest,
+                headers,
+              });
+              return { resourceFetch: guardedResourceFetch, authFetch };
+            },
           })
         : baseFetch;
   if (resolved.transportType === "streamable-http") {
