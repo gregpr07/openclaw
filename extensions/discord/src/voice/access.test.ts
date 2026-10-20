@@ -1,4 +1,3 @@
-// Discord tests cover access plugin behavior.
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { describe, expect, it } from "vitest";
 import { createDiscordLivePolicyReader } from "../monitor/live-policy.js";
@@ -35,6 +34,12 @@ function authorize(overrides: Partial<Parameters<typeof authorizeDiscordVoiceIng
     ...overrides,
   });
 }
+function expectDenied(
+  access: Awaited<ReturnType<typeof authorize>>,
+  message = "You are not authorized to use this command.",
+) {
+  expect(access).toEqual({ ok: false, message });
+}
 
 describe("authorizeDiscordVoiceIngress", () => {
   it("applies published guild policy over retained voice startup settings", async () => {
@@ -54,11 +59,10 @@ describe("authorizeDiscordVoiceIngress", () => {
       accountId: "default",
       guildId: "111",
       channelId: "222",
-      channelSlug: "",
-      memberRoleIds: [],
       sender: { id: "333" },
     };
-    expect((await authorizeDiscordVoiceIngress(params)).ok).toBe(false);
+    const check = () => authorize(params);
+    expect((await check()).ok).toBe(false);
     cfg = {
       channels: {
         discord: {
@@ -67,16 +71,13 @@ describe("authorizeDiscordVoiceIngress", () => {
         },
       },
     };
-    expect((await authorizeDiscordVoiceIngress(params)).ok).toBe(true);
+    expect((await check()).ok).toBe(true);
     cfg = { channels: { discord: { groupPolicy: "disabled", guilds: {} } } };
-    expect((await authorizeDiscordVoiceIngress(params)).ok).toBe(false);
+    expect((await check()).ok).toBe(false);
   });
 
   it("blocks speakers outside the configured channel user allowlist", async () => {
-    expect(await authorize({ sender: { id: "u-guest", name: "guest" } })).toEqual({
-      ok: false,
-      message: "You are not authorized to use this command.",
-    });
+    expectDenied(await authorize({ sender: { id: "u-guest", name: "guest" } }));
   });
 
   it.each([
@@ -108,10 +109,7 @@ describe("authorizeDiscordVoiceIngress", () => {
       },
       channelId: "",
     });
-    expect(access).toEqual({
-      ok: false,
-      message: "This channel is not allowlisted for voice commands.",
-    });
+    expectDenied(access, "This channel is not allowlisted for voice commands.");
   });
 
   it("ignores dangerous name matching for voice ingress", async () => {
@@ -122,10 +120,7 @@ describe("authorizeDiscordVoiceIngress", () => {
       },
       sender: { id: "u-guest", name: "owner" },
     });
-    expect(access).toEqual({
-      ok: false,
-      message: "You are not authorized to use this command.",
-    });
+    expectDenied(access);
   });
 
   it("uses resolved account command allowFrom over merged Discord config", async () => {

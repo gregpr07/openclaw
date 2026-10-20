@@ -28,17 +28,17 @@ export function createRealtimePlaybackFixture(
   options: { outputAudioMode?: "response" | "continuous"; bargeIn?: boolean } = {},
 ) {
   const voiceSdk = loadDiscordVoiceSdk();
+  const noop = () => {};
+  const connectionOptions = {
+    guildId: "guild",
+    channelId: "voice",
+    group: "playback-integration",
+    selfDeaf: true,
+    selfMute: false,
+  };
+  const adapterCreator = () => ({ sendPayload: () => true, destroy: noop });
   // A signalling-only connection supplies the session shape without opening Discord sockets.
-  const connection = new voiceSdk.VoiceConnection(
-    {
-      guildId: "guild",
-      channelId: "voice",
-      group: "playback-integration",
-      selfDeaf: true,
-      selfMute: false,
-    },
-    { adapterCreator: () => ({ sendPayload: () => true, destroy: () => {} }) },
-  );
+  const connection = new voiceSdk.VoiceConnection(connectionOptions, { adapterCreator });
   const sdkOverride = vi.spyOn(sdkRuntime, "loadDiscordVoiceSdk").mockReturnValue({
     ...voiceSdk,
     createAudioPlayer: () =>
@@ -50,17 +50,13 @@ export function createRealtimePlaybackFixture(
   });
   const audio = new DiscordAudioTransport(
     {
-      guildId: "guild",
-      channelId: "voice",
-      group: "playback-integration",
-      selfDeaf: true,
-      selfMute: false,
+      ...connectionOptions,
       connectTimeoutMs: 30_000,
       reconnectGraceMs: 15_000,
       captureSilenceGraceMs: 2_000,
       realtime: true,
     },
-    () => ({ sendPayload: () => true, destroy: () => {} }),
+    adapterCreator,
   );
   const player = getDiscordAudioTestWorker(audio)["player"];
   sdkOverride.mockRestore();
@@ -132,7 +128,7 @@ export function createRealtimePlaybackFixture(
       entry,
       player: roomPlayer,
       harness,
-      markProviderGenerationObserved: () => {},
+      markProviderGenerationObserved: noop,
       onTerminalError,
       providerId: () => "openai",
       realtimeConfig: () =>
@@ -151,12 +147,12 @@ export function createRealtimePlaybackFixture(
           return {
             outputAudioMode: options.outputAudioMode,
             connect: async () => {},
-            close: () => {},
-            sendAudio: () => {},
+            close: noop,
+            sendAudio: noop,
             sendUserMessage,
-            setMediaTimestamp: () => {},
+            setMediaTimestamp: noop,
             acknowledgeMark,
-            submitToolResult: () => {},
+            submitToolResult: noop,
             isConnected: () => true,
             ...(interruption === "unsupported"
               ? {}

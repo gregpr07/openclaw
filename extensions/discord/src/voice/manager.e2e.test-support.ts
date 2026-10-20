@@ -50,12 +50,7 @@ export function mockCall(source: MockCallSource, index: number, label: string) {
 }
 
 export function lastMockCall(source: MockCallSource, label: string) {
-  const calls = Array.from(source.mock.calls);
-  const call = calls[calls.length - 1];
-  if (!call) {
-    throw new Error(`expected mock call: ${label}`);
-  }
-  return call;
+  return mockCall(source, source.mock.calls.length - 1, label);
 }
 
 export function createRealtimeBridgeTestHelpers(
@@ -90,6 +85,12 @@ export function createRealtimeBridgeTestHelpers(
 }
 
 export function createDiscordVoiceTestHelpers(updateVoiceStateMock: ReturnType<typeof vi.fn>) {
+  const voicePlugin = () => ({
+    getGatewayAdapterCreator: vi.fn(() =>
+      vi.fn(() => ({ sendPayload: vi.fn(() => true), destroy: vi.fn() })),
+    ),
+    getGateway: vi.fn(() => ({ updateVoiceState: updateVoiceStateMock })),
+  });
   const createVoiceChannelInfo = (channelId: string, guildId = "g1", guildName = "Guild One") => ({
     id: channelId,
     guildId,
@@ -115,12 +116,7 @@ export function createDiscordVoiceTestHelpers(updateVoiceStateMock: ReturnType<t
                 voiceStateCache.takeTransition(state),
             }
           : id === "voice"
-            ? {
-                getGatewayAdapterCreator: vi.fn(() =>
-                  vi.fn(() => ({ sendPayload: vi.fn(() => true), destroy: vi.fn() })),
-                ),
-                getGateway: vi.fn(() => ({ updateVoiceState: updateVoiceStateMock })),
-              }
+            ? voicePlugin()
             : undefined,
       ),
       fetchMember: vi.fn() as Mock,
@@ -151,12 +147,7 @@ export function createDiscordVoiceTestHelpers(updateVoiceStateMock: ReturnType<t
       if (id === "gateway") {
         return { listVoiceChannelStates: vi.fn(listVoiceChannelStates) };
       }
-      return {
-        getGatewayAdapterCreator: vi.fn(() =>
-          vi.fn(() => ({ sendPayload: vi.fn(() => true), destroy: vi.fn() })),
-        ),
-        getGateway: vi.fn(() => ({ updateVoiceState: updateVoiceStateMock })),
-      };
+      return voicePlugin();
     });
   };
 

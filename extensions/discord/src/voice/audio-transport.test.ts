@@ -54,6 +54,29 @@ function fixture(sendPayload = vi.fn(() => true)) {
   owned.push({ audio, worker });
   return { audio, worker, destroy, sendPayload };
 }
+async function readyFixture(sendPayload?: Parameters<typeof fixture>[0]) {
+  const result = fixture(sendPayload);
+  result.worker.message({ type: "ready" });
+  await result.audio.ready;
+  return result;
+}
+function captureFrame(
+  id: number,
+  pcm: number[],
+  packet: number[],
+  recordingEpoch: bigint,
+): DiscordAudioEvent {
+  return {
+    type: "capture-frame",
+    id,
+    frame: {
+      pcm: new Uint8Array(pcm),
+      packet: new Uint8Array(packet),
+      receivedAt: 1,
+      recordingEpoch,
+    },
+  };
+}
 
 describe("Discord audio worker control boundary", () => {
   it("rejects startup and retires owned adapter state when the worker fails", async () => {
@@ -81,9 +104,7 @@ describe("Discord audio worker control boundary", () => {
   });
 
   it("reports definite main-gateway send failure back to the media owner", async () => {
-    const { audio, worker } = fixture(vi.fn(() => false));
-    worker.message({ type: "ready" });
-    await audio.ready;
+    const { worker } = await readyFixture(vi.fn(() => false));
     worker.message({
       type: "gateway-send",
       payload: {
@@ -96,11 +117,9 @@ describe("Discord audio worker control boundary", () => {
 
   it("waits for physical termination when the worker exceeds its stop grace", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    const { audio, worker, destroy } = fixture();
+    const { audio, worker, destroy } = await readyFixture();
     const exited = createDeferred<number>();
     const terminate = vi.spyOn(worker, "terminate").mockReturnValue(exited.promise);
-    worker.message({ type: "ready" });
-    await audio.ready;
     let settled = false;
     const stopping = audio.stop().then(() => {
       settled = true;
@@ -122,9 +141,7 @@ describe("Discord audio worker control boundary", () => {
   });
 
   it("settles captures on worker loss and ignores late frames after terminal teardown", async () => {
-    const { audio, worker } = fixture();
-    worker.message({ type: "ready" });
-    await audio.ready;
+    const { audio, worker } = await readyFixture();
     const capture = audio.subscribe("speaker", new SharedArrayBuffer(8));
     const errors = vi.fn();
     capture.on("error", errors);
@@ -136,24 +153,13 @@ describe("Discord audio worker control boundary", () => {
     });
     expect(capture.destroyed).toBe(true);
     expect(errors).toHaveBeenCalledOnce();
-    worker.message({
-      type: "capture-frame",
-      id: capture.id,
-      frame: {
-        pcm: new Uint8Array(4),
-        packet: new Uint8Array(1),
-        receivedAt: 1,
-        recordingEpoch: 0n,
-      },
-    });
+    worker.message(captureFrame(capture.id, [0, 0, 0, 0], [0], 0n));
     expect(capture.readableLength).toBe(0);
     expect(worker.sent.filter((command) => command.type === "stop")).toHaveLength(1);
   });
 
   it("releases physical shutdown before draining admitted recording frames without an error", async () => {
-    const { audio, worker, destroy } = fixture();
-    worker.message({ type: "ready" });
-    await audio.ready;
+    const { audio, worker, destroy } = await readyFixture();
     const capture = audio.subscribe("speaker", new SharedArrayBuffer(8));
     const errors = vi.fn();
     capture.on("error", errors);
@@ -169,16 +175,7 @@ describe("Discord audio worker control boundary", () => {
     expect(destroy).toHaveBeenCalledOnce();
     expect(capture.destroyed).toBe(false);
     worker.message({ type: "capture-finalized", id: capture.id });
-    worker.message({
-      type: "capture-frame",
-      id: capture.id,
-      frame: {
-        pcm: new Uint8Array([7, 0]),
-        packet: new Uint8Array([1]),
-        receivedAt: 1,
-        recordingEpoch: 1n,
-      },
-    });
+    worker.message(captureFrame(capture.id, [7, 0], [1], 1n));
     worker.message({ type: "capture-end", id: capture.id });
     worker.message({ type: "stopped" });
     worker.emit("exit", 0);
