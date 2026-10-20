@@ -77,11 +77,7 @@ export function useSessionMessageCutFixtures() {
       cliSessionBindings: { "claude-cli": { sessionId: "claude-conversation" } },
       cliSessionIds: { "claude-cli": "claude-conversation" },
       compactionCount: 2,
-      transcriptByteCompactionLatch: {
-        activeBytes: 20_000,
-        sessionId,
-        maxBytes: 10_000,
-      },
+      transcriptByteCompactionLatch: { activeBytes: 20_000, sessionId, maxBytes: 10_000 },
       contextTokens: 100_000,
       contextTokensSource: "runtime",
       createdVia: "operator",
@@ -101,28 +97,22 @@ export function useSessionMessageCutFixtures() {
       updatedAt: Date.now(),
     };
     await upsertSessionEntryCore(scope, entry);
-    for (const event of [
-      { type: "session", id: sessionId, version: 3, timestamp: "2026-07-18T00:00:00.000Z" },
-      {
-        type: "message",
-        id: "user-1",
-        parentId: null,
-        timestamp: "2026-07-18T00:00:01.000Z",
-        message: { role: "user", content: "first prompt" },
-      },
-      {
-        type: "message",
-        id: "assistant-1",
-        parentId: "user-1",
-        timestamp: "2026-07-18T00:00:02.000Z",
-        message: { role: "assistant", content: "first answer" },
-      },
-      {
-        type: "message",
-        id: "user-2",
-        parentId: "assistant-1",
-        timestamp: "2026-07-18T00:00:03.000Z",
-        message: {
+    const startedAt = Date.parse("2026-07-18T00:00:00.000Z");
+    await appendTranscriptEvent(scope, {
+      type: "session",
+      id: sessionId,
+      version: 3,
+      timestamp: new Date(startedAt).toISOString(),
+    });
+    const messages: Array<
+      [string, string | null, Parameters<typeof appendTranscriptMessage>[1]["message"]]
+    > = [
+      ["user-1", null, { role: "user", content: "first prompt" }],
+      ["assistant-1", "user-1", { role: "assistant", content: "first answer" }],
+      [
+        "user-2",
+        "assistant-1",
+        {
           role: "user",
           content: [
             { type: "text", text: "second prompt" },
@@ -135,40 +125,25 @@ export function useSessionMessageCutFixtures() {
             ],
           },
         },
-      },
-      {
-        type: "message",
-        id: "assistant-2",
-        parentId: "user-2",
-        timestamp: "2026-07-18T00:00:04.000Z",
-        message: { role: "assistant", content: "second answer" },
-      },
-      {
-        type: "message",
-        id: "off-path-user",
-        parentId: "user-1",
-        timestamp: "2026-07-18T00:00:05.000Z",
-        message: { role: "user", content: "inactive prompt" },
-      },
-      {
-        type: "leaf",
-        id: "active-leaf",
-        parentId: "off-path-user",
-        timestamp: "2026-07-18T00:00:06.000Z",
-        targetId: options.activeLeafTarget ?? "assistant-2",
-      },
-    ]) {
-      if (event.type === "message") {
-        await appendTranscriptMessage(scope, {
-          eventId: event.id,
-          message: event.message,
-          now: Date.parse(event.timestamp),
-          parentId: event.parentId,
-        });
-      } else {
-        await appendTranscriptEvent(scope, event);
-      }
+      ],
+      ["assistant-2", "user-2", { role: "assistant", content: "second answer" }],
+      ["off-path-user", "user-1", { role: "user", content: "inactive prompt" }],
+    ];
+    for (const [index, [eventId, parentId, message]] of messages.entries()) {
+      await appendTranscriptMessage(scope, {
+        eventId,
+        parentId,
+        message,
+        now: startedAt + (index + 1) * 1_000,
+      });
     }
+    await appendTranscriptEvent(scope, {
+      type: "leaf",
+      id: "active-leaf",
+      parentId: "off-path-user",
+      timestamp: new Date(startedAt + 6_000).toISOString(),
+      targetId: options.activeLeafTarget ?? "assistant-2",
+    });
     // Leaf selection schedules projection writes; read/close tests need setup ownership settled.
     await waitForSessionTranscriptIndexReconcilesInStateDir(stateDir);
     return { env, scope };

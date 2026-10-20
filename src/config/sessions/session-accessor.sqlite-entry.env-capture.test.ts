@@ -104,78 +104,61 @@ afterEach(() => {
 });
 
 it.each([
-  {
-    platform: "win32",
-    key: "OpenClaw_State_Dir",
-    readonlyKey: "OpenClaw_Config_Readonly",
-    input: "plain",
-  },
-  {
-    platform: "win32",
-    key: "OpenClaw_State_Dir",
-    readonlyKey: "OpenClaw_Config_Readonly",
-    input: "precloned",
-  },
-  {
-    platform: "linux",
-    key: "OPENCLAW_STATE_DIR",
-    readonlyKey: "OPENCLAW_CONFIG_READONLY",
-    input: "plain",
-  },
-  {
-    platform: "linux",
-    key: "OpenClaw_State_Dir",
-    readonlyKey: "OpenClaw_Config_Readonly",
-    input: "plain",
-  },
-] as const)("retains $input session-write environment on $platform with $key", async (fixture) => {
-  await withMockedPlatform(fixture.platform, async () => {
-    const root = path.resolve("/synthetic/captured");
-    const home = path.resolve("/synthetic/home");
-    const rawEnv = {
-      [fixture.key]: root,
-      [fixture.readonlyKey]: "1",
-      HOME: home,
-      OPENCLAW_TEST_FAST: "1",
-    };
-    const env = fixture.input === "precloned" ? cloneEnvWithPlatformSemantics(rawEnv) : rawEnv;
-    const scope = { agentId: "main", sessionKey: "agent:main:capture", env };
-    const caseSensitiveMiss = fixture.platform === "linux" && fixture.key !== "OPENCLAW_STATE_DIR";
-    const expectedRoot = caseSensitiveMiss ? path.join(home, ".openclaw") : root;
-    const expectedReadonly = caseSensitiveMiss ? undefined : "1";
-    const ready = createDeferredCore();
-    boundary.ready = ready.promise;
-    const update = vi.fn((entry: InternalSessionEntry) => ({ ...entry, label: "captured" }));
-    const write = patchSessionEntryCore(scope, update, {
-      fallbackEntry: { sessionId: "session", updatedAt: 1 },
-      replaceEntry: true,
+  ["win32", "plain", "OpenClaw_State_Dir", "OpenClaw_Config_Readonly"],
+  ["win32", "precloned", "OpenClaw_State_Dir", "OpenClaw_Config_Readonly"],
+  ["linux", "plain", "OPENCLAW_STATE_DIR", "OPENCLAW_CONFIG_READONLY"],
+  ["linux", "plain", "OpenClaw_State_Dir", "OpenClaw_Config_Readonly"],
+] as const)(
+  "retains %s %s session-write environment with %s",
+  async (platform, input, key, readonlyKey) => {
+    await withMockedPlatform(platform, async () => {
+      const root = path.resolve("/synthetic/captured");
+      const home = path.resolve("/synthetic/home");
+      const rawEnv = {
+        [key]: root,
+        [readonlyKey]: "1",
+        HOME: home,
+        OPENCLAW_TEST_FAST: "1",
+      };
+      const env = input === "precloned" ? cloneEnvWithPlatformSemantics(rawEnv) : rawEnv;
+      const scope = { agentId: "main", sessionKey: "agent:main:capture", env };
+      const caseSensitiveMiss = platform === "linux" && key !== "OPENCLAW_STATE_DIR";
+      const expectedRoot = caseSensitiveMiss ? path.join(home, ".openclaw") : root;
+      const expectedReadonly = caseSensitiveMiss ? undefined : "1";
+      const ready = createDeferredCore();
+      boundary.ready = ready.promise;
+      const update = vi.fn((entry: InternalSessionEntry) => ({ ...entry, label: "captured" }));
+      const write = patchSessionEntryCore(scope, update, {
+        fallbackEntry: { sessionId: "session", updatedAt: 1 },
+        replaceEntry: true,
+      });
+      try {
+        const queued = boundary.queue.mock.calls[0]?.[0];
+        expect(queued?.path).toBe(`${expectedRoot}/main.sqlite`);
+        expect(queued?.env?.OPENCLAW_STATE_DIR).toBe(expectedRoot);
+        expect(queued?.env?.OPENCLAW_CONFIG_READONLY).toBe(expectedReadonly);
+        expect(env[key]).toBe(root);
+        expect(Object.keys(env)).toEqual(Object.keys(rawEnv));
+        expect(update).not.toHaveBeenCalled();
+        expect(boundary.worker).not.toHaveBeenCalled();
+        env[key] = "/synthetic/changed";
+        env[readonlyKey] = "0";
+        scope.env = { OPENCLAW_STATE_DIR: "/synthetic/replaced" };
+        ready.resolve();
+        await expect(write).resolves.toMatchObject({ sessionId: "session", label: "captured" });
+        expect(boundary.worker).toHaveBeenCalledOnce();
+        const committed = boundary.worker.mock.calls[0]?.[0].database;
+        expect(committed?.path).toBe(`${expectedRoot}/main.sqlite`);
+        expect(committed?.env?.OPENCLAW_STATE_DIR).toBe(expectedRoot);
+        expect(committed?.env?.OPENCLAW_CONFIG_READONLY).toBe(expectedReadonly);
+        expect(committed?.env).toBe(queued?.env);
+        expect(boundary.maintain.mock.calls[0]?.[0].scope.env).toBe(queued?.env);
+        expect(boundary.history.mock.calls[0]?.[0].env).toBe(queued?.env);
+        expect(update).toHaveBeenCalledOnce();
+      } finally {
+        ready.resolve();
+        await write.catch(() => undefined);
+      }
     });
-    try {
-      const queued = boundary.queue.mock.calls[0]?.[0];
-      expect(queued?.path).toBe(`${expectedRoot}/main.sqlite`);
-      expect(queued?.env?.OPENCLAW_STATE_DIR).toBe(expectedRoot);
-      expect(queued?.env?.OPENCLAW_CONFIG_READONLY).toBe(expectedReadonly);
-      expect(env[fixture.key]).toBe(root);
-      expect(Object.keys(env)).toEqual(Object.keys(rawEnv));
-      expect(update).not.toHaveBeenCalled();
-      expect(boundary.worker).not.toHaveBeenCalled();
-      env[fixture.key] = "/synthetic/changed";
-      env[fixture.readonlyKey] = "0";
-      scope.env = { OPENCLAW_STATE_DIR: "/synthetic/replaced" };
-      ready.resolve();
-      await expect(write).resolves.toMatchObject({ sessionId: "session", label: "captured" });
-      expect(boundary.worker).toHaveBeenCalledOnce();
-      const committed = boundary.worker.mock.calls[0]?.[0].database;
-      expect(committed?.path).toBe(`${expectedRoot}/main.sqlite`);
-      expect(committed?.env?.OPENCLAW_STATE_DIR).toBe(expectedRoot);
-      expect(committed?.env?.OPENCLAW_CONFIG_READONLY).toBe(expectedReadonly);
-      expect(committed?.env).toBe(queued?.env);
-      expect(boundary.maintain.mock.calls[0]?.[0].scope.env).toBe(queued?.env);
-      expect(boundary.history.mock.calls[0]?.[0].env).toBe(queued?.env);
-      expect(update).toHaveBeenCalledOnce();
-    } finally {
-      ready.resolve();
-      await write.catch(() => undefined);
-    }
-  });
-});
+  },
+);

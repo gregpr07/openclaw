@@ -33,40 +33,33 @@ it.each([false, true])(
         sourceTool: "sessions_send",
         sourceRole: "subagent",
       };
+      const report = (content: string, runId: string) => ({
+        role: "user",
+        content,
+        idempotencyKey: `${runId}:user`,
+        provenance,
+      });
+      const answer = (content: string, runId: string) => ({
+        role: "assistant",
+        content,
+        __openclaw: { runId },
+      });
+      const steer = (content: string) => ({
+        role: "user",
+        content,
+        __openclaw: { steerTargetRunId: "steered-run" },
+      });
       const messages = [
-        {
-          role: "user",
-          content: "Child report with no later human steering",
-          idempotencyKey: "quiet-run:user",
-          provenance,
-        },
-        { role: "assistant", content: "Quiet acknowledgement", __openclaw: { runId: "quiet-run" } },
-        {
-          role: "user",
-          content: "Child report followed by steering",
-          idempotencyKey: "steered-run:user",
-          provenance,
-        },
-        {
-          role: "assistant",
-          content: "Initial acknowledgement",
-          __openclaw: { runId: "steered-run" },
-        },
-        {
-          role: "user",
-          content: "Counted hidden steering input",
-          provenance,
-          __openclaw: { steerTargetRunId: "steered-run" },
-        },
-        { role: "assistant", content: "Internal checkpoint", __openclaw: { runId: "steered-run" } },
-        {
-          role: "user",
-          content: "Now answer my question",
-          __openclaw: { steerTargetRunId: "steered-run" },
-        },
-        { role: "assistant", content: "Visible answer", __openclaw: { runId: "steered-run" } },
+        report("Child report with no later human steering", "quiet-run"),
+        answer("Quiet acknowledgement", "quiet-run"),
+        report("Child report followed by steering", "steered-run"),
+        answer("Initial acknowledgement", "steered-run"),
+        { ...steer("Counted hidden steering input"), provenance },
+        answer("Internal checkpoint", "steered-run"),
+        steer("Now answer my question"),
+        answer("Visible answer", "steered-run"),
         { role: "user", content: "Ordinary question", idempotencyKey: "visible-run:user" },
-        { role: "assistant", content: "Ordinary answer", __openclaw: { runId: "visible-run" } },
+        answer("Ordinary answer", "visible-run"),
         ...Array.from({ length: 2_000 }, (_, index) => ({
           role: "user",
           content: `Unrelated later input ${index}`,
