@@ -51,44 +51,29 @@ case "$command" in
     container="\${1:?missing container}"
     shift
     command_line="$*"
-    if [[ "$command_line" == "test -f /tmp/openclaw-proof-ready" ]]; then
-      exit 0
-    fi
-    if [[ "$command_line" == "cat /tmp/openclaw-package-root" ]]; then
-      printf "/fake/pnpm/openclaw"
-      exit 0
-    fi
-    if [[ "$command_line" == "cat /tmp/openclaw-version" ]]; then
-      if [[ "$container" == *-npm-proof-* ]]; then
-        printf "%s" "$FAKE_NPM_CLI"
-      elif [[ "$container" == *-pnpm-proof-* ]]; then
-        printf "%s" "$FAKE_PNPM_CLI"
-      else
-        exit 2
-      fi
-      exit 0
-    fi
-    if [[ "$command_line" == *"/tmp/openclaw-bun-proof.json"* ]]; then
-      case "$command_line" in
-        *installedPackageRoot*) printf "/fake/bun/openclaw" ;;
-        *installedPackageVersion*) printf "%s" "$FAKE_BUN_MANIFEST" ;;
-        *openclawVersion*) printf "%s" "$FAKE_BUN_CLI" ;;
-        *openclawPath*) printf "/fake/bun/bin/openclaw" ;;
+    manager_value() {
+      case "$container" in
+        *-npm-proof-*) local name="FAKE_NPM_$1" ;;
+        *-pnpm-proof-*) local name="FAKE_PNPM_$1" ;;
         *) exit 2 ;;
       esac
-      exit 0
-    fi
-    if [[ "$command_line" == *"package.json"* ]]; then
-      if [[ "$container" == *-npm-proof-* ]]; then
-        printf "%s" "$FAKE_NPM_MANIFEST"
-      elif [[ "$container" == *-pnpm-proof-* ]]; then
-        printf "%s" "$FAKE_PNPM_MANIFEST"
-      else
-        exit 2
-      fi
-      exit 0
-    fi
-    exit 2
+      printf '%s' "\${!name}"
+    }
+    case "$command_line" in
+      'test -f /tmp/openclaw-proof-ready') ;;
+      'cat /tmp/openclaw-package-root') printf "/fake/pnpm/openclaw" ;;
+      'cat /tmp/openclaw-version') manager_value CLI ;;
+      *'/tmp/openclaw-bun-proof.json'*)
+        case "$command_line" in
+          *installedPackageRoot*) printf "/fake/bun/openclaw" ;;
+          *installedPackageVersion*) printf "%s" "$FAKE_BUN_MANIFEST" ;;
+          *openclawVersion*) printf "%s" "$FAKE_BUN_CLI" ;;
+          *openclawPath*) printf "/fake/bun/bin/openclaw" ;;
+          *) exit 2 ;;
+        esac ;;
+      *package.json*) manager_value MANIFEST ;;
+      *) exit 2 ;;
+    esac
     ;;
   inspect)
     reference="\${!#}"
