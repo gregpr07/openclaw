@@ -11,9 +11,7 @@ vi.mock("../../agents/github-host-runtime.js", async (importOriginal) => ({
 
 const releases: Array<() => void> = [];
 afterEach(() => {
-  for (const release of releases.splice(0)) {
-    release();
-  }
+  releases.splice(0).forEach((release) => release());
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
 });
@@ -50,24 +48,21 @@ function expectForbidden(respond: Awaited<ReturnType<typeof rpc>>) {
   );
 }
 
-function brokerClient(overrides: Partial<GatewayClient> = {}): GatewayClient {
-  return {
-    connId: "broker-connection",
-    connect: {
-      minProtocol: 1,
-      maxProtocol: 1,
-      client: { id: "cli", version: "test", platform: "test", mode: "cli" },
-      role: "operator",
-      scopes: ["operator.admin"],
-    },
-    internal: {
-      isLocalClient: true,
-      authenticatedOperator: true,
-      operatorRoleActor: { kind: "system" },
-    },
-    ...overrides,
-  };
-}
+const broker: GatewayClient = {
+  connId: "broker-connection",
+  connect: {
+    minProtocol: 1,
+    maxProtocol: 1,
+    client: { id: "cli", version: "test", platform: "test", mode: "cli" },
+    role: "operator",
+    scopes: ["operator.admin"],
+  },
+  internal: {
+    isLocalClient: true,
+    authenticatedOperator: true,
+    operatorRoleActor: { kind: "system" },
+  },
+};
 
 async function rpc(
   proof: string,
@@ -77,15 +72,11 @@ async function rpc(
   > = {},
 ) {
   const respond = vi.fn();
-  await coreGatewayHandlers["factory.githubPublication.redeem"]?.({
-    client: brokerClient(clientOverrides),
+  const method = "factory.githubPublication.redeem";
+  await coreGatewayHandlers[method]?.({
+    client: { ...broker, ...clientOverrides },
     context: createDirectChatContext({ isConnectionActive: () => true }),
-    req: {
-      type: "req",
-      id: "proof-request",
-      method: "factory.githubPublication.redeem",
-      params: { proof },
-    },
+    req: { type: "req", id: "proof-request", method },
     isWebchatConnect: () => false,
     params: { proof },
     respond,
@@ -97,15 +88,13 @@ async function rpc(
 
 it("redeems the exact session read once through the registered direct private method", async () => {
   const issued = issue();
-  const first = await rpc(issued.proof);
-  expect(first).toHaveBeenCalledWith(
+  expect(await rpc(issued.proof)).toHaveBeenCalledWith(
     true,
     expect.objectContaining({
-      purpose: "session-item-read",
+      ...claim,
       actorId: 101,
       actorPrincipal: "github:example.ghe.com:101",
       profileId: "person-1",
-      binding: claim.binding,
     }),
   );
   expectForbidden(await rpc(issued.proof));
@@ -129,27 +118,24 @@ it("rejects public proxy connections and revoked original authority", async () =
   expectForbidden(await rpc(issued.proof));
 });
 
-it.each(["non-admin", "non-system", "retired", "aborted"] as const)(
-  "refuses broker redemption with %s authority without consuming the proof",
-  async (scenario) => {
-    const issued = issue();
-    const client = brokerClient();
-    const request: Parameters<typeof rpc>[2] = {};
-    if (scenario === "non-admin") {
-      client.connect.scopes = ["operator.read"];
-    }
-    if (scenario === "non-system") {
-      client.internal = {
-        ...client.internal,
+it.each([
+  ["non-admin", { connect: { ...broker.connect, scopes: ["operator.read"] } }, {}],
+  [
+    "non-system",
+    {
+      internal: {
+        ...broker.internal,
         operatorRoleActor: { kind: "operator", profileId: "person-1" },
-      };
-    }
-    if (scenario === "retired") {
-      request.hasCurrentClientAuthority = () => false;
-    }
-    if (scenario === "aborted") {
-      request.signal = AbortSignal.abort();
-    }
+      },
+    },
+    {},
+  ],
+  ["retired", {}, { hasCurrentClientAuthority: () => false }],
+  ["aborted", {}, { signal: AbortSignal.abort() }],
+] satisfies Array<[string, Partial<GatewayClient>, Parameters<typeof rpc>[2]]>)(
+  "refuses broker redemption with %s authority without consuming the proof",
+  async (_scenario, client, request) => {
+    const issued = issue();
     expectForbidden(await rpc(issued.proof, client, request));
     expect(issued.wasRedeemed()).toBe(false);
     expect(await rpc(issued.proof)).toHaveBeenCalledWith(
@@ -160,10 +146,9 @@ it.each(["non-admin", "non-system", "retired", "aborted"] as const)(
 );
 
 it("expires and releases proofs before the private broker can redeem them", async () => {
-  const now = Date.now();
-  const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+  const clock = vi.spyOn(Date, "now").mockReturnValue(0);
   const expired = issue();
-  clock.mockReturnValue(now + 60_001);
+  clock.mockReturnValue(60_001);
   expectForbidden(await rpc(expired.proof));
   const released = issue();
   released.release();
