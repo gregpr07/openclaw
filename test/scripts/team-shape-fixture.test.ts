@@ -54,18 +54,9 @@ describe("Team-shaped fixture CLI", () => {
         parseTeamShapeOptions([
           "--state-dir",
           stateDir,
-          "--sessions",
-          "20",
-          "--runs",
-          "20",
-          "--approvals",
-          "3",
-          "--cron",
-          "2",
-          "--projects",
-          "1",
-          "--transcript-mib",
-          "1",
+          ..."--sessions 20 --runs 20 --approvals 3 --cron 2 --projects 1 --transcript-mib 1".split(
+            " ",
+          ),
         ]),
       );
       expect(process.env === originalEnv).toBe(true);
@@ -99,39 +90,33 @@ describe("Team-shaped fixture CLI", () => {
       visibilityCounts: { shared: 14, "read-only": 2, suggest: 2, draft: 2 },
     });
     expect(summary.agentDatabaseBytes).toBeGreaterThan(512 * 1024);
-    const agent = new DatabaseSync(
-      path.join(stateDir, "agents", "main", "agent", "openclaw-agent.sqlite"),
-      {
-        readOnly: true,
-      },
-    );
+    const agent = new DatabaseSync(path.join(stateDir, "agents/main/agent/openclaw-agent.sqlite"), {
+      readOnly: true,
+    });
     const state = new DatabaseSync(path.join(stateDir, "state", "openclaw.sqlite"), {
       readOnly: true,
     });
+    const counts = (db: DatabaseSync, tables: string[]) =>
+      tables.map((table) => db.prepare(`SELECT count(*) AS n FROM ${table}`).get());
     try {
       expect(
-        agent.prepare("SELECT count(*) AS n FROM session_nodes WHERE entry_valid = 1").get(),
-      ).toEqual({ n: 20 });
+        counts(agent, [
+          "session_nodes WHERE entry_valid = 1",
+          "session_nodes WHERE owner_actor_type = 'human'",
+          "session_participants",
+        ]),
+      ).toEqual([{ n: 20 }, { n: 20 }, { n: 60 }]);
       expect(
-        agent
-          .prepare("SELECT count(*) AS n FROM session_nodes WHERE owner_actor_type = 'human'")
-          .get(),
-      ).toEqual({ n: 20 });
-      expect(agent.prepare("SELECT count(*) AS n FROM session_participants").get()).toEqual({
-        n: 60,
-      });
-      expect(state.prepare("SELECT count(*) AS n FROM user_profiles").get()).toEqual({ n: 24 });
-      expect(state.prepare("SELECT count(*) AS n FROM subagent_runs").get()).toEqual({ n: 20 });
-      expect(state.prepare("SELECT count(*) AS n FROM worktrees").get()).toEqual({ n: 1 });
-      expect(state.prepare("SELECT count(*) AS n FROM projects").get()).toEqual({ n: 1 });
-      expect(state.prepare("SELECT count(*) AS n FROM cron_jobs").get()).toEqual({ n: 2 });
-      expect(
-        state
-          .prepare(
-            "SELECT count(*) AS n FROM subagent_runs WHERE child_session_key = requester_session_key",
-          )
-          .get(),
-      ).toEqual({ n: 0 });
+        counts(state, [
+          "user_profiles",
+          "subagent_runs",
+          "worktrees",
+          "projects",
+          "cron_jobs",
+          "operator_approvals",
+          "subagent_runs WHERE child_session_key = requester_session_key",
+        ]),
+      ).toEqual([{ n: 24 }, { n: 20 }, { n: 1 }, { n: 1 }, { n: 2 }, { n: 3 }, { n: 0 }]);
       for (const run of state
         .prepare("SELECT child_session_key, created_at FROM subagent_runs")
         .all()) {
@@ -150,7 +135,6 @@ describe("Team-shaped fixture CLI", () => {
         { execution: "terminal", delivery: "delivered", n: 15 },
         { execution: "terminal", delivery: "pending", n: 3 },
       ]);
-      expect(state.prepare("SELECT count(*) AS n FROM operator_approvals").get()).toEqual({ n: 3 });
     } finally {
       agent.close();
       state.close();

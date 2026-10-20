@@ -41,6 +41,12 @@ function writeInput(root: string, relative: string, content = "source\n") {
   return file;
 }
 
+function expectTimes(time: bigint, ...files: string[]) {
+  for (const file of files) {
+    expect(statSync(file, { bigint: true }).mtimeNs, file).toBe(time);
+  }
+}
+
 function setTime(time: bigint, ...files: string[]) {
   const result = spawnSync(
     "python3",
@@ -90,12 +96,8 @@ describe.skipIf(process.platform === "win32")("Swift build-cache input metadata"
     writeFileSync(version, "CURRENT_PROJECT_VERSION = 2\n");
     setTime(checkoutTime, ...unchanged, changed, version);
     expect(run(root, "restore", "ios")).toContain("6 verified input timestamps");
-    for (const file of unchanged) {
-      expect(statSync(file, { bigint: true }).mtimeNs).toBe(originalTime);
-    }
-    for (const file of [changed, version]) {
-      expect(statSync(file, { bigint: true }).mtimeNs).toBe(checkoutTime);
-    }
+    expectTimes(originalTime, ...unchanged);
+    expectTimes(checkoutTime, changed, version);
     expect(readFileSync(version, "utf8")).toContain("= 2");
   });
 
@@ -157,14 +159,10 @@ describe.skipIf(process.platform === "win32")("Swift build-cache input metadata"
     writeFileSync(metadata, archive);
 
     expect(run(root, "restore")).toContain("12 verified input timestamps");
-    for (const relative of unchanged) {
-      expect(statSync(path.join(root, relative), { bigint: true }).mtimeNs).toBe(originalTime);
-    }
+    expectTimes(originalTime, ...unchanged.map((relative) => path.join(root, relative)));
     expect(lstatSync(sharedFixtureLink).isSymbolicLink()).toBe(true);
-    expect(statSync(sharedFixtureLink, { bigint: true }).mtimeNs).toBe(originalTime);
-    for (const file of [changed, modeChanged, added]) {
-      expect(statSync(file, { bigint: true }).mtimeNs).toBe(checkoutTime);
-    }
+    expectTimes(originalTime, sharedFixtureLink);
+    expectTimes(checkoutTime, changed, modeChanged, added);
     expect(readFileSync(changed, "utf8")).toBe("after!\n");
     expect(() => statSync(removed)).toThrow();
   });
@@ -186,7 +184,7 @@ describe.skipIf(process.platform === "win32")("Swift build-cache input metadata"
     const { root, source, metadata } = fixture();
     writeFileSync(metadata, artifact);
     run(root, "restore");
-    expect(statSync(source, { bigint: true }).mtimeNs).toBe(originalTime);
+    expectTimes(originalTime, source);
   });
 
   it("cannot replay arbitrary paths, source links, hardlinks, or a linked cache artifact", () => {
@@ -212,8 +210,7 @@ describe.skipIf(process.platform === "win32")("Swift build-cache input metadata"
     artifact.files["apps/macos/Sources/Hardlink.swift"] = artifact.files[sourcePath];
     writeFileSync(metadata, JSON.stringify(artifact));
     run(root, "restore");
-    expect(statSync(external, { bigint: true }).mtimeNs).toBe(checkoutTime);
-    expect(statSync(path.join(root, "other.swift"), { bigint: true }).mtimeNs).toBe(checkoutTime);
+    expectTimes(checkoutTime, external, path.join(root, "other.swift"));
 
     rmSync(source);
     writeInput(root, sourcePath);
@@ -222,14 +219,14 @@ describe.skipIf(process.platform === "win32")("Swift build-cache input metadata"
     rmSync(metadata);
     symlinkSync(linkedMetadata, metadata);
     run(root, "restore");
-    expect(statSync(source, { bigint: true }).mtimeNs).toBe(checkoutTime);
+    expectTimes(checkoutTime, source);
     run(root, "record");
     expect(readFileSync(linkedMetadata, "utf8")).toBe(JSON.stringify(artifact));
     expect(JSON.parse(readFileSync(metadata, "utf8")).files).toHaveProperty([sourcePath]);
     rmSync(path.dirname(source), { recursive: true });
     symlinkSync(outside, path.dirname(source), "dir");
     run(root, "restore");
-    expect(statSync(external, { bigint: true }).mtimeNs).toBe(checkoutTime);
+    expectTimes(checkoutTime, external);
   });
 
   it("lets absent metadata or a reset build directory invalidate normally", () => {
@@ -237,6 +234,6 @@ describe.skipIf(process.platform === "win32")("Swift build-cache input metadata"
     run(root, "restore");
     rmSync(path.dirname(metadata), { recursive: true });
     run(root, "restore");
-    expect(statSync(source, { bigint: true }).mtimeNs).toBe(originalTime);
+    expectTimes(originalTime, source);
   });
 });

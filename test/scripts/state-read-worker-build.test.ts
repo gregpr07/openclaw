@@ -43,9 +43,9 @@ describe("state read worker artifacts", () => {
   });
 
   it.each([
-    ["state/openclaw-state-read.worker", ".js", handlersModule],
-    ["worker/openclaw-state-read.worker", ".mjs", handlersModule],
-  ])("keeps unrelated handlers out of %s startup", async (entryName, extension, deferredModule) => {
+    ["state/openclaw-state-read.worker", ".js"],
+    ["worker/openclaw-state-read.worker", ".mjs"],
+  ])("keeps unrelated handlers out of %s startup", async (entryName, extension) => {
     const selected = configs.find(
       (config) =>
         typeof config.entry === "object" &&
@@ -74,55 +74,41 @@ describe("state read worker artifacts", () => {
         specifier.startsWith(".")
           ? path.posix.normalize(path.posix.join(path.posix.dirname(name), specifier))
           : specifier;
+      const renderedModules = (name: string) =>
+        Object.entries(chunks.get(name)?.modules ?? {})
+          .filter(([, module]) => module.renderedLength > 0)
+          .map(([id]) => id.replaceAll("\\", "/"));
       const staticClosure = (entryFile: string) => {
-        const queue = [entryFile];
-        const visited = new Set<string>();
+        const queue = new Set([entryFile]);
         const modules = new Set<string>();
         const dynamicImports = new Set<string>();
         for (const name of queue) {
-          if (visited.has(name)) {
-            continue;
-          }
-          visited.add(name);
           const chunk = chunks.get(name);
           if (!chunk) {
             throw new Error(`Missing state read worker chunk: ${name}`);
           }
-          for (const [id, module] of Object.entries(chunk.modules)) {
-            if (module.renderedLength > 0) {
-              modules.add(id.replaceAll("\\", "/"));
-            }
-          }
-          for (const specifier of chunk.dynamicImports) {
-            dynamicImports.add(resolveImport(name, specifier));
-          }
+          renderedModules(name).forEach((id) => modules.add(id));
+          chunk.dynamicImports.forEach((specifier) =>
+            dynamicImports.add(resolveImport(name, specifier)),
+          );
           for (const specifier of chunk.imports) {
             const target = resolveImport(name, specifier);
             if (chunks.has(target)) {
-              queue.push(target);
+              queue.add(target);
             }
           }
         }
         return { modules, dynamicImports };
       };
       const startup = staticClosure(`${entryName}${extension}`);
-      expect([...startup.modules].some((id) => id.endsWith(deferredModule))).toBe(false);
+      expect([...startup.modules].some((id) => id.endsWith(handlersModule))).toBe(false);
       expect(
-        [...chunks.values()].some((chunk) =>
-          Object.entries(chunk.modules).some(
-            ([id, module]) =>
-              module.renderedLength > 0 && id.replaceAll("\\", "/").endsWith(deferredModule),
-          ),
-        ),
+        [...chunks.keys()].flatMap(renderedModules).some((id) => id.endsWith(handlersModule)),
       ).toBe(true);
       if (entryName === "state/openclaw-state-read.worker") {
-        const registryTargets = [...startup.dynamicImports].filter((name) => {
-          const chunk = chunks.get(name);
-          return Object.entries(chunk?.modules ?? {}).some(
-            ([id, module]) =>
-              module.renderedLength > 0 && id.replaceAll("\\", "/").endsWith(registryModule),
-          );
-        });
+        const registryTargets = [...startup.dynamicImports].filter((name) =>
+          renderedModules(name).some((id) => id.endsWith(registryModule)),
+        );
         const [registryTarget] = registryTargets;
         if (registryTargets.length !== 1 || registryTarget === undefined) {
           throw new Error(

@@ -1,4 +1,3 @@
-// Test Perf Budget tests cover test perf budget script behavior.
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -9,18 +8,29 @@ import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
-function withReport(payload: unknown, run: (reportPath: string) => void) {
+function checkReport(
+  payload: unknown,
+  expected: string | { fileCount: number; totalFileDurationMs: number },
+) {
   const reportPath = path.join(os.tmpdir(), `openclaw-test-perf-budget-${Date.now()}.json`);
   fs.writeFileSync(
     reportPath,
     typeof payload === "string" ? payload : `${JSON.stringify(payload)}\n`,
   );
   try {
-    run(reportPath);
+    if (typeof expected === "string") {
+      expect(() => testing.collectPerfReportStats(reportPath)).toThrow(expected);
+    } else {
+      expect(testing.collectPerfReportStats(reportPath)).toEqual(expected);
+    }
   } finally {
     fs.rmSync(reportPath, { force: true });
   }
 }
+const expectArgs = (args: string[], expected: object, env = {}) =>
+  expect(testing.parseArgs(args, env)).toMatchObject(expected);
+const rejectArgs = (args: string[], message: string) =>
+  expect(() => testing.parseArgs(args, {})).toThrow(message);
 
 describe("test perf budget script", () => {
   it.each([
@@ -88,21 +98,10 @@ describe("test perf budget script", () => {
     expect(() => testing.parseArgs([], {})).toThrow(
       "provide --max-wall-ms, --baseline-wall-ms, or set --report-only",
     );
-    expect(testing.parseArgs(["--report-only"], {})).toMatchObject({
-      baselineWallMs: null,
-      maxWallMs: null,
-      reportOnly: true,
-    });
-    expect(
-      testing.parseArgs([], {
-        OPENCLAW_TEST_PERF_REPORT_ONLY: "yes",
-      }),
-    ).toMatchObject({
-      baselineWallMs: null,
-      maxWallMs: null,
-      reportOnly: true,
-    });
-    expect(testing.parseArgs(["--baseline-wall-ms", "1000"], {})).toMatchObject({
+    const reportOnly = { baselineWallMs: null, maxWallMs: null, reportOnly: true };
+    expectArgs(["--report-only"], reportOnly);
+    expectArgs([], reportOnly, { OPENCLAW_TEST_PERF_REPORT_ONLY: "yes" });
+    expectArgs(["--baseline-wall-ms", "1000"], {
       baselineWallMs: 1000,
       maxRegressionPct: 10,
       maxWallMs: null,
@@ -111,17 +110,19 @@ describe("test perf budget script", () => {
   });
 
   it("parses numeric budget env vars strictly before running Vitest", () => {
-    expect(
-      testing.parseArgs([], {
+    expectArgs(
+      [],
+      {
+        baselineWallMs: 1000,
+        maxRegressionPct: 12.5,
+        maxWallMs: 1500,
+      },
+      {
         OPENCLAW_TEST_PERF_BASELINE_WALL_MS: "1000",
         OPENCLAW_TEST_PERF_MAX_REGRESSION_PCT: "12.5",
         OPENCLAW_TEST_PERF_MAX_WALL_MS: "1500",
-      }),
-    ).toMatchObject({
-      baselineWallMs: 1000,
-      maxRegressionPct: 12.5,
-      maxWallMs: 1500,
-    });
+      },
+    );
 
     expect(() =>
       testing.parseArgs([], {
@@ -131,57 +132,33 @@ describe("test perf budget script", () => {
   });
 
   it("rejects malformed CLI budget values before running Vitest", () => {
-    expect(testing.parseArgs(["--max-wall-ms", "1e3"], {})).toMatchObject({
-      maxWallMs: 1000,
-    });
-
-    expect(() => testing.parseArgs(["--max-wall-ms", "1e3ms"], {})).toThrow(
-      "--max-wall-ms must be a non-negative number",
-    );
-    expect(() => testing.parseArgs(["--max-regression-pct"], {})).toThrow(
-      "--max-regression-pct requires a value",
-    );
-    expect(() => testing.parseArgs(["--max-wall-ms", "--baseline-wall-ms", "1000"], {})).toThrow(
-      "--max-wall-ms requires a value",
-    );
-    expect(() => testing.parseArgs(["--max-wall-ms", "-h"], {})).toThrow(
-      "--max-wall-ms requires a value",
-    );
-    expect(() => testing.parseArgs(["--max-regression-pct", "-h"], {})).toThrow(
-      "--max-regression-pct requires a value",
-    );
-    expect(() => testing.parseArgs(["--max-wall-ms", "1000", "--max-wall-ms", "2000"], {})).toThrow(
+    expectArgs(["--max-wall-ms", "1e3"], { maxWallMs: 1000 });
+    rejectArgs(["--max-wall-ms", "1e3ms"], "--max-wall-ms must be a non-negative number");
+    rejectArgs(["--max-regression-pct"], "--max-regression-pct requires a value");
+    rejectArgs(["--max-wall-ms", "--baseline-wall-ms", "1000"], "--max-wall-ms requires a value");
+    rejectArgs(["--max-wall-ms", "-h"], "--max-wall-ms requires a value");
+    rejectArgs(["--max-regression-pct", "-h"], "--max-regression-pct requires a value");
+    rejectArgs(
+      ["--max-wall-ms", "1000", "--max-wall-ms", "2000"],
       "--max-wall-ms was provided more than once",
     );
   });
 
   it("requires timed file evidence in the Vitest JSON report", () => {
-    withReport(
+    checkReport(
       {
         testResults: [{ endTime: 1400, name: "test/scripts/demo.test.ts", startTime: 1000 }],
       },
-      (reportPath) => {
-        expect(testing.collectPerfReportStats(reportPath)).toEqual({
-          fileCount: 1,
-          totalFileDurationMs: 400,
-        });
+      {
+        fileCount: 1,
+        totalFileDurationMs: 400,
       },
     );
-
-    withReport({ testResults: [] }, (reportPath) => {
-      expect(() => testing.collectPerfReportStats(reportPath)).toThrow(
-        "Vitest JSON report contained no timed file results",
-      );
-    });
-    withReport({ testResults: [{ name: "missing-timing" }] }, (reportPath) => {
-      expect(() => testing.collectPerfReportStats(reportPath)).toThrow(
-        "Vitest JSON report contained no timed file results",
-      );
-    });
-    withReport("{", (reportPath) => {
-      expect(() => testing.collectPerfReportStats(reportPath)).toThrow(
-        "failed to read Vitest JSON report",
-      );
-    });
+    checkReport({ testResults: [] }, "Vitest JSON report contained no timed file results");
+    checkReport(
+      { testResults: [{ name: "missing-timing" }] },
+      "Vitest JSON report contained no timed file results",
+    );
+    checkReport("{", "failed to read Vitest JSON report");
   });
 });

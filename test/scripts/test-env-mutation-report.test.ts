@@ -1,4 +1,3 @@
-// Test Env Mutation Report tests cover test env mutation report script behavior.
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -28,17 +27,10 @@ function writeRepoFile(repoRoot: string, relativePath: string, value: string): v
 
 function makeEnvMutationFixture(): string {
   const repoRoot = createTempDir("openclaw-test-env-mutations-");
-  writeRepoFile(
-    repoRoot,
-    "src/runtime.ts",
-    `
-process.env.OPENCLAW_STATE_DIR = "ignored because this is not a test file";
-`,
-  );
-  writeRepoFile(
-    repoRoot,
-    "src/example.test.ts",
-    `
+  const files = {
+    "src/runtime.ts":
+      '\nprocess.env.OPENCLAW_STATE_DIR = "ignored because this is not a test file";\n',
+    "src/example.test.ts": `
 process.env.OPENCLAW_STATE_DIR = "state";
 delete process.env["OPENCLAW_CONFIG_PATH"];
 vi.stubEnv("HOME", "home");
@@ -50,29 +42,15 @@ delete process.env[dynamicEnvKey];
 const fixture = 'process.env.OPENCLAW_HOME = "not code"';
 process.env.NOT_OPENCLAW = "ignored";
 `,
-  );
-  writeRepoFile(
-    repoRoot,
-    "scripts/mcp-code-mode-gateway-e2e.ts",
-    `
-process.env.OPENCLAW_CONFIG_PATH = "script-harness";
-`,
-  );
-  writeRepoFile(
-    repoRoot,
-    "src/agents/auth-profiles/oauth-test-utils.ts",
-    `
-process.env.OPENCLAW_AGENT_DIR = "agent";
-`,
-  );
-  writeRepoFile(
-    repoRoot,
-    "src/test-utils/openclaw-test-state.ts",
-    `
-process.env.HOME = "allowed";
-delete process.env.OPENCLAW_STATE_DIR;
-`,
-  );
+    "scripts/mcp-code-mode-gateway-e2e.ts":
+      '\nprocess.env.OPENCLAW_CONFIG_PATH = "script-harness";\n',
+    "src/agents/auth-profiles/oauth-test-utils.ts": '\nprocess.env.OPENCLAW_AGENT_DIR = "agent";\n',
+    "src/test-utils/openclaw-test-state.ts":
+      '\nprocess.env.HOME = "allowed";\ndelete process.env.OPENCLAW_STATE_DIR;\n',
+  };
+  for (const [file, content] of Object.entries(files)) {
+    writeRepoFile(repoRoot, file, content);
+  }
   return repoRoot;
 }
 
@@ -133,11 +111,7 @@ describe("collectTestEnvMutationReport", () => {
       );
       const report = collectTestEnvMutationReport({ repoRoot });
       const findings = report.activeFindings;
-      report.activeFindings = [
-        ...findings.slice(1, 2),
-        ...findings.slice(0, 1),
-        ...findings.slice(2),
-      ];
+      report.activeFindings = [findings[1]!, findings[0]!, ...findings.slice(2)];
       const activeLines = [
         "- src/z.test.ts (2)",
         '  L1 HOME vi.stubEnv: vi.stubEnv("HOME", "z");',
