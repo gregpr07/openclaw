@@ -64,12 +64,14 @@ defineDiscordVoiceTests((h) => {
         Resumed: new h.listenersModule.DiscordVoiceResumedListener(manager),
         GuildCreate: new h.listenersModule.DiscordVoiceGuildCreateListener(manager),
       };
-      await listeners[event].handle({ id: "g1", unavailable: false } as never, client as never);
+      const reconcile = () =>
+        listeners[event].handle({ id: "g1", unavailable: false } as never, client as never);
+      await reconcile();
       expect(listener).toHaveBeenCalledExactlyOnceWith({ occupied: true });
       cache.clear();
-      await listeners[event].handle({ id: "g1", unavailable: false } as never, client as never);
+      await reconcile();
       seed(voiceState("human-one", "1001"));
-      await listeners[event].handle({ id: "g1", unavailable: false } as never, client as never);
+      await reconcile();
       expect(listener).toHaveBeenCalledExactlyOnceWith({ occupied: true });
       expect(manager.status()).toEqual([]);
     },
@@ -81,18 +83,15 @@ defineDiscordVoiceTests((h) => {
     const listener = vi.fn();
     manager.watchChannelOccupancy(room, listener);
     expect(listener).toHaveBeenCalledExactlyOnceWith({ occupied: true });
-    try {
-      for (const sessionId of ["first", "second"]) {
-        await h.startTranscripts(manager, vi.fn(), sessionId, "1001", "primary");
-        await h.stopTranscripts(sessionId, "1001", "primary");
-      }
-      await update(voiceState("human-one", null));
-      await update(voiceState("human-one", "1001"));
-      expectOccupancy(listener, true, false, true);
-      expect(h.createRealtimeVoiceBridgeSessionMock).not.toHaveBeenCalled();
-    } finally {
-      await manager.destroy();
+    for (const sessionId of ["first", "second"]) {
+      await h.startTranscripts(manager, vi.fn(), sessionId, "1001", "primary");
+      await h.stopTranscripts(sessionId, "1001", "primary");
     }
+    await update(voiceState("human-one", null));
+    await update(voiceState("human-one", "1001"));
+    expectOccupancy(listener, true, false, true);
+    expect(h.createRealtimeVoiceBridgeSessionMock).not.toHaveBeenCalled();
+    await manager.destroy();
     await update(voiceState("human-one", null));
     manager.watchChannelOccupancy(room, listener);
     await update(voiceState("human-one", "1001"));
@@ -100,41 +99,17 @@ defineDiscordVoiceTests((h) => {
   });
 
   it("returns the joined channel title without another channel lookup or starting realtime", async () => {
-    const { discordVoiceTranscriptsSourceProvider, setDiscordTranscriptsVoiceManager } =
-      await import("./transcripts-source.js");
     const { manager, client } = fixture();
-    const channel = {
+    client.fetchChannel.mockResolvedValue({
       id: "1001",
       guildId: "g1",
       guild: { id: "g1", name: "Guild One" },
       type: h.ChannelType.GuildVoice,
       name: "Planning room",
-    };
-    client.fetchChannel.mockResolvedValue(channel);
-    setDiscordTranscriptsVoiceManager({ accountId: "primary", manager });
-    try {
-      const result = await discordVoiceTranscriptsSourceProvider.start?.({
-        session: {
-          sessionId: "notes",
-          startedAt: "2026-09-02T10:00:00Z",
-          source: { providerId: "discord-voice", accountId: "primary", ...room },
-        },
-        onUtterance: vi.fn(),
-      });
-      expect(result).toMatchObject({ ok: true, session: { title: "Planning room" } });
-      expect(client.fetchChannel).toHaveBeenCalledExactlyOnceWith("1001");
-      expect(h.createRealtimeVoiceBridgeSessionMock).not.toHaveBeenCalled();
-    } finally {
-      await discordVoiceTranscriptsSourceProvider.stop?.({
-        sessionId: "notes",
-        source: { providerId: "discord-voice", accountId: "primary", ...room },
-      });
-      await manager.destroy();
-      setDiscordTranscriptsVoiceManager({
-        accountId: "primary",
-        manager: null,
-        expectedManager: manager,
-      });
-    }
+    });
+    const result = await h.startTranscripts(manager, vi.fn(), "notes", "1001", "primary");
+    expect(result).toMatchObject({ ok: true, session: { title: "Planning room" } });
+    expect(client.fetchChannel).toHaveBeenCalledExactlyOnceWith("1001");
+    expect(h.createRealtimeVoiceBridgeSessionMock).not.toHaveBeenCalled();
   });
 });

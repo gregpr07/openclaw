@@ -6,6 +6,12 @@ import { defineDiscordVoiceTests } from "./voice-test-harness.test-support.js";
 defineDiscordVoiceTests((h) => {
   const { expect, it, vi } = h;
   const recording = (voice: { captureSilenceGraceMs?: number } = {}) => {
+    h.decodeOpusStreamChunksMock.mockImplementation(async (input, callbacks) => {
+      for await (const packet of input) {
+        await callbacks.onChunk(packet, packet);
+      }
+    });
+    const decode = h.decodeOpusStreamChunksMock.getMockImplementation()!;
     const connection = h.createConnectionMock();
     h.joinVoiceChannelMock.mockReturnValueOnce(connection);
     const manager = h.createManager({
@@ -18,7 +24,7 @@ defineDiscordVoiceTests((h) => {
       const entry = h.getSessionEntry(manager);
       return { entry, sink, begin: () => h.handleSpeakingStart(manager, entry, "u1") };
     };
-    return { manager, connection, start };
+    return { connection, start, decode };
   };
   it("retains the reservation until the SDK source closes after decoded EOF", async () => {
     const releaseClose = createDeferred<void>();
@@ -32,13 +38,8 @@ defineDiscordVoiceTests((h) => {
       first.once("close", resolve);
     });
     const second = new PassThrough({ objectMode: true });
-    const { manager, connection, start } = recording();
+    const { connection, start } = recording();
     connection.receiver.subscribe.mockReturnValueOnce(first).mockReturnValueOnce(second);
-    h.decodeOpusStreamChunksMock.mockImplementation(async (input, callbacks) => {
-      for await (const packet of input) {
-        await callbacks.onChunk(packet, packet);
-      }
-    });
     let receiving: Promise<void> | undefined;
     try {
       const { entry, begin } = await start();
@@ -64,7 +65,6 @@ defineDiscordVoiceTests((h) => {
       first.destroy();
       second.destroy();
       await receiving;
-      await manager.destroy();
     }
   });
 
@@ -76,21 +76,15 @@ defineDiscordVoiceTests((h) => {
     async ({ graceMs, held }) => {
       const { DiscordVoiceRecording } = await import("./voice-recording.js");
       vi.useFakeTimers();
-      const { manager, connection, start } = recording({ captureSilenceGraceMs: graceMs });
+      const { connection, start, decode } = recording({ captureSilenceGraceMs: graceMs });
       const entered = createDeferred<void>();
       const release = createDeferred<void>();
-      let firstDecode = true;
-      h.decodeOpusStreamChunksMock.mockImplementation(async (input, callbacks) => {
-        if (firstDecode) {
-          firstDecode = false;
-          if (held === "decoder") {
-            entered.resolve();
-            await release.promise;
-          }
+      h.decodeOpusStreamChunksMock.mockImplementationOnce(async (input, callbacks) => {
+        if (held === "decoder") {
+          entered.resolve();
+          await release.promise;
         }
-        for await (const packet of input) {
-          await callbacks.onChunk(packet, packet);
-        }
+        await decode(input, callbacks);
       });
       const finishing =
         held === "recording" ? vi.spyOn(DiscordVoiceRecording.prototype, "finish") : undefined;
@@ -128,8 +122,7 @@ defineDiscordVoiceTests((h) => {
         expect(firstDone).toBe(false);
         expect(entry.capture.has("u1")).toBe(false);
 
-        // A real second start must subscribe before the prior decoder or
-        // recording frontier releases. Awaiting receiving first hides this race.
+        // Subscribe before releasing the prior decoder/recording frontier.
         connection.receiver.speaking.emit("start", "u1");
         await vi.waitFor(() => expect(connection.receiver.subscribe).toHaveBeenCalledTimes(2));
         const replacement = entry.capture.get("u1");
@@ -152,7 +145,6 @@ defineDiscordVoiceTests((h) => {
         await receiving;
         finishing?.mockRestore();
         vi.useRealTimers();
-        await manager.destroy();
       }
     },
   );

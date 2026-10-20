@@ -27,6 +27,14 @@ async function createJitterFixture() {
   return fixture;
 }
 
+async function tick(ms: number, done = () => false) {
+  for (let elapsed = 0; elapsed < ms && !done(); elapsed++) {
+    await vi.advanceTimersByTimeAsync(1);
+    // The real encoder yields between packet-clock ticks.
+    await nextEventLoopTurn();
+  }
+}
+
 it("absorbs an 80 ms delivery reorder gap without inserting playback silence", async () => {
   const fixture = await createJitterFixture();
   const resources = new Set<AudioResource>();
@@ -61,18 +69,8 @@ it("absorbs an 80 ms delivery reorder gap without inserting playback silence", a
       }
     }, arrival);
   }
-  for (let elapsed = 0; elapsed < 3_000; elapsed += 1) {
-    await vi.advanceTimersByTimeAsync(1);
-    // The real encoder yields with setImmediate; let it run between packet-clock ticks.
-    await nextEventLoopTurn();
-    if (complete) {
-      break;
-    }
-  }
-  expect(complete).toBe(true);
-  expect(consumedMs).toBe(2_000);
-  expect(missingFrames).toBe(0);
-  expect(resources.size).toBe(1);
+  await tick(3_000, () => complete);
+  expect([complete, consumedMs, missingFrames, resources.size]).toEqual([true, 2_000, 0, 1]);
   expect(fixture.onTerminalError).not.toHaveBeenCalled();
 });
 
@@ -105,10 +103,7 @@ it.each(["finish", "cancel"] as const)(
     } else {
       fixture.callbacks.onClearAudio();
     }
-    for (let elapsed = 0; elapsed < 500; elapsed += 1) {
-      await vi.advanceTimersByTimeAsync(1);
-      await nextEventLoopTurn();
-    }
+    await tick(500);
     expect(heard).toEqual(firstAction === "finish" ? ["first", "second"] : ["second"]);
     expect(fixture.onTerminalError).not.toHaveBeenCalled();
     expect(next.onTerminalError).not.toHaveBeenCalled();

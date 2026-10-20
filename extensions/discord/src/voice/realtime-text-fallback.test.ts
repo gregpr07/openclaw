@@ -19,8 +19,7 @@ defineDiscordVoiceTests((h) => {
         started.resolve();
         return answer.promise;
       });
-      sendMessageDiscord.mockReset();
-      sendMessageDiscord.mockImplementation(async (_to, _text, options) => {
+      sendMessageDiscord.mockReset().mockImplementation(async (_to, _text, options) => {
         options.assertPlatformSendAuthorized();
         if (outcome === "permission") {
           throw new Error("Missing Permissions: SendMessages");
@@ -41,8 +40,7 @@ defineDiscordVoiceTests((h) => {
           },
           source.session,
         );
-      const first = consult("first");
-      const duplicate = consult("duplicate");
+      const pending = ["first", "duplicate"].map(consult);
       try {
         await started.promise;
         const signal = h.agentCommandArgsAt(0).abortSignal;
@@ -62,7 +60,7 @@ defineDiscordVoiceTests((h) => {
         } else {
           answer.resolve({ payloads: [{ text: "The ticket is resolved." }] });
         }
-        await Promise.all([first, duplicate]);
+        await Promise.all(pending);
         expect(h.agentCommandMock).toHaveBeenCalledTimes(1);
         expect(h.realtimeSessionMock.submitToolResult).not.toHaveBeenCalled();
         if (outcome === "reply" || outcome === "permission") {
@@ -83,8 +81,7 @@ defineDiscordVoiceTests((h) => {
         }
       } finally {
         answer.resolve({ payloads: [] });
-        await Promise.allSettled([first, duplicate]);
-        await manager.destroy();
+        await Promise.allSettled(pending);
       }
     },
   );
