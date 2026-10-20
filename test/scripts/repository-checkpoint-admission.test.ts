@@ -63,60 +63,50 @@ function fixture() {
   return { request, init, probe, git, launch, starts };
 }
 
-it.skipIf(process.platform === "win32")(
-  "admits the canonical checkpoint and publication reads through real Git",
-  () => {
-    const { request, init, probe, git, launch, starts } = fixture();
-    const initialized = launch();
-    expect(initialized.status, initialized.stderr).toBe(0);
-    expect(starts()).toBe(1);
-    expect(
-      git(["git", "rev-parse", "--is-bare-repository"], request.checkpointRoot).stdout.trim(),
-    ).toBe("true");
-    const query = [...init.slice(0, 7), "rev-parse", "--git-dir"];
-    expect(launch({ argv: query }).stdout.trim()).toBe(".");
-    const result = launch({ argv: probe });
-    expect(result.status).toBe(0);
-    expect(result.stdout.trim()).toBe("false");
-    expect(starts()).toBe(3);
-  },
-);
+it.skipIf(process.platform === "win32")("admits checkpoint init and publication reads", () => {
+  const { request, init, probe, git, launch, starts } = fixture();
+  const initialized = launch();
+  expect([initialized.status, starts()], initialized.stderr).toEqual([0, 1]);
+  expect(
+    git(["git", "rev-parse", "--is-bare-repository"], request.checkpointRoot).stdout.trim(),
+  ).toBe("true");
+  const query = [...init.slice(0, 7), "rev-parse", "--git-dir"];
+  expect(launch({ argv: query }).stdout.trim()).toBe(".");
+  const result = launch({ argv: probe });
+  expect([result.status, result.stdout.trim(), starts()]).toEqual([0, "false", 3]);
+});
 
-it.skipIf(process.platform === "win32")(
-  "adds no authority for other Git writes, roots, aliases, or redirections",
-  () => {
-    const { request, init, probe, launch, starts } = fixture();
-    const denied = (overrides: Partial<typeof request>) => {
-      const result = launch(overrides);
-      expect(result.status, result.stderr).toBe(126);
-      expect(starts()).toBe(0);
-    };
-    for (const argv of [
-      ["git", "push", "origin", "HEAD"],
-      ["git", "update-ref", "--stdin", "-z"],
-      ["git", "fast-import", "--quiet"],
-      ["git", "config", "--local", "core.hooksPath", "/tmp"],
-      [...init, "extra.git"],
-      [...probe, "true"],
-      [...init.slice(0, 7), "init", "--bare"],
-    ]) {
-      denied({ argv });
-    }
-    denied({ argv: probe, cwd: request.checkpointRoot });
-    denied({ env: { ...request.env, GIT_DIR: request.checkpointRoot } });
-    // Stale argv cannot authorize an old, still-owned campaign placement.
-    const currentRoot = path.join(request.campaignRoot, "current.git");
-    mkdirSync(currentRoot);
-    denied({ checkpointRoot: currentRoot });
-    const alias = path.join(request.campaignRoot, "alias.git");
-    symlinkSync(request.checkpointRoot, alias, "dir");
-    const redirected = (checkpointRoot: string) => ({
-      ...request,
-      checkpointRoot,
-      argv: init.map((value) => (value === request.checkpointRoot ? checkpointRoot : value)),
-    });
-    denied(redirected(alias));
-    denied(redirected(path.dirname(request.campaignRoot)));
-    denied(redirected(path.join(request.campaignRoot, "missing")));
-  },
-);
+it.skipIf(process.platform === "win32")("denies writes, redirected and escaped roots", () => {
+  const { request, init, probe, launch, starts } = fixture();
+  const denied = (overrides: Partial<typeof request>) => {
+    const result = launch(overrides);
+    expect([result.status, starts()], result.stderr).toEqual([126, 0]);
+  };
+  for (const argv of [
+    ["git", "push", "origin", "HEAD"],
+    ["git", "update-ref", "--stdin", "-z"],
+    ["git", "fast-import", "--quiet"],
+    ["git", "config", "--local", "core.hooksPath", "/tmp"],
+    [...init, "extra.git"],
+    [...probe, "true"],
+    [...init.slice(0, 7), "init", "--bare"],
+  ]) {
+    denied({ argv });
+  }
+  denied({ argv: probe, cwd: request.checkpointRoot });
+  denied({ env: { ...request.env, GIT_DIR: request.checkpointRoot } });
+  // Stale argv cannot authorize an old, still-owned campaign placement.
+  const currentRoot = path.join(request.campaignRoot, "current.git");
+  mkdirSync(currentRoot);
+  denied({ checkpointRoot: currentRoot });
+  const alias = path.join(request.campaignRoot, "alias.git");
+  symlinkSync(request.checkpointRoot, alias, "dir");
+  const redirected = (checkpointRoot: string) => ({
+    ...request,
+    checkpointRoot,
+    argv: init.map((value) => (value === request.checkpointRoot ? checkpointRoot : value)),
+  });
+  denied(redirected(alias));
+  denied(redirected(path.dirname(request.campaignRoot)));
+  denied(redirected(path.join(request.campaignRoot, "missing")));
+});
