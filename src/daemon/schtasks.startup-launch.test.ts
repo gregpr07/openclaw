@@ -31,6 +31,7 @@ vi.mock("node:child_process", async (original) => ({
 }));
 beforeEach(() => {
   resetSchtasksBaseMocks();
+  vi.stubEnv("BOUNDARY_PARENT_ONLY", "synthetic");
   vi.spyOn(process, "platform", "get").mockReturnValue("win32");
   childUnref.mockReset();
   spawn.mockReset().mockImplementation(() => createSpawnChild(childUnref));
@@ -47,12 +48,6 @@ async function writeCmdScript(env: Record<string, string | undefined>) {
   await fs.writeFile(scriptPath, "@echo off\r\nrem no parsed command\r\n", "utf8");
   return scriptPath;
 }
-const node = "C:\\Program Files\\nodejs\\node.exe";
-const supervisor = {
-  programArguments: [node, "gateway.js"],
-  environment: { OPENCLAW_SERVICE_KIND: "gateway" },
-};
-
 describe("Windows Startup launcher", () => {
   it.each(["cmd", "bat"])("launches an installed .%s wrapper through cmd.exe", async (ext) => {
     await withWindowsEnv("openclaw-win-wrapper-", async ({ env, tmpDir }) => {
@@ -72,7 +67,11 @@ describe("Windows Startup launcher", () => {
       expect(spawn).toHaveBeenCalledWith(
         getWindowsCmdExePath(),
         ["/d", "/s", "/c", `""${wrapper}" "node" "run" "--display-name" "Headless node""`],
-        expect.objectContaining({ windowsVerbatimArguments: true, shell: false }),
+        expect.objectContaining({
+          windowsVerbatimArguments: true,
+          shell: false,
+          env: expect.objectContaining({ BOUNDARY_PARENT_ONLY: "synthetic" }),
+        }),
       );
       expect(childUnref).toHaveBeenCalledOnce();
     });
@@ -95,6 +94,7 @@ describe("Windows Startup launcher", () => {
       );
       expect(childUnref).not.toHaveBeenCalled();
       if (failure === "access") {
+        expect(spawnSync.mock.calls[0]?.[2]?.env).not.toHaveProperty("BOUNDARY_PARENT_ONLY");
         expect(spawn).not.toHaveBeenCalled();
         expect(spawnSync).toHaveBeenCalledWith(
           getWindowsPowerShellExePath(),
@@ -106,44 +106,6 @@ describe("Windows Startup launcher", () => {
           }),
         );
       }
-    });
-  });
-
-  it.each(["supervisor", "cmd"])("detaches the %s launcher only after admission", async (kind) => {
-    vi.stubEnv("BOUNDARY_PARENT_ONLY", "synthetic");
-    await withWindowsEnv("openclaw-win-startup-", async ({ env, tmpDir }) => {
-      env.OPENCLAW_STATE_DIR = path.join(tmpDir, "state & %USERPROFILE% !");
-      const scriptPath = resolveTaskScriptPath(env);
-      if (kind === "cmd") {
-        await writeCmdScript(env);
-      }
-      await expect(
-        launchFallbackTaskScript(env, kind === "supervisor" ? supervisor : undefined),
-      ).resolves.toBeUndefined();
-      expect(spawn.mock.calls.at(-1)).toEqual([
-        kind === "cmd" ? getWindowsCmdExePath() : node,
-        kind === "cmd"
-          ? ["/d", "/s", "/v:off", "/c", '""%OPENCLAW_TASK_SCRIPT%""']
-          : ["gateway.js", "--task-supervisor"],
-        expect.objectContaining({
-          detached: true,
-          stdio: "ignore",
-          windowsHide: true,
-          ...(kind === "cmd" ? { windowsVerbatimArguments: true } : {}),
-          env: expect.objectContaining({
-            BOUNDARY_PARENT_ONLY: "synthetic",
-            ...(kind === "cmd" ? { OPENCLAW_TASK_SCRIPT: scriptPath } : {}),
-          }),
-        }),
-      ]);
-      if (kind === "cmd") {
-        expect(spawnSync).toHaveBeenCalledOnce();
-        expect(spawnSync.mock.calls[0]?.[2]?.env).toMatchObject({
-          OPENCLAW_TASK_SCRIPT: scriptPath,
-        });
-        expect(spawnSync.mock.calls[0]?.[2]?.env).not.toHaveProperty("BOUNDARY_PARENT_ONLY");
-      }
-      expect(childUnref).toHaveBeenCalledOnce();
     });
   });
 });

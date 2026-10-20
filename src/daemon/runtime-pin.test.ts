@@ -16,7 +16,6 @@ function runtimeFixture(script: string, name = "node"): string {
 function runtimeOutput(nodeVersion = "26.8.1", sqliteVersion = "3.53.4") {
   const metadata = {
     nodeVersion,
-    bunVersion: null,
     sqliteVersion,
     sqliteProbe: { available: true, version: sqliteVersion, text: true, blob: true, json: true },
   };
@@ -69,15 +68,13 @@ it.each([
   ["linux", "/opt/runtime tools/bin/bun"],
   ["win32", "C:\\Runtime Tools\\node.exe"],
 ] as const)("omits runtime pin env for %s", (platform, pin) => {
-  const env = {
-    OPENCLAW_STATE_DIR: "/fixture/state",
-    OPENCLAW_DAEMON_RUNTIME_PATH: pin,
-  };
+  const stateDir = "/fixture/state";
+  const env = { OPENCLAW_STATE_DIR: stateDir, OPENCLAW_DAEMON_RUNTIME_PATH: pin };
   for (const result of [
     buildServiceEnvironment({ env, port: 18789, platform }),
     buildNodeServiceEnvironment({ env, platform }),
   ]) {
     expect(result).not.toHaveProperty("OPENCLAW_DAEMON_RUNTIME_PATH");
-    expect(result.OPENCLAW_STATE_DIR).toBe("/fixture/state");
+    expect(result.OPENCLAW_STATE_DIR).toBe(stateDir);
   }
 });

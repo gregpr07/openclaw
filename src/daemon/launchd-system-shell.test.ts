@@ -20,11 +20,8 @@ type ProbeOptions = Partial<
 
 function runFallback(contents: string, options: ProbeOptions = {}) {
   const root = tempDirs.make("openclaw-system-shell-");
-  const daemons = path.join(root, "daemons");
-  const bin = path.join(root, "bin");
-  mkdirSync(daemons);
-  mkdirSync(bin);
-  const target = path.join(daemons, "unrelated-name.plist");
+  const target = path.join(root, "daemons", "unrelated-name.plist");
+  mkdirSync(path.dirname(target));
   if (options.directory) {
     mkdirSync(target);
   } else {
@@ -33,7 +30,7 @@ function runFallback(contents: string, options: ProbeOptions = {}) {
       execFileSync("/usr/bin/plutil", ["-convert", "binary1", "--", target]);
     }
   }
-  const parser = path.join(bin, "plutil");
+  const parser = path.join(root, "plutil");
   writeShell(
     parser,
     `#!/bin/sh
@@ -45,12 +42,11 @@ if [ "$last" = '-' ] || [ "${options.parserDenied === false ? "0" : "1"}" = "0" 
   exec /usr/bin/plutil "$@"
 fi
 ${options.deniedRead ? '/bin/chmod 000 "$last"' : ":"}
-printf 'parser blocked by endpoint policy\\n' >&2
 exit 1
 `,
   );
   writeShell(
-    path.join(bin, "launchctl"),
+    path.join(root, "launchctl"),
     `#!/bin/sh
 if [ -e "$TEST_QUERY_MARKER" ]; then
   ${options.loadedAfterScan ? "exit 0" : ":"}
@@ -61,24 +57,23 @@ exit 113
 `,
   );
   let script = renderSystemLaunchDaemonOwnershipShellProbe("ai.openclaw.gateway")
-    .replaceAll("/Library/LaunchDaemons", daemons)
+    .replaceAll("/Library/LaunchDaemons", path.dirname(target))
     .replaceAll("/usr/bin/plutil", parser);
   if (options.missingReader) {
-    script = script.replaceAll("/usr/bin/perl", path.join(bin, "missing-perl"));
+    script = script.replaceAll("/usr/bin/perl", path.join(root, "missing-perl"));
   }
   script += `\nprintf '%s\\n%s' "$openclaw_system_launchd_conflict" "$openclaw_system_launchd_detail"`;
-  const result = execFileSync("/bin/sh", ["-c", script], {
+  const [conflict, detail] = execFileSync("/bin/sh", ["-c", script], {
     encoding: "utf8",
     timeout: 10_000,
     env: {
-      PATH: bin,
+      PATH: root,
       TMPDIR: root,
       TEST_QUERY_MARKER: path.join(root, "queried"),
       PERL_UNICODE: options.perlUnicode,
     },
-  });
+  }).split("\n");
   expect(readdirSync(root).filter((entry) => entry.startsWith("openclaw-launchd-"))).toEqual([]);
-  const [conflict, detail] = result.split("\n");
   if (options.binary !== undefined) {
     expect(detail).toContain("installed same-label system LaunchDaemon plist");
   }
@@ -110,12 +105,11 @@ describe.skipIf(process.platform !== "darwin")("detached launchd native fallback
   ] as const)("handles %s", (_name, contents, options, expected) => {
     expect(runFallback(contents, options)).toEqual(expected);
   });
-  it.skipIf(process.getuid?.() === 0)(
-    "classifies actual read denial after readable preflight",
-    () => {
-      expect(runFallback(plist(label), { deniedRead: true })).toBe("");
-      expect(runFallback(plist(label), { deniedRead: true, loadedAfterScan: true })).toBe(
-        "system/ai.openclaw.gateway",
+  it.skipIf(process.getuid?.() === 0).each([false, true])(
+    "handles read denial after preflight (loaded=%s)",
+    (loadedAfterScan) => {
+      expect(runFallback(plist(label), { deniedRead: true, loadedAfterScan })).toBe(
+        loadedAfterScan ? "system/ai.openclaw.gateway" : "",
       );
     },
   );
