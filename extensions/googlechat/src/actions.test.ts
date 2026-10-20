@@ -39,15 +39,6 @@ describe("googlechat message actions", () => {
     vi.resetModules();
   });
 
-  function buildAccount() {
-    return {
-      accountId: "default",
-      enabled: true,
-      credentialSource: "service-account",
-      config: { groupPolicy: "open", dmPolicy: "open" },
-    };
-  }
-
   function handleAction(action: string, params: Record<string, unknown>) {
     return googlechatMessageActions.handleAction({
       action,
@@ -55,13 +46,6 @@ describe("googlechat message actions", () => {
       cfg: {},
       accountId: "default",
     } as never);
-  }
-
-  function expectJsonResult(result: unknown, details: Record<string, unknown>) {
-    expect(result).toEqual({
-      content: [{ type: "text", text: JSON.stringify(details, null, 2) }],
-      details,
-    });
   }
 
   it("describes only send actions when enabled accounts exist", () => {
@@ -87,7 +71,7 @@ describe("googlechat message actions", () => {
   });
 
   it("sends text through the resolved space", async () => {
-    const account = buildAccount();
+    const account = { credentialSource: "service-account" };
     resolveGoogleChatAccount.mockReturnValue(account);
     resolveGoogleChatOutboundSpace.mockResolvedValue("spaces/AAA");
     const sent = {
@@ -112,7 +96,11 @@ describe("googlechat message actions", () => {
       text: "caption",
       thread: "thread-1",
     });
-    expectJsonResult(result, { ok: true, to: "spaces/AAA", ...sent });
+    const details = { ok: true, to: "spaces/AAA", ...sent };
+    expect(result).toEqual({
+      content: [{ type: "text", text: JSON.stringify(details, null, 2) }],
+      details,
+    });
   });
 
   it.each([
@@ -133,7 +121,7 @@ describe("googlechat message actions", () => {
 
   it("rejects unsupported actions without provider access", async () => {
     const action = "react";
-    resolveGoogleChatAccount.mockReturnValue(buildAccount());
+    resolveGoogleChatAccount.mockReturnValue({ credentialSource: "service-account" });
 
     await expect(
       handleAction(action, { messageId: "spaces/AAA/messages/msg-1", emoji: "👍" }),

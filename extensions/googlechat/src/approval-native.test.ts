@@ -55,18 +55,10 @@ describe("googleChatApprovalCapability", () => {
       action: "approve" as const,
       approvalKind: "plugin" as const,
     };
-    expect(
-      await googleChatApprovalCapability.authorizeActorActionAsync?.({
-        ...action,
-        senderId: "users/123",
-      }),
-    ).toEqual({ authorized: true });
-    expect(
-      await googleChatApprovalCapability.authorizeActorActionAsync?.({
-        ...action,
-        senderId: "users/999",
-      }),
-    ).toEqual({
+    const authorize = (senderId: string) =>
+      googleChatApprovalCapability.authorizeActorActionAsync?.({ ...action, senderId });
+    expect(await authorize("users/123")).toEqual({ authorized: true });
+    expect(await authorize("users/999")).toEqual({
       authorized: false,
       reason: "❌ You are not authorized to approve plugin requests on Google Chat.",
     });

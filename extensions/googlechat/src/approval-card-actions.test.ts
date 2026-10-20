@@ -1,10 +1,11 @@
+import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   googleChatApprovalControls,
   registerGoogleChatManualApprovalFollowupSuppression as registerGoogleChatManualApprovalFollowupSuppressionRaw,
   registerGoogleChatApprovalCardBinding as registerGoogleChatApprovalCardBindingRaw,
-  shouldSuppressGoogleChatManualExecApprovalFollowupPayload,
-  shouldSuppressGoogleChatManualExecApprovalFollowupText,
+  shouldSuppressGoogleChatManualExecApprovalFollowupPayload as suppressesPayload,
+  shouldSuppressGoogleChatManualExecApprovalFollowupText as suppressesText,
   unregisterGoogleChatManualApprovalFollowupSuppression,
 } from "./approval-card-actions.js";
 
@@ -17,8 +18,6 @@ const suppressionDefaults = {
   allowedDecisions: ["allow-once", "deny"] as const,
 };
 const command = (id = approvalId.slice(0, 8)) => `/approve ${id} allow-once`;
-const suppressesText = shouldSuppressGoogleChatManualExecApprovalFollowupText;
-const suppressesPayload = shouldSuppressGoogleChatManualExecApprovalFollowupPayload;
 
 function registerExecApprovalCard(
   overrides: Partial<Parameters<typeof registerGoogleChatApprovalCardBindingRaw>[0]> = {},
@@ -78,29 +77,14 @@ describe("Google Chat approval card action registry", () => {
     expect(suppressesText(`/approve ${approvalId} nope`)).toBe(false);
   });
 
-  it("suppresses only text-only manual approval follow-up payloads", () => {
+  it.each<{ extra: ReplyPayload; suppressed: boolean }>([
+    { extra: {}, suppressed: true },
+    { extra: { mediaUrl: "https://example.test/image.png" }, suppressed: false },
+    { extra: { channelData: { execApproval: { approvalId } } }, suppressed: true },
+    { extra: { presentation: { blocks: [] } }, suppressed: false },
+  ])("suppresses manual approval payload %j", ({ extra, suppressed }) => {
     registerExecApprovalCard();
-
-    const payload = { text: command() };
-    expect(suppressesPayload(payload)).toBe(true);
-    expect(
-      suppressesPayload({
-        ...payload,
-        mediaUrl: "https://example.test/image.png",
-      }),
-    ).toBe(false);
-    expect(
-      suppressesPayload({
-        ...payload,
-        channelData: { execApproval: { approvalId } },
-      }),
-    ).toBe(true);
-    expect(
-      suppressesPayload({
-        ...payload,
-        presentation: { blocks: [] },
-      }),
-    ).toBe(false);
+    expect(suppressesPayload({ text: command(), ...extra })).toBe(suppressed);
   });
 
   it("evicts oldest approval card bindings once the cache exceeds its cap", () => {
