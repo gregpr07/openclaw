@@ -33,6 +33,7 @@ describe("mattermost monitor auth", () => {
     channelDisplay: "Alice",
     roomLabel: "#alice",
   };
+  const denied = { ok: false, commandAuthorized: false };
   function authorize(
     config: Parameters<typeof auth.authorizeMattermostCommandInvocation>[0]["account"]["config"],
     allowTextCommands: boolean,
@@ -98,9 +99,8 @@ describe("mattermost monitor auth", () => {
 
     await expect(authorize({ dmPolicy: "open" }, true, true)).resolves.toEqual({
       ...direct,
-      ok: false,
+      ...denied,
       denyReason: "unauthorized",
-      commandAuthorized: false,
     });
 
     resolveAllowlistMatchSimple.mockReturnValue({ allowed: true });
@@ -113,9 +113,8 @@ describe("mattermost monitor auth", () => {
 
     await expect(authorize({ dmPolicy: "disabled" }, false, false)).resolves.toEqual({
       ...direct,
-      ok: false,
+      ...denied,
       denyReason: "dm-disabled",
-      commandAuthorized: false,
     });
 
     await expect(
@@ -125,9 +124,8 @@ describe("mattermost monitor auth", () => {
         display_name: "Town Square",
       }),
     ).resolves.toEqual({
-      ok: false,
+      ...denied,
       denyReason: "channel-no-allowlist",
-      commandAuthorized: false,
       channelInfo: { type: "O", name: "town-square", display_name: "Town Square" },
       kind: "channel",
       chatType: "channel",

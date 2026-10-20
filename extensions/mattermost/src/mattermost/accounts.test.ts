@@ -13,7 +13,8 @@ function config(mattermost: NonNullable<OpenClawConfig["channels"]>["mattermost"
   return { channels: { mattermost } };
 }
 
-describe("resolveDefaultMattermostAccountId", () => {
+describe("Mattermost accounts", () => {
+  afterEach(() => vi.unstubAllEnvs());
   it("keeps the implicit default account when named accounts are added to top-level credentials", () => {
     const cfg = config({
       botToken: "tok-default",
@@ -31,27 +32,21 @@ describe("resolveDefaultMattermostAccountId", () => {
   });
 
   it("inherits top-level access policy for named accounts before doctor migration", () => {
-    const cfg = config({
+    const policy = {
       dmPolicy: "open",
       groupPolicy: "open",
       allowFrom: ["*"],
       groupAllowFrom: ["*"],
+    } satisfies NonNullable<NonNullable<OpenClawConfig["channels"]>["mattermost"]>;
+    const cfg = config({
+      ...policy,
       accounts: {
         tony: { botToken: "tok-tony", baseUrl: "https://chat.example.com" },
       },
     });
     const account = resolveMattermostAccount({ cfg, accountId: "tony" });
-    expect(account.config).toMatchObject({
-      dmPolicy: "open",
-      groupPolicy: "open",
-      allowFrom: ["*"],
-      groupAllowFrom: ["*"],
-    });
+    expect(account.config).toMatchObject(policy);
   });
-});
-
-describe("Mattermost account SecretRef inspection", () => {
-  afterEach(() => vi.unstubAllEnvs());
 
   const unresolvedRef = {
     source: "env" as const,
@@ -93,9 +88,6 @@ describe("Mattermost account SecretRef inspection", () => {
       configured: true,
     });
   });
-});
-
-describe("resolveMattermostReplyToMode", () => {
   it("uses per-chat-type overrides before the channel and group default", () => {
     const cfg = config({
       replyToMode: "all",

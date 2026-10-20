@@ -1,5 +1,5 @@
 import { MAX_TIMER_TIMEOUT_MS } from "openclaw/plugin-sdk/number-runtime";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { probeMattermost } from "./probe.js";
 
 const { mockFetchGuard, mockRelease } = vi.hoisted(() => ({
@@ -29,8 +29,6 @@ describe("probeMattermost", () => {
     mockRelease.mockClear();
   });
 
-  afterEach(() => vi.restoreAllMocks());
-
   it("returns baseUrl missing for empty base URL", async () => {
     await expect(probeMattermost(" ", "token")).resolves.toEqual({
       ok: false,
@@ -57,7 +55,7 @@ describe("probeMattermost", () => {
   });
 
   it("bounds and cancels oversized probe success JSON bodies", async () => {
-    let canceled = false;
+    const cancel = vi.fn();
     let pulled = 0;
     const oversizeChunk = new Uint8Array(2 * 1024 * 1024).fill(0x7b); // 2 MiB of "{"
     const stream = new ReadableStream<Uint8Array>({
@@ -65,34 +63,34 @@ describe("probeMattermost", () => {
         pulled += 1;
         controller.enqueue(oversizeChunk);
       },
-      cancel() {
-        canceled = true;
-      },
+      cancel,
     });
     respond(new Response(stream, { status: 200, headers: { "content-type": "application/json" } }));
 
     const result = await probeMattermost("https://mm.example.com", "bot-token");
 
-    expect(result).toMatchObject({ ok: false, status: null });
-    expect(result.error).toContain("JSON response exceeds 16777216 bytes");
-    expect(canceled).toBe(true);
+    expect(result).toMatchObject({
+      ok: false,
+      status: null,
+      error: expect.stringContaining("JSON response exceeds 16777216 bytes"),
+    });
+    expect(cancel).toHaveBeenCalledOnce();
     expect(pulled).toBeLessThanOrEqual(12);
     expect(mockRelease).toHaveBeenCalledTimes(1);
   });
 
-  it("forwards allowPrivateNetwork to the SSRF guard policy", async () => {
-    respond();
-    await probeMattermost("https://mm.example.com", "bot-token", 2500, true);
-
-    expect(mockFetchGuard.mock.calls[0]?.[0].policy).toStrictEqual({ allowPrivateNetwork: true });
-  });
-
-  it("clamps oversized probe timeouts before the guard-owned deadline", async () => {
-    respond();
-    await probeMattermost("https://mm.example.com", "bot-token", Number.MAX_SAFE_INTEGER);
-
-    expect(mockFetchGuard.mock.calls[0]?.[0].timeoutMs).toBe(MAX_TIMER_TIMEOUT_MS);
-  });
+  it.each([
+    [true, 2500, { allowPrivateNetwork: true }, 2500],
+    [false, Number.MAX_SAFE_INTEGER, undefined, MAX_TIMER_TIMEOUT_MS],
+  ] as const)(
+    "forwards private-network=%s and bounds timeout=%s",
+    async (privateNet, ms, policy, limit) => {
+      respond();
+      await probeMattermost("https://mm.example.com", "bot-token", ms, privateNet);
+      expect(mockFetchGuard.mock.calls[0]?.[0].policy).toStrictEqual(policy);
+      expect(mockFetchGuard.mock.calls[0]?.[0].timeoutMs).toBe(limit);
+    },
+  );
 
   it("returns a string diagnostic without a reflected active credential in an object message", async () => {
     mockFetchGuard.mockImplementationOnce(async ({ init }: { init: RequestInit }) => {
@@ -118,13 +116,9 @@ describe("probeMattermost", () => {
   });
 
   it("falls back to statusText when error body is empty", async () => {
-    respond(
-      new Response("", {
-        status: 403,
-        statusText: "Forbidden",
-        headers: { "content-type": "text/plain" },
-      }),
-    );
+    const errorResponse = new Response("", { status: 403, statusText: "Forbidden" });
+    errorResponse.headers.set("content-type", "text/plain");
+    respond(errorResponse);
 
     expectResult(await probeMattermost("https://mm.example.com", "token"), {
       ok: false,

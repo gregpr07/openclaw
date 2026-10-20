@@ -22,10 +22,9 @@ vi.mock("openclaw/plugin-sdk/ssrf-runtime", async (importOriginal) => {
 });
 
 function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
+  return Response.json(body, {
     status,
     statusText: status === 403 ? "Forbidden" : "OK",
-    headers: { "content-type": "application/json" },
   });
 }
 
@@ -86,21 +85,14 @@ describe("readMattermostMessages", () => {
     fetchFixture.current = fetchImpl = createReadFetch();
   });
 
-  it("allows a configured delegated cross-channel read", async () => {
-    await expect(
-      read({
-        cfg: config({ groupPolicy: "allowlist", groups: { OTHER: { requireMention: false } } }),
-      }),
-    ).resolves.toMatchObject({
+  it.each([
+    { groupPolicy: "allowlist", groups: { OTHER: { requireMention: false } } },
+    { groupPolicy: "open" },
+  ] as const)("allows delegated reads with $groupPolicy access", async (policy) => {
+    await expect(read({ cfg: config(policy) })).resolves.toMatchObject({
       messages: [{ id: "post-2" }, { id: "post-1" }],
     });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
-  });
-
-  it("allows an unlisted member channel only when groupPolicy is open", async () => {
-    await expect(read({ cfg: config({ groupPolicy: "open" }) })).resolves.toMatchObject({
-      messages: [{ id: "post-2" }, { id: "post-1" }],
-    });
   });
 
   it("denies unconfigured and direct-message cross-channel targets before reading posts", async () => {
@@ -109,18 +101,6 @@ describe("readMattermostMessages", () => {
       await expect(read()).rejects.toThrow("Mattermost read target channel is not allowed");
       expect(fetchImpl).toHaveBeenCalledTimes(1);
     }
-  });
-
-  it("rejects delegated account switching before provider access", async () => {
-    await expect(
-      read({
-        context: {
-          ...delegatedContext(),
-          requesterAccountId: "other-account",
-        },
-      }),
-    ).rejects.toThrow("Mattermost delegated reads require the current Mattermost account");
-    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("uses the trusted native channel ID for the current DM", async () => {
@@ -135,33 +115,38 @@ describe("readMattermostMessages", () => {
     expect(requestUrl(fetchImpl.mock.calls[0]![0])).toContain("/channels/CURRENT/posts?per_page=2");
   });
 
-  it("fails closed when the trusted native channel ID names another conversation", async () => {
-    await expect(
-      read({
+  it.each([
+    {
+      name: "account switching",
+      requests: 0,
+      params: { context: { ...delegatedContext(), requesterAccountId: "other-account" } },
+      error: "Mattermost delegated reads require the current Mattermost account",
+    },
+    {
+      name: "conflicting native conversation",
+      requests: 1,
+      params: {
         channelId: "CURRENT",
         context: delegatedContext("channel:OTHER", "channel:CURRENT"),
-      }),
-    ).rejects.toThrow("Mattermost read target channel is not allowed");
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+      },
+      error: "Mattermost read target channel is not allowed",
+    },
+    {
+      name: "disabled account",
+      requests: 0,
+      params: { cfg: config({ enabled: false }), channelId: "CURRENT" },
+      error: 'Mattermost account "default" is disabled',
+    },
+  ])("rejects $name before reading posts", async ({ params, error, requests }) => {
+    await expect(read(params)).rejects.toThrow(error);
+    expect(fetchImpl).toHaveBeenCalledTimes(requests);
   });
 
   it("lets a direct operator rely on Mattermost membership and preserves 403 errors", async () => {
     fetchFixture.current = createReadFetch({ postStatus: 403 });
 
-    await expect(
-      read({
-        context: { conversationReadOrigin: "direct-operator" },
-      }),
-    ).rejects.toThrow("Mattermost API 403 Forbidden: You do not have the appropriate permissions.");
-  });
-
-  it("rejects disabled accounts before provider access", async () => {
-    await expect(
-      read({
-        cfg: config({ enabled: false }),
-        channelId: "CURRENT",
-      }),
-    ).rejects.toThrow('Mattermost account "default" is disabled');
-    expect(fetchImpl).not.toHaveBeenCalled();
+    await expect(read({ context: { conversationReadOrigin: "direct-operator" } })).rejects.toThrow(
+      "Mattermost API 403 Forbidden: You do not have the appropriate permissions.",
+    );
   });
 });

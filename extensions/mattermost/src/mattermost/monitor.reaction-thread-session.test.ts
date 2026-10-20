@@ -1,12 +1,11 @@
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
 import { withServer } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { resolveMattermostAccount } from "./accounts.js";
 import { createMattermostClient } from "./client.js";
 import { createMattermostReactionHandler } from "./monitor-reactions.js";
 import { createMattermostMonitorResources } from "./monitor-resources.js";
 import type { MattermostMonitorContext } from "./monitor-types.js";
-import type { MattermostEventPayload } from "./monitor-websocket.js";
-import type { OpenClawConfig } from "./runtime-api.js";
 
 const LOOPBACK_TOKEN = "mattermost-loopback-thread-reaction-token";
 const CHANNEL_ID = "chan-1";
@@ -22,9 +21,7 @@ vi.mock("../runtime.js", () => ({
   getOptionalMattermostRuntime: () => loopbackState.runtimeCore,
 }));
 
-afterEach(() => {
-  loopbackState.enqueueSystemEvent.mockClear();
-});
+afterEach(() => loopbackState.enqueueSystemEvent.mockClear());
 
 type LoopbackPost = { id: string; channel_id?: string; user_id?: string; root_id?: string };
 
@@ -38,18 +35,12 @@ async function withLoopbackMattermost(
       id: CHANNEL_ID,
       name: "town-square",
       display_name: "Town Square",
-      team_id: "team-1",
       type: "O",
     },
     "/api/v4/users/user-1": { id: "user-1", username: "alice", update_at: 1 },
   };
   if (post) {
-    payloads[`/api/v4/posts/${post.id}`] = {
-      channel_id: CHANNEL_ID,
-      user_id: "user-1",
-      create_at: 1_714_000_000_000,
-      ...post,
-    };
+    payloads[`/api/v4/posts/${post.id}`] = { channel_id: CHANNEL_ID, ...post };
   }
   await withServer(
     (request, response) => {
@@ -83,11 +74,8 @@ async function runReactionThroughMonitor(params: { baseUrl: string; postId: stri
   runtimeCore.system.enqueueSystemEvent = loopbackState.enqueueSystemEvent;
   loopbackState.runtimeCore = runtimeCore;
 
-  const client = createMattermostClient({
-    baseUrl: params.baseUrl,
-    botToken: LOOPBACK_TOKEN,
-    allowPrivateNetwork: true,
-  });
+  const connection = { baseUrl: params.baseUrl, botToken: LOOPBACK_TOKEN };
+  const client = createMattermostClient({ ...connection, allowPrivateNetwork: true });
   const resources = createMattermostMonitorResources({
     accountId: "default",
     callbackUrl: "http://127.0.0.1:9/mattermost/callback",
@@ -97,15 +85,10 @@ async function runReactionThroughMonitor(params: { baseUrl: string; postId: stri
     saveRemoteMedia: async () => ({ path: "/tmp/mattermost-loopback-media" }),
     mediaKindFromMime: () => null,
   });
-  const config = { enabled: true, dmPolicy: "open", groupPolicy: "open" } as const;
-  const cfg: OpenClawConfig = { channels: { mattermost: config } };
+  const config = { ...connection, enabled: true, dmPolicy: "open", groupPolicy: "open" } as const;
+  const cfg = { channels: { mattermost: config } };
   const monitor = {
-    account: {
-      accountId: "default",
-      baseUrl: params.baseUrl,
-      botToken: LOOPBACK_TOKEN,
-      config,
-    },
+    account: resolveMattermostAccount({ cfg }),
     botUserId: "bot-user",
     cfg,
     core: runtimeCore,
@@ -128,7 +111,7 @@ async function runReactionThroughMonitor(params: { baseUrl: string; postId: stri
       channel_id: CHANNEL_ID,
     },
     broadcast: { channel_id: CHANNEL_ID },
-  } as MattermostEventPayload);
+  });
 }
 
 describe("mattermost reaction thread placement", () => {

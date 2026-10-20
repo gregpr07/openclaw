@@ -1,4 +1,3 @@
-// Prove authoritative Mattermost channel kinds over the real Bot API transport.
 import { withServer } from "openclaw/plugin-sdk/test-env";
 import { describe, expect, it } from "vitest";
 import { resolveMattermostOutboundSessionRoute } from "../session-route.js";
@@ -26,21 +25,19 @@ describe("Mattermost opaque channel resolution over real HTTP", () => {
         });
         response.setHeader("content-type", "application/json");
 
-        if (path.startsWith("/api/v4/users/")) {
-          response.writeHead(404);
-          response.end(JSON.stringify({ message: "user not found" }));
-          return;
-        }
-
         const channel = cases.find(({ id }) => path === `/api/v4/channels/${id}`);
-        if (channel) {
-          response.writeHead(200);
-          response.end(JSON.stringify({ id: channel.id, type: channel.type }));
-          return;
-        }
-
-        response.writeHead(404);
-        response.end(JSON.stringify({ message: "unexpected loopback path" }));
+        response.writeHead(channel ? 200 : 404);
+        response.end(
+          JSON.stringify(
+            channel
+              ? { id: channel.id, type: channel.type }
+              : {
+                  message: path.startsWith("/api/v4/users/")
+                    ? "user not found"
+                    : "unexpected loopback path",
+                },
+          ),
+        );
       },
       async (baseUrl) => {
         const cfg = {
@@ -53,36 +50,28 @@ describe("Mattermost opaque channel resolution over real HTTP", () => {
           },
         } as OpenClawConfig;
 
-        for (const testCase of cases) {
+        for (const { id, kind } of cases) {
           const resolved = await resolveMattermostOpaqueTarget({
-            input: testCase.id,
+            input: id,
             cfg,
             accountId: "default",
           });
-          expect(resolved).toEqual({
-            kind: testCase.kind,
-            id: testCase.id,
-            to: `channel:${testCase.id}`,
-          });
+          expect(resolved).toEqual({ kind, id, to: `channel:${id}` });
 
           const route = resolveMattermostOutboundSessionRoute({
             cfg,
             agentId: "main",
             accountId: "default",
-            target: `channel:${testCase.id}`,
-            resolvedTarget: {
-              to: `channel:${testCase.id}`,
-              kind: testCase.kind,
-              source: "directory",
-            },
+            target: `channel:${id}`,
+            resolvedTarget: { to: `channel:${id}`, kind, source: "directory" },
             threadId: "loopback-thread",
           });
           expect(route).toMatchObject({
-            peer: { kind: testCase.kind, id: testCase.id },
-            chatType: testCase.kind,
-            from: `mattermost:${testCase.kind}:${testCase.id}`,
-            to: `channel:${testCase.id}`,
-            sessionKey: `agent:main:mattermost:${testCase.kind}:${testCase.id}:thread:loopback-thread`,
+            peer: { kind, id },
+            chatType: kind,
+            from: `mattermost:${kind}:${id}`,
+            to: `channel:${id}`,
+            sessionKey: `agent:main:mattermost:${kind}:${id}:thread:loopback-thread`,
           });
         }
 
