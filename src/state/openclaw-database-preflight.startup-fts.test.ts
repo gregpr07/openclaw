@@ -98,12 +98,12 @@ async function createFixture(failure?: "mixed" | "backup" | "rebuild" | "writer"
   installSqliteFtsTokenizerMismatch(pathname, "session_transcript_fts");
   retireSqliteDatabaseAdmissionForPath(pathname);
   if (failure === "mixed") {
-    using db = openRawDatabase(pathname);
-    db.exec(
-      "CREATE TABLE probe(value TEXT); CREATE INDEX idx_probe ON probe(value); INSERT INTO probe VALUES ('abcdefgh')",
-    );
-  }
-  if (failure === "mixed") {
+    {
+      using db = openRawDatabase(pathname);
+      db.exec(
+        "CREATE TABLE probe(value TEXT); CREATE INDEX idx_probe ON probe(value); INSERT INTO probe VALUES ('abcdefgh')",
+      );
+    }
     corruptSqliteIndexKey(pathname, "idx_probe", "abcdefgh", "abcdzzzz");
   }
   if (failure === "backup" || failure === "rebuild") {
@@ -158,7 +158,7 @@ async function createFixture(failure?: "mixed" | "backup" | "rebuild" | "writer"
         await owner.stop();
       }
     });
-  return { ...fixture, config, session, entry, pathname, rows, logPath, start, foreignLease };
+  return { env, session, entry, pathname, rows, logPath, start, foreignLease };
 }
 
 it("admits a tokenizer-mismatched agent at Gateway startup with preserved content and backup", async () => {

@@ -6,7 +6,6 @@ import { OPENCLAW_AGENT_SCHEMA_VERSION } from "./openclaw-agent-db-contract.js";
 import retirementManifest from "./openclaw-schema-retirements.json" with { type: "json" };
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "./openclaw-state-db-contract.js";
 
-type DatabaseOwner = "state" | "agent";
 const manifestSchema = z.object({
   retirements: z.array(
     z.object({
@@ -32,45 +31,28 @@ it("keeps the schema retirement ledger aligned with canonical database schemas",
   const keys = retirements.map(({ database, table }) => `${database}/${table}`);
   expect(new Set(keys).size, "duplicate database/table retirement").toBe(keys.length);
 
-  const databases = {
-    state: {
-      currentVersion: OPENCLAW_STATE_SCHEMA_VERSION,
-      schemaUrl: new URL("./openclaw-state-schema.sql", import.meta.url),
-      database: new DatabaseSync(":memory:"),
-    },
-    agent: {
-      currentVersion: OPENCLAW_AGENT_SCHEMA_VERSION,
-      schemaUrl: new URL("./openclaw-agent-schema.sql", import.meta.url),
-      database: new DatabaseSync(":memory:"),
-    },
-  } satisfies Record<
-    DatabaseOwner,
-    { currentVersion: number; schemaUrl: URL; database: DatabaseSync }
-  >;
+  using state = new DatabaseSync(":memory:");
+  using agent = new DatabaseSync(":memory:");
+  const databases = { state, agent };
+  const versions = { state: OPENCLAW_STATE_SCHEMA_VERSION, agent: OPENCLAW_AGENT_SCHEMA_VERSION };
+  for (const [owner, database] of Object.entries(databases)) {
+    database.exec(readFileSync(new URL(`./openclaw-${owner}-schema.sql`, import.meta.url), "utf8"));
+  }
 
-  try {
-    for (const database of Object.values(databases)) {
-      database.database.exec(readFileSync(database.schemaUrl, "utf8"));
+  for (const retirement of retirements) {
+    const database = databases[retirement.database];
+    const currentVersion = versions[retirement.database];
+    const shouldExist = retirement.status === "planned";
+
+    if (shouldExist) {
+      expect(retirement.targetVersion).toBe(currentVersion + 1);
+    } else {
+      expect(retirement.targetVersion).toBeLessThanOrEqual(currentVersion);
     }
 
-    for (const retirement of retirements) {
-      const { currentVersion, database } = databases[retirement.database];
-      const shouldExist = retirement.status === "planned";
-
-      if (shouldExist) {
-        expect(retirement.targetVersion).toBe(currentVersion + 1);
-      } else {
-        expect(retirement.targetVersion).toBeLessThanOrEqual(currentVersion);
-      }
-
-      expect(hasSchemaObject(database, "table", retirement.table)).toBe(shouldExist);
-      for (const index of retirement.indexes) {
-        expect(hasSchemaObject(database, "index", index)).toBe(shouldExist);
-      }
-    }
-  } finally {
-    for (const database of Object.values(databases)) {
-      database.database.close();
+    expect(hasSchemaObject(database, "table", retirement.table)).toBe(shouldExist);
+    for (const index of retirement.indexes) {
+      expect(hasSchemaObject(database, "index", index)).toBe(shouldExist);
     }
   }
 });

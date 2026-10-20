@@ -1,4 +1,3 @@
-// Same-version index repairs preserve canonical rows across upgrade and rollback.
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -33,8 +32,7 @@ it("upgrades the plugin listing index through runtime without rewriting entries"
         ('plugin', 'sibling', 'expired', '{ "value": 3 }', 20, 999),
         ('plugin', 'sibling', 'future', '{ "value": 4 }', 20, 1001),
         ('peer', 'written', 'live', '{ "value": 5 }', 10, NULL)`;
-  const stateDir = tempDirs.make("openclaw-index-repair-");
-  const options = { env: { OPENCLAW_STATE_DIR: stateDir } };
+  const options = { env: { OPENCLAW_STATE_DIR: tempDirs.make("openclaw-index-repair-") } };
   const templatePath = openOpenClawStateDatabase({
     env: { OPENCLAW_STATE_DIR: tempDirs.make("openclaw-index-template-") },
   }).path;
@@ -42,8 +40,6 @@ it("upgrades the plugin listing index through runtime without rewriting entries"
   const databasePath = resolveOpenClawStateSqlitePath(options.env);
   fs.mkdirSync(path.dirname(databasePath), { recursive: true });
   fs.copyFileSync(templatePath, databasePath);
-  const { DatabaseSync } = requireNodeSqlite();
-  const legacy = new DatabaseSync(databasePath);
   const entriesSql = "SELECT * FROM plugin_state_entries ORDER BY plugin_id, namespace, entry_key";
   const oldIndexSql = `CREATE INDEX ${index} ON plugin_state_entries(${oldColumns});`;
   const oldSchema = OPENCLAW_STATE_SCHEMA_SQL.replace(
@@ -54,7 +50,8 @@ it("upgrades the plugin listing index through runtime without rewriting entries"
     "SELECT role, agent_id, schema_version, app_version FROM schema_meta WHERE meta_key = 'primary'";
   let entries: unknown;
   let metadata: unknown;
-  try {
+  {
+    using legacy = new (requireNodeSqlite().DatabaseSync)(databasePath);
     legacy.exec(`DROP INDEX ${index}; ${oldIndexSql} ${insertSql};`);
     entries = legacy.prepare(entriesSql).all();
     metadata = legacy.prepare(metadataSql).get();
@@ -62,8 +59,6 @@ it("upgrades the plugin listing index through runtime without rewriting entries"
       schema_version: OPENCLAW_STATE_SCHEMA_VERSION,
       app_version: VERSION,
     });
-  } finally {
-    legacy.close();
   }
 
   const pragma = (database: OpenClawStateDatabase, name: "user_version" | "schema_version") =>
@@ -72,17 +67,14 @@ it("upgrades the plugin listing index through runtime without rewriting entries"
     expect(database.db.prepare(entriesSql).all()).toEqual(entries);
     expect(database.db.prepare(metadataSql).get()).toEqual(metadata);
   };
-  const expectColumns = (database: OpenClawStateDatabase, columns: string[]) => {
-    expect(
-      database.db
-        .prepare(`PRAGMA index_info(${index})`)
-        .all()
-        .map((row) => row.name),
-    ).toEqual(columns);
-  };
+  const columns = ({ db }: OpenClawStateDatabase) =>
+    db
+      .prepare(`PRAGMA index_info(${index})`)
+      .all()
+      .map((row) => row.name);
 
   const upgraded = openOpenClawStateDatabase(options);
-  expectColumns(upgraded, [...oldColumns.split(", "), "expires_at"]);
+  expect(columns(upgraded)).toEqual([...oldColumns.split(", "), "expires_at"]);
   expectPreserved(upgraded);
   expect(pragma(upgraded, "user_version")).toBe(OPENCLAW_STATE_SCHEMA_VERSION);
   const schemaVersion = pragma(upgraded, "schema_version");
@@ -100,7 +92,7 @@ it("upgrades the plugin listing index through runtime without rewriting entries"
       sqliteSchemaFixture(oldSchema),
     ),
   ).toEqual([index]);
-  expectColumns(reopened, oldColumns.split(", "));
+  expect(columns(reopened)).toEqual(oldColumns.split(", "));
   expectPreserved(reopened);
   expect(pragma(reopened, "user_version")).toBe(OPENCLAW_STATE_SCHEMA_VERSION);
   expect(reopened.db.prepare("PRAGMA integrity_check").all()).toEqual([{ integrity_check: "ok" }]);
