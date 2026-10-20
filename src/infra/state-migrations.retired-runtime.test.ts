@@ -3,14 +3,14 @@ import path from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { repairRetiredDoctorState } from "../commands/doctor-retired-state-repair.js";
-import { readPluginBindingApprovalsInDatabase } from "../plugins/conversation-binding-state.kernel.js";
+import { readPluginBindingApprovalsInDatabase as readApprovals } from "../plugins/conversation-binding-state.kernel.js";
 import { writeConfigMachineState } from "../state/config-machine-state-write.js";
-import { readConfigMachineState } from "../state/config-machine-state.js";
+import { readConfigMachineState as readSetting } from "../state/config-machine-state.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
-import { inspectCurrentConversationBindingRecordsInDatabase } from "./outbound/current-conversation-bindings.kernel.js";
+import { inspectCurrentConversationBindingRecordsInDatabase as readBindings } from "./outbound/current-conversation-bindings.kernel.js";
 import { assertNoRetiredRuntimeStateFiles } from "./state-migrations.retired-runtime-files.js";
 import { migrateRetiredRuntimeState } from "./state-migrations.retired-runtime.js";
 import { runLegacyStateMigrationSteps } from "./state-migrations.steps.js";
@@ -21,6 +21,9 @@ const binding = {
 };
 const approval = { pluginRoot: "/plugins/example", pluginId: "example", channel: "discord" };
 const collection = (key: string, entry: unknown) => ({ version: 1, [key]: [entry] });
+const voiceFile = "settings/voicewake.json";
+const bindingsFile = "bindings/current-conversations.json";
+const approvalsFile = "plugin-binding-approvals.json";
 
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
   afterEach(() => {
@@ -38,9 +41,7 @@ beforeEach(() => {
 function write(relative: string, value: unknown) {
   const file = path.join(stateDir, relative);
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const bytes = Buffer.from(
-    typeof value === "string" ? value : `${JSON.stringify(value, null, 2)}\n`,
-  );
+  const bytes = Buffer.from(typeof value === "string" ? value : JSON.stringify(value));
   fs.writeFileSync(file, bytes);
   return { file, bytes };
 }
@@ -55,20 +56,14 @@ function expectArchived({ file, bytes }: ReturnType<typeof write>, suffix = ".mi
 it("preserves meaningful settings and bindings while archiving every retired source", async () => {
   const conversation = { ...binding.conversation, accountId: "default" };
   const fixtures = [
-    write("settings/voicewake.json", { triggers: [" wake up ", "computer"] }),
+    write(voiceFile, { triggers: [" wake up ", "computer"] }),
     write("settings/voicewake-routing.json", {
       version: 1,
       defaultTarget: { agentId: "work" },
       routes: [],
     }),
-    write(
-      "bindings/current-conversations.json",
-      collection("bindings", { ...binding, conversation, boundAt: 100 }),
-    ),
-    write(
-      "plugin-binding-approvals.json",
-      collection("approvals", { ...approval, approvedAt: 100 }),
-    ),
+    write(bindingsFile, collection("bindings", { ...binding, conversation, boundAt: 100 })),
+    write(approvalsFile, collection("approvals", { ...approval, approvedAt: 100 })),
     ...[
       "acp/event-ledger.json",
       "acp/event-ledger.json.doctor-import",
@@ -77,18 +72,34 @@ it("preserves meaningful settings and bindings while archiving every retired sou
       "update-check.json",
     ].map((file) => write(file, '{"retained":"exact bytes"}\n')),
   ];
-  const result = await migrate();
-  expect(result.warnings).toHaveLength(fixtures.length);
-  expect(readConfigMachineState("voicewake.triggers", { env })).toEqual(["wake up", "computer"]);
-  expect(readConfigMachineState("voicewake.routing", { env })).toMatchObject({
+  const {
+    sources: [result],
+    haltedBy,
+    receipts,
+  } = await runLegacyStateMigrationSteps([
+    {
+      id: "retired-core-state",
+      phase: "shared",
+      source: [{ kind: "path", path: path.join(stateDir, voiceFile) }],
+      target: [],
+      requiredness: "required",
+      reversibility: "checkpoint-required",
+      run: () => repairRetiredDoctorState(env),
+    },
+  ]);
+  expect(haltedBy).toBeUndefined();
+  expect(receipts[0]?.outcome).toBe("warning");
+  expect(result?.warnings).toHaveLength(fixtures.length);
+  expect(readSetting("voicewake.triggers", { env })).toEqual(["wake up", "computer"]);
+  expect(readSetting("voicewake.routing", { env })).toMatchObject({
     defaultTarget: { agentId: "work" },
   });
   const { db } = openOpenClawStateDatabase({ env });
-  expect(inspectCurrentConversationBindingRecordsInDatabase(db, [conversation])[0]).toMatchObject({
+  expect(readBindings(db, [conversation])[0]).toMatchObject({
     targetSessionKey: "agent:main:test",
     boundAt: 100,
   });
-  expect(readPluginBindingApprovalsInDatabase(db)).toEqual([
+  expect(readApprovals(db)).toEqual([
     {
       ...approval,
       pluginName: undefined,
@@ -98,7 +109,7 @@ it("preserves meaningful settings and bindings while archiving every retired sou
   ]);
   for (const fixture of fixtures) {
     expectArchived(fixture);
-    expect(result.warnings.join("\n")).toContain(`${fixture.file}.migrated`);
+    expect(result?.warnings.join("\n")).toContain(`${fixture.file}.migrated`);
   }
   expect(() => assertNoRetiredRuntimeStateFiles(stateDir, env)).not.toThrow();
   expect(await migrate()).toEqual({ changes: [], warnings: [] });
@@ -106,16 +117,16 @@ it("preserves meaningful settings and bindings while archiving every retired sou
 
 it("keeps canonical settings and preserves a distinct earlier archive", async () => {
   writeConfigMachineState("voicewake.triggers", ["current phrase"], { env });
-  const source = write("settings/voicewake.json", { triggers: ["legacy phrase"] });
+  const source = write(voiceFile, { triggers: ["legacy phrase"] });
   fs.writeFileSync(`${source.file}.migrated`, "earlier backup");
   await migrate();
-  expect(readConfigMachineState("voicewake.triggers", { env })).toEqual(["current phrase"]);
+  expect(readSetting("voicewake.triggers", { env })).toEqual(["current phrase"]);
   expect(fs.readFileSync(`${source.file}.migrated`, "utf8")).toBe("earlier backup");
   expectArchived(source, ".migrated.2");
 });
 
 it("archives malformed meaningful data with recovery instructions and still admits updates", async () => {
-  const source = write("settings/voicewake.json", "{malformed\n");
+  const source = write(voiceFile, "{malformed\n");
   const result = await migrate();
   expect(result.warnings.join("\n")).toContain(
     "Restore the listed trigger phrases through Voice Wake settings",
@@ -125,14 +136,10 @@ it("archives malformed meaningful data with recovery instructions and still admi
 });
 
 it.each([
-  ["settings/voicewake.json", { triggers: ["retained"] }, "config_machine_state"],
+  [voiceFile, { triggers: ["retained"] }, "config_machine_state"],
   ["settings/voicewake-routing.json", { version: 1, routes: [] }, "config_machine_state"],
-  [
-    "bindings/current-conversations.json",
-    collection("bindings", binding),
-    "current_conversation_bindings",
-  ],
-  ["plugin-binding-approvals.json", collection("approvals", approval), "plugin_binding_approvals"],
+  [bindingsFile, collection("bindings", binding), "current_conversation_bindings"],
+  [approvalsFile, collection("approvals", approval), "plugin_binding_approvals"],
 ] as const)(
   "retains %s after SQLite rejection and retries the import",
   async (relative, value, table) => {
@@ -160,27 +167,8 @@ it.each([
   },
 );
 
-it("reports a successful Doctor import as an advisory step, not a refusal", async () => {
-  const source = write("settings/voicewake.json", { triggers: ["retained"] });
-  const result = await runLegacyStateMigrationSteps([
-    {
-      id: "retired-core-state",
-      phase: "shared",
-      source: [{ kind: "path", path: source.file }],
-      target: [],
-      requiredness: "required",
-      reversibility: "checkpoint-required",
-      run: () => repairRetiredDoctorState(env),
-    },
-  ]);
-  expect(result.haltedBy).toBeUndefined();
-  expect(result.receipts[0]?.outcome).toBe("warning");
-  expect(readConfigMachineState("voicewake.triggers", { env })).toEqual(["retained"]);
-  expectArchived(source);
-});
-
 it("does not import another profile's default-home approval", async () => {
-  const source = write("plugin-binding-approvals.json", { version: 1, approvals: [] });
+  const source = write(approvalsFile, { version: 1, approvals: [] });
   const profileDir = path.join(path.dirname(stateDir), ".openclaw-work");
   await migrateRetiredRuntimeState({ stateDir: profileDir, env, assertCurrent() {} });
   expect(fs.readFileSync(source.file)).toEqual(source.bytes);

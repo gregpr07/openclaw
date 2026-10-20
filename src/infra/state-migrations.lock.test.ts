@@ -17,13 +17,12 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
 
 function migrationOptions() {
   const stateDir = tempDirs.make("openclaw-state-migration-lock-");
-  const env = {
-    ...process.env,
-    OPENCLAW_CONFIG_PATH: path.join(stateDir, "openclaw.json"),
-    OPENCLAW_STATE_DIR: stateDir,
-  };
   return {
-    env,
+    env: {
+      ...process.env,
+      OPENCLAW_CONFIG_PATH: path.join(stateDir, "openclaw.json"),
+      OPENCLAW_STATE_DIR: stateDir,
+    },
     stateDir,
     label: "legacy example state",
     releaseLabel: "Example",
@@ -77,48 +76,37 @@ it.each([
   expect(fs.existsSync(databasePath)).toBe(false);
 });
 
-it("keeps nested cleanup inside exclusive ownership and forwards canonical state env", async () => {
-  const options = migrationOptions();
-  const events: string[] = [];
-  const result = await withLegacyMigrationStateLock({
-    ...options,
-    beforeRelease: () => {
-      events.push("nested-release");
-    },
-    run: async (env) => {
-      events.push("migrate");
-      expect(env.OPENCLAW_STATE_DIR).toBe(options.stateDir);
-      return { changes: ["imported"], warnings: [], notices: ["verified"] };
-    },
-  });
-
-  expect(result).toEqual({ changes: ["imported"], warnings: [], notices: ["verified"] });
-  expect(events).toEqual(["migrate", "nested-release"]);
-  await expectStateOwnershipReleased(options.env);
-});
-
-it.each(["converted", "thrown", "cleanup"] as const)(
-  "releases ownership after a %s failure",
+it.each(["success", "converted", "thrown", "cleanup"] as const)(
+  "releases ownership after %s",
   async (mode) => {
     const options = migrationOptions();
     const cleanup = mode === "cleanup";
+    const success = mode === "success";
+    const events: string[] = [];
     const message = cleanup ? "nested release failed" : "unsafe source";
     const retained = { changes: ["imported"], warnings: ["retained historical source"] };
-    const fail = () => {
-      throw new Error(message);
-    };
     const result = withLegacyMigrationStateLock({
       ...options,
       errorLabel: mode === "converted" ? "Failed reading legacy example state" : undefined,
-      beforeRelease: cleanup ? fail : undefined,
-      run: async () => {
-        if (!cleanup) {
-          fail();
+      beforeRelease:
+        success || cleanup
+          ? () => {
+              events.push("nested-release");
+              if (cleanup) {
+                throw new Error(message);
+              }
+            }
+          : undefined,
+      run: async (env) => {
+        events.push("migrate");
+        expect(env.OPENCLAW_STATE_DIR).toBe(options.stateDir);
+        if (!cleanup && !success) {
+          throw new Error(message);
         }
         return {
           ...retained,
-          warnings: [...retained.warnings],
-          warningDisposition: "recoverable",
+          warnings: cleanup ? [...retained.warnings] : [],
+          ...(success ? { notices: ["verified"] } : { warningDisposition: "recoverable" as const }),
         };
       },
     });
@@ -126,11 +114,17 @@ it.each(["converted", "thrown", "cleanup"] as const)(
       await expect(result).rejects.toThrow(message);
     } else {
       await expect(result).resolves.toEqual({
-        changes: cleanup ? retained.changes : [],
+        changes: cleanup || success ? ["imported"] : [],
         warnings: cleanup
           ? [...retained.warnings, `Example migration lock release failed: ${message}`]
-          : [`Failed reading legacy example state: Error: ${message}`],
+          : success
+            ? []
+            : [`Failed reading legacy example state: Error: ${message}`],
+        ...(success ? { notices: ["verified"] } : {}),
       });
+    }
+    if (success) {
+      expect(events).toEqual(["migrate", "nested-release"]);
     }
     await expectStateOwnershipReleased(options.env);
   },

@@ -66,15 +66,11 @@ it("preserves persisted source-key hashing with optional ownership scope", () =>
   );
 });
 
-it("records one typed receipt, rejects duplicates, and marks verified source removal", () => {
-  const { receipt, source, write, read, remove } = createFixture();
-
-  expect(read()).toEqual({
-    sourceKey: receipt.sourceKey,
-    sourceSha256: receipt.sourceSha256,
-    removedSource: false,
-    reportJson: receipt.reportJson,
-  });
+it("records, rejects duplicates, removes, and resumes a receipt without replacing its report", () => {
+  const { receipt, db: database, source, write, read, remove } = createFixture();
+  const { sourceKey, reportJson } = receipt;
+  const preserved = { sourceKey, reportJson, removedSource: false };
+  expect(read()).toEqual({ ...preserved, sourceSha256: receipt.sourceSha256 });
   expect(() => write((db) => recordLegacyMigrationReceipt(db, receipt))).toThrow();
 
   remove("test migration cleanup");
@@ -88,12 +84,7 @@ it("records one typed receipt, rejects duplicates, and marks verified source rem
     status: "completed",
     removed_source: 1,
   });
-});
-
-it("upserts resumed runs and sources without replacing a preserved receipt report", () => {
-  const { receipt, db: database, source, write, read, remove } = createFixture();
   remove();
-
   write((db) => {
     recordLegacyMigrationRun(db, {
       runId: receipt.runId,
@@ -124,11 +115,6 @@ it("upserts resumed runs and sources without replacing a preserved receipt repor
     status: "archived",
     report_json: '{"resumed":true}',
   });
-  expect(read()).toEqual({
-    sourceKey: receipt.sourceKey,
-    sourceSha256: "b".repeat(64),
-    removedSource: false,
-    reportJson: receipt.reportJson,
-  });
+  expect(read()).toEqual({ ...preserved, sourceSha256: "b".repeat(64) });
   expect(source()).toMatchObject({ source_size_bytes: 24, source_record_count: 2 });
 });
