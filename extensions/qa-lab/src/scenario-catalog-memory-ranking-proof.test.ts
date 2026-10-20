@@ -19,12 +19,6 @@ const currentSessionResult = {
   snippet: "The current Project Nebula codename is ORBIT-10.",
   score: 0.8,
 };
-const evergreenUserResult = {
-  path: "USER.md",
-  source: "memory",
-  snippet: "About Your Human: preferred project communication style.",
-  score: 0.68,
-};
 const staleDurableResult = {
   path: `memory/${new Date(Date.now() - 3 * 86_400_000).toISOString().slice(0, 10)}.md`,
   source: "memory",
@@ -32,65 +26,30 @@ const staleDurableResult = {
   score: 0.9,
 };
 
-type RankingResult =
-  | typeof currentQuestionResult
-  | typeof currentSessionResult
-  | typeof evergreenUserResult
-  | typeof staleDurableResult;
-type ProviderMode = "mock-openai" | "live-frontier";
-
 async function runSessionMemoryRankingFlow(
   params: {
-    results?: RankingResult[];
-    providerMode?: ProviderMode;
-    query?: string;
-    maxResults?: number;
-    omitMaxResults?: boolean;
-    corpus?: "memory" | "sessions" | "all";
-    includeToolCall?: boolean;
-    includeToolResult?: boolean;
-    resultCallId?: string;
-    resultIsError?: boolean;
+    results?: (typeof currentSessionResult)[];
+    providerMode?: "mock-openai" | "live-frontier";
   } = {},
 ) {
   const state = createQaBusState();
   const results = params.results ?? [currentSessionResult, staleDurableResult];
   const providerMode = params.providerMode ?? "mock-openai";
-  const includeToolCall = params.includeToolCall !== false;
-  const includeToolResult = params.includeToolResult !== false;
-  const plannedToolArgs = {
-    query: params.query ?? searchQuery,
-    ...(params.omitMaxResults ? {} : { maxResults: params.maxResults ?? 6 }),
-    ...(params.corpus ? { corpus: params.corpus } : {}),
-  };
-  const toolResultCallId = params.resultCallId ?? searchCallId;
+  const plannedToolArgs = { query: searchQuery, maxResults: 6 };
   const directHistoryMessages = [
-    ...(includeToolCall
-      ? [
-          {
-            role: "assistant",
-            content: [
-              {
-                type: "toolCall",
-                id: searchCallId,
-                name: "memory_search",
-                arguments: plannedToolArgs,
-              },
-            ],
-          },
-        ]
-      : []),
-    ...(includeToolResult
-      ? [
-          {
-            role: "toolResult",
-            toolCallId: toolResultCallId,
-            toolName: "memory_search",
-            isError: params.resultIsError === true,
-            content: [{ type: "text", text: JSON.stringify({ results }) }],
-          },
-        ]
-      : []),
+    {
+      role: "assistant",
+      content: [
+        { type: "toolCall", id: searchCallId, name: "memory_search", arguments: plannedToolArgs },
+      ],
+    },
+    {
+      role: "toolResult",
+      toolCallId: searchCallId,
+      toolName: "memory_search",
+      isError: false,
+      content: [{ type: "text", text: JSON.stringify({ results }) }],
+    },
     {
       role: "assistant",
       content: [{ type: "text", text: "The current Project Nebula codename is ORBIT-10." }],
@@ -98,17 +57,14 @@ async function runSessionMemoryRankingFlow(
   ];
   const historyMessages =
     providerMode === "live-frontier"
-      ? includeToolCall && includeToolResult && toolResultCallId === searchCallId
-        ? [
-            nestedToolHistoryFixture({
-              toolName: "memory_search",
-              toolCallId: searchCallId,
-              input: plannedToolArgs,
-              text: JSON.stringify({ results }),
-              isError: params.resultIsError,
-            }),
-          ]
-        : directHistoryMessages
+      ? [
+          nestedToolHistoryFixture({
+            toolName: "memory_search",
+            toolCallId: searchCallId,
+            input: plannedToolArgs,
+            text: JSON.stringify({ results }),
+          }),
+        ]
       : directHistoryMessages;
   const gatewayCall = vi.fn(
     async (method: string, request: { sessionKey?: string; limit?: number }) => {
@@ -120,13 +76,6 @@ async function runSessionMemoryRankingFlow(
   const fetchJson = vi.fn(async (input: string) => {
     throw new Error(`unexpected QA mock request: ${input}`);
   });
-  const forceMemoryIndex = vi.fn(async () => undefined);
-  const writeFile = vi.fn(
-    async (_filePath: string, _content: string, _encoding: string) => undefined,
-  );
-  const utimes = vi.fn(
-    async (_filePath: string, _accessedAt: Date, _modifiedAt: Date) => undefined,
-  );
   const runAgentPrompt = vi.fn(async (_env: unknown, options: { message: string }) => {
     expect(options.message).not.toContain("ORBIT-10");
     state.addOutboundMessage({
@@ -147,20 +96,20 @@ async function runSessionMemoryRankingFlow(
       path,
       fs: {
         mkdir: async () => undefined,
-        writeFile,
-        utimes,
+        writeFile: vi.fn(async () => undefined),
+        utimes: vi.fn(async () => undefined),
       },
       readConfigSnapshot: async () => ({ config: {} }),
       patchConfig: async () => undefined,
       seedQaSessionTranscript: async () => undefined,
-      forceMemoryIndex,
+      forceMemoryIndex: vi.fn(async () => undefined),
       runAgentPrompt,
       normalizeLowercaseStringOrEmpty,
       fetchJson,
     },
   });
 
-  return { result, fetchJson, forceMemoryIndex, gatewayCall, runAgentPrompt, utimes, writeFile };
+  return { result, fetchJson, gatewayCall, runAgentPrompt };
 }
 
 describe("session memory ranking scenario evidence", () => {

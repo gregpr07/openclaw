@@ -31,35 +31,31 @@ async function seedSession(params: {
   const tempRoot = params.tempRoot ?? (await tempDirs.makeTempDir("qa-runtime-selection-"));
   const env = { ...process.env, OPENCLAW_STATE_DIR: path.join(tempRoot, "state") };
   const storePath = resolveStorePath(undefined, { agentId: "qa", env });
-  await upsertSessionEntry({
+  const identity = {
     agentId: "qa",
     env,
+    sessionId: params.sessionId,
     sessionKey: params.sessionKey,
     storePath,
+  };
+  await upsertSessionEntry({
+    ...identity,
     entry: {
       sessionId: params.sessionId,
-      sessionFile: formatSqliteSessionFileMarker({
-        agentId: "qa",
-        sessionId: params.sessionId,
-        storePath,
-      }),
+      sessionFile: formatSqliteSessionFileMarker(identity),
       updatedAt: params.updatedAt,
       ...(params.parentSessionKey ? { parentSessionKey: params.parentSessionKey } : {}),
     },
   });
   for (const message of params.messages) {
     await appendSessionTranscriptMessageByIdentity({
-      agentId: "qa",
-      env,
-      sessionId: params.sessionId,
-      sessionKey: params.sessionKey,
-      storePath,
+      ...identity,
       message: message as never,
     });
   }
   if (params.trajectoryEvents?.length) {
     appendSqliteTrajectoryRuntimeEvents(
-      { agentId: "qa", env, sessionId: params.sessionId, storePath },
+      identity,
       params.trajectoryEvents.map((event, index) => ({
         traceSchema: "openclaw-trajectory",
         schemaVersion: 1,
@@ -76,6 +72,31 @@ async function seedSession(params: {
     );
   }
   return tempRoot;
+}
+
+function toolEvents(
+  name: string,
+  args: Record<string, unknown>,
+  result: Record<string, unknown>,
+  success: boolean,
+) {
+  const tool = { toolCallId: `${name.replaceAll("_", "-")}-1`, name };
+  return [
+    { type: "tool.call", data: { ...tool, arguments: args } },
+    {
+      type: "tool.result",
+      data: { ...tool, status: success ? "completed" : "failed", success, result },
+    },
+  ];
+}
+
+function captureSession(tempRoot: string, sessionKey: string) {
+  return captureRuntimeParityCell({
+    runtime: "codex",
+    gateway: { tempRoot },
+    scenarioResult: { status: "pass", details: `RUNTIME_PARITY_SESSION_KEY=${sessionKey}` },
+    wallClockMs: 10,
+  });
 }
 
 describe("runtime parity session selection", () => {
@@ -95,37 +116,15 @@ describe("runtime parity session selection", () => {
       parentSessionKey: rootSessionKey,
       messages: [{ role: "user", content: "failure target=web_fetch" }],
       updatedAt: now - 1_000,
-      trajectoryEvents: [
-        {
-          type: "tool.call",
-          data: {
-            toolCallId: "web-fetch-1",
-            name: "web_fetch",
-            arguments: { __qaFailureMode: "denied-input" },
-          },
-        },
-        {
-          type: "tool.result",
-          data: {
-            toolCallId: "web-fetch-1",
-            name: "web_fetch",
-            status: "failed",
-            success: false,
-            result: { error: "url required" },
-          },
-        },
-      ],
+      trajectoryEvents: toolEvents(
+        "web_fetch",
+        { __qaFailureMode: "denied-input" },
+        { error: "url required" },
+        false,
+      ),
     });
 
-    const cell = await captureRuntimeParityCell({
-      runtime: "codex",
-      gateway: { tempRoot },
-      scenarioResult: {
-        status: "pass",
-        details: "RUNTIME_PARITY_SESSION_KEY=agent:qa:runtime-tool:web_fetch:failure",
-      },
-      wallClockMs: 10,
-    });
+    const cell = await captureSession(tempRoot, "agent:qa:runtime-tool:web_fetch:failure");
 
     expect(cell.toolCalls).toEqual([expect.objectContaining({ tool: "web_fetch" })]);
   });
@@ -138,26 +137,12 @@ describe("runtime parity session selection", () => {
       sessionKey: parentSessionKey,
       messages: [{ role: "user", content: "tool search qa check target=sessions_spawn" }],
       updatedAt: now - 1_000,
-      trajectoryEvents: [
-        {
-          type: "tool.call",
-          data: {
-            toolCallId: "sessions-spawn-1",
-            name: "sessions_spawn",
-            arguments: { task: "reply exactly RUNTIME-TOOL-FIXTURE", mode: "run" },
-          },
-        },
-        {
-          type: "tool.result",
-          data: {
-            toolCallId: "sessions-spawn-1",
-            name: "sessions_spawn",
-            status: "completed",
-            success: true,
-            result: { status: "accepted", childSessionKey: "agent:qa:subagent:child" },
-          },
-        },
-      ],
+      trajectoryEvents: toolEvents(
+        "sessions_spawn",
+        { task: "reply exactly RUNTIME-TOOL-FIXTURE", mode: "run" },
+        { status: "accepted", childSessionKey: "agent:qa:subagent:child" },
+        true,
+      ),
     });
     await seedSession({
       tempRoot,
@@ -168,23 +153,11 @@ describe("runtime parity session selection", () => {
       updatedAt: now,
     });
 
-    const cell = await captureRuntimeParityCell({
-      runtime: "codex",
-      gateway: { tempRoot },
-      scenarioResult: {
-        status: "pass",
-        details: `RUNTIME_PARITY_SESSION_KEY=${parentSessionKey}`,
-      },
-      wallClockMs: 10,
-    });
+    const cell = await captureSession(tempRoot, parentSessionKey);
 
     expect(cell.transcriptBytes).toContain("target=sessions_spawn");
     expect(cell.transcriptBytes).not.toContain("RUNTIME-TOOL-FIXTURE");
-    expect(cell.toolCalls).toEqual([
-      expect.objectContaining({
-        tool: "sessions_spawn",
-      }),
-    ]);
+    expect(cell.toolCalls).toEqual([expect.objectContaining({ tool: "sessions_spawn" })]);
     expect(cell.toolCalls[0]).not.toHaveProperty("errorClass");
     expect(cell.toolCalls[0]?.resultHash).not.toBe("");
   });

@@ -3,11 +3,7 @@ import { createQaBusState } from "./bus-state.js";
 import { runLoadedScenarioFlow } from "./scenario-flow-runner.test-support.js";
 import { formatTransportTranscript, recentOutboundSummary } from "./suite-runtime-transport.js";
 
-type ScenarioRoute = {
-  target: string;
-  marker: string;
-  leakedTarget: string;
-};
+type ScenarioRoute = readonly [target: string, marker: string, leakedTarget: string];
 
 type ChannelRoutingScenario = {
   scenarioId: string;
@@ -22,66 +18,32 @@ const routingScenarios = [
     scenarioId: "channel-secondary-conversation-isolation",
     expectedFailure: "secondary conversation leaked into primary route",
     routes: [
-      {
-        target: "group:primary",
-        marker: "QA-PRIMARY-CONVERSATION-OK",
-        leakedTarget: "group:secondary",
-      },
-      {
-        target: "group:secondary",
-        marker: "QA-SECONDARY-CONVERSATION-OK",
-        leakedTarget: "group:primary",
-      },
+      ["group:primary", "QA-PRIMARY-CONVERSATION-OK", "group:secondary"],
+      ["group:secondary", "QA-SECONDARY-CONVERSATION-OK", "group:primary"],
     ],
   },
   {
     scenarioId: "channel-dm-group-routing",
     expectedFailure: "DM/group routes crossed",
     routes: [
-      {
-        target: "dm:qa-routing-dm",
-        marker: "QA-DM-ROUTING-OK",
-        leakedTarget: "group:qa-routing-group",
-      },
-      {
-        target: "group:qa-routing-group",
-        marker: "QA-GROUP-ROUTING-OK",
-        leakedTarget: "dm:qa-routing-dm",
-      },
+      ["dm:qa-routing-dm", "QA-DM-ROUTING-OK", "group:qa-routing-group"],
+      ["group:qa-routing-group", "QA-GROUP-ROUTING-OK", "dm:qa-routing-dm"],
     ],
   },
   {
     scenarioId: "channel-canary",
     expectedFailure: "expected one canary reply, saw 2",
-    routes: [
-      {
-        target: "group:qa-routing-primary",
-        marker: "QA-CHANNEL-CANARY-OK",
-        leakedTarget: "group:foreign",
-      },
-    ],
+    routes: [["group:qa-routing-primary", "QA-CHANNEL-CANARY-OK", "group:foreign"]],
   },
   {
     scenarioId: "dm-chat-baseline",
     expectedFailure: "expected exactly one DM baseline marker reply, saw 2",
-    routes: [
-      {
-        target: "dm:alice",
-        marker: "QA-DM-BASELINE-OK",
-        leakedTarget: "dm:mallory",
-      },
-    ],
+    routes: [["dm:alice", "QA-DM-BASELINE-OK", "dm:mallory"]],
   },
   {
     scenarioId: "channel-chat-baseline",
     expectedFailure: "expected exactly one channel baseline marker reply, saw 2",
-    routes: [
-      {
-        target: "channel:qa-room",
-        marker: "QA-CHANNEL-BASELINE-OK",
-        leakedTarget: "dm:mallory",
-      },
-    ],
+    routes: [["channel:qa-room", "QA-CHANNEL-BASELINE-OK", "dm:mallory"]],
   },
 ] as const satisfies readonly ChannelRoutingScenario[];
 
@@ -94,22 +56,23 @@ function runRoutingScenario(scenario: ChannelRoutingScenario, leak: RouteLeak) {
       if (!route) {
         throw new Error(`unexpected outbound wait ${waitCount}`);
       }
+      const [target, marker, otherTarget] = route;
       state.addOutboundMessage({
         accountId: "qa-channel",
-        to: route.target,
-        text: route.marker,
+        to: target,
+        text: marker,
       });
       if (leak !== "none") {
         const leakedTarget =
           leak === "conversation"
-            ? route.leakedTarget
+            ? otherTarget
             : leak === "conversation-kind"
-              ? `${route.target.startsWith("dm:") ? "group" : "dm"}:${route.target.split(":")[1]}`
-              : route.target;
+              ? `${target.startsWith("dm:") ? "group" : "dm"}:${target.split(":")[1]}`
+              : target;
         state.addOutboundMessage({
           accountId: leak === "account" ? "foreign-account" : "qa-channel",
           to: leakedTarget,
-          text: route.marker,
+          text: marker,
         });
       }
     },
@@ -131,7 +94,7 @@ describe("channel scenario route isolation", () => {
 
       await expect(result).rejects.toThrow(scenario.expectedFailure);
       for (const route of scenario.routes) {
-        await expect(result).rejects.toThrow(route.leakedTarget.split(":")[1]);
+        await expect(result).rejects.toThrow(route[2].split(":")[1]);
       }
     },
   );
@@ -146,9 +109,9 @@ describe("channel scenario route isolation", () => {
     "rejects a same-ID $leak route collision in $scenario.scenarioId",
     async ({ scenario, leak }) => {
       const result = runRoutingScenario(scenario, leak);
-      const firstRoute = scenario.routes[0];
-      const conversationId = firstRoute.target.split(":")[1];
-      const expectedKind = firstRoute.target.startsWith("dm:") ? "direct" : "group";
+      const [target] = scenario.routes[0];
+      const conversationId = target.split(":")[1];
+      const expectedKind = target.startsWith("dm:") ? "direct" : "group";
       const leakedKind =
         leak === "conversation-kind"
           ? expectedKind === "direct"

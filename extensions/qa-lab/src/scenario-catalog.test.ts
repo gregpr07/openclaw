@@ -23,13 +23,8 @@ describe("qa scenario catalog", () => {
 
   it("keeps scenario documentation and code references backed by the repository", () => {
     for (const scenario of readQaScenarioPack().scenarios) {
-      const referenceGroups = [
-        ["docsRefs", scenario.docsRefs],
-        ["codeRefs", scenario.codeRefs],
-      ] as const;
-
-      for (const [kind, references] of referenceGroups) {
-        for (const reference of references ?? []) {
+      for (const kind of ["docsRefs", "codeRefs"] as const) {
+        for (const reference of scenario[kind] ?? []) {
           const resolvedReference =
             resolveQaRepoPath(import.meta.dirname, reference, "file") ??
             resolveQaRepoPath(import.meta.dirname, reference, "directory");
@@ -50,8 +45,7 @@ describe("qa scenario catalog", () => {
     );
 
     expect(marked.map((scenario) => scenario.id).toSorted()).toEqual(expected);
-    const ssh = readQaScenarioById("gateway-ssh-tunnels");
-    expect(ssh.execution).toMatchObject({
+    expect(readQaScenarioById("gateway-ssh-tunnels").execution).toMatchObject({
       kind: "script",
       parallelSafe: true,
       allowBlockedEvidence: true,
@@ -61,17 +55,10 @@ describe("qa scenario catalog", () => {
       "gateway-rpc-account-health",
       "mcp-gateway-connect-startup-retry",
       "voice-call-cli-rpc-agent-tool",
+      "tui-local-shell-pty",
+      "tui-entrypoints-pty",
+      "tui-terminal-safety-pty",
     ]) {
-      expect(readQaScenarioById(scenarioId).execution).toMatchObject({
-        kind: "script",
-        parallelSafe: false,
-      });
-    }
-    expect(readQaScenarioById("tui-local-shell-pty").execution).toMatchObject({
-      kind: "script",
-      parallelSafe: false,
-    });
-    for (const scenarioId of ["tui-entrypoints-pty", "tui-terminal-safety-pty"]) {
       expect(readQaScenarioById(scenarioId).execution).toMatchObject({
         kind: "script",
         parallelSafe: false,
@@ -106,11 +93,9 @@ describe("qa scenario catalog", () => {
       );
 
     expect(scenarios.length).toBeGreaterThan(0);
-    expect(
-      scenarios
-        .filter((scenario) => scenario.execution.suiteIsolation !== "isolated")
-        .map((scenario) => scenario.id),
-    ).toEqual([]);
+    for (const scenario of scenarios) {
+      expect(scenario.execution.suiteIsolation, scenario.id).toBe("isolated");
+    }
     expect(
       scenarios.find((scenario) => scenario.id === "gateway-restart-unclaimed-delivery")?.execution,
     ).toMatchObject({
@@ -145,14 +130,10 @@ describe("qa scenario catalog", () => {
       requiredModel: "gpt-5.4",
     });
 
-    const explicitIds = selectQaFlowSuiteScenarios({
-      scenarios,
-      scenarioIds: [scenarioId],
-      ...lane,
-    }).map((selected) => selected.id);
-    const implicitIds = selectQaFlowSuiteScenarios({ scenarios, ...lane }).map(
-      (selected) => selected.id,
-    );
+    const selectIds = (scenarioIds?: string[]) =>
+      selectQaFlowSuiteScenarios({ scenarios, scenarioIds, ...lane }).map(
+        (selected) => selected.id,
+      );
     const runtimePairLane = resolveQaRuntimePairLaneScenarioIds({
       scenarios,
       scenarioIds: [],
@@ -161,15 +142,15 @@ describe("qa scenario catalog", () => {
       ...lane,
     });
 
-    expect(explicitIds).toEqual([scenarioId]);
-    expect(implicitIds).toContain(scenarioId);
+    expect(selectIds([scenarioId])).toEqual([scenarioId]);
+    expect(selectIds()).toContain(scenarioId);
     expect(runtimePairLane.scenarioIds).not.toContain(scenarioId);
-    expect(runtimePairLane.excludedLaneScenarios.map((excluded) => excluded.id)).not.toContain(
-      scenarioId,
-    );
-    expect(runtimePairLane.excludedNonFlowScenarios.map((excluded) => excluded.id)).not.toContain(
-      scenarioId,
-    );
+    for (const excluded of [
+      runtimePairLane.excludedLaneScenarios,
+      runtimePairLane.excludedNonFlowScenarios,
+    ]) {
+      expect(excluded.map((entry) => entry.id)).not.toContain(scenarioId);
+    }
   });
 
   it("rejects the native web-search probe from matching-provider mock lanes", () => {
