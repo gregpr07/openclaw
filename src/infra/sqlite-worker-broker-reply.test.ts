@@ -12,9 +12,16 @@ import type { SqliteWorkerCloseReceipt, SqliteWorkerReply } from "./sqlite-worke
 import { SqliteWorkerSlotCustody } from "./sqlite-worker-request-custody.js";
 import { createSqliteWorkerTransferOwner } from "./sqlite-worker-transfer.js";
 
-function createJob(request: Job["request"], unexpected: () => never): Job {
+function unexpected(): never {
+  throw new Error("Unexpected reply dispatch or settlement");
+}
+
+function createJob(type: "execute" | "execute-frame" | "close"): Job {
   return {
-    request,
+    request:
+      type === "close"
+        ? { type, id: 1, actor: 1 }
+        : { type, id: 1, actor: 1, input: new Uint8Array() },
     custody: new SqliteWorkerSlotCustody().createRequest(),
     observation: { started() {}, completed() {} },
     bytes: 0,
@@ -47,9 +54,6 @@ it.each(["valid", "framed", "close", "mismatched", "unsafe", "malformed"])(
               : receipt;
       setEnvironmentData(key, undefined);
       const nativeQueries = vi.spyOn(DatabaseSync.prototype, "prepare");
-      const unexpected = () => {
-        throw new Error("Runtime admission must not add a request or fail the operation");
-      };
       const actor: Pick<Actor, "id" | "closeReceipt"> = { id: 1 };
       const closeReceipt: SqliteWorkerCloseReceipt = {
         identity: { key: "fixture", canonicalPath: "/fixture/state.sqlite" },
@@ -69,12 +73,7 @@ it.each(["valid", "framed", "close", "mismatched", "unsafe", "malformed"])(
           },
         },
       };
-      const job = createJob(
-        kind === "close"
-          ? { type: "close", id: 1, actor: 1 }
-          : { type: "execute", id: 1, actor: 1, input: new Uint8Array() },
-        unexpected,
-      );
+      const job = createJob(kind === "close" ? "close" : "execute");
       const finish = vi.fn(() => {
         expect(getEnvironmentData(key)).toEqual(
           kind === "valid" || kind === "framed" || kind === "close" ? receipt : undefined,
@@ -91,7 +90,7 @@ it.each(["valid", "framed", "close", "mismatched", "unsafe", "malformed"])(
       const owner = { fail: unexpected, finish, dispatch() {} };
       const reply = (
         value: unknown,
-        extra: Partial<Extract<SqliteWorkerReply, { ok: true }>> = {},
+        extra: Pick<Extract<SqliteWorkerReply, { ok: true }>, "transfer" | "closeReceipt"> = {},
       ) =>
         receiveSqliteWorkerReply(
           slot,
@@ -136,13 +135,7 @@ it("hydrates cached-context execute-frame errors without an explicit request con
   );
   const sharedState = encodeOpenClawStateWorkerError(original, { includeOrdinary: true });
   assert(sharedState);
-  const unexpected = () => {
-    throw new Error("Failed continuation must not dispatch or finish successfully");
-  };
-  const job = createJob(
-    { type: "execute-frame", id: 1, actor: 1, input: new Uint8Array() },
-    unexpected,
-  );
+  const job = createJob("execute-frame");
   let failure: unknown;
 
   receiveSqliteWorkerReply(
