@@ -2387,6 +2387,7 @@
     "node-edge-tts": "1.2.11",
     "npm": "12.2.0",
     "openai": "7.32.0",
+    "openid-client": "6.8.8",
     "p-limit": "7.3.3",
     "p-map": "7.1.1",
     "parse5": "8.0.1",
