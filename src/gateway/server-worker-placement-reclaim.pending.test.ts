@@ -26,20 +26,16 @@ it.each(["active", "failed"] as const)(
     const scope = path.join(tempDirs.make(`cancel-failure-${state}-`), "sessions.sqlite");
     const sessionKey = "agent:main:cancel-failure";
     const sessionId = "cancel-failure-session";
-    const entry = {
-      sessionId,
-      updatedAt: 1,
-      worktree: {
-        id: "cancel-failure-worktree",
-        branch: "cancel-failure",
-        repoRoot: "/fixture/workspace",
-      },
+    const owner = { scope, identities: [sessionKey, sessionId], agentId: "main" };
+    const worktree = {
+      id: "cancel-failure-worktree",
+      branch: "cancel-failure",
+      repoRoot: "/fixture/workspace",
     };
+    const entry = { sessionId, updatedAt: 1, worktree };
     await replaceSessionEntry({ agentId: "main", sessionKey, storePath: scope }, entry);
     const cancellationFailure = new Error("canonical terminal drain rejected");
-    const cancel = vi.fn(async () => {
-      throw cancellationFailure;
-    });
+    const cancel = vi.fn<() => Promise<never>>().mockRejectedValue(cancellationFailure);
     const barriers = createGatewayWorkerPlacementReclaimBarriers({
       placements: {
         get: () => ({ state, sessionId }) as never,
@@ -49,9 +45,9 @@ it.each(["active", "failed"] as const)(
       loadSessionRuntime: async () => ({
         managedWorktrees: {
           findLiveByOwner: async () => ({
-            id: "cancel-failure-worktree",
+            id: worktree.id,
             ownerId: sessionKey,
-            path: "/fixture/workspace",
+            path: worktree.repoRoot,
           }),
         },
         resolveGatewaySessionStoreTargetInWorker: (params) =>
@@ -68,9 +64,7 @@ it.each(["active", "failed"] as const)(
     const validated = vi.fn();
     const acquiredInterrupted = vi.fn();
     const acquired = await beginSessionEffect({
-      scope,
-      identities: [sessionKey, sessionId],
-      agentId: "main",
+      ...owner,
       assertAllowed: () => {},
       onInterrupt: acquiredInterrupted,
     });
@@ -79,14 +73,10 @@ it.each(["active", "failed"] as const)(
     let pending!: Promise<{ admitted: boolean; error?: unknown }>;
     try {
       await runSessionMutation({
-        scope,
-        identities: [sessionKey, sessionId],
-        agentId: "main",
+        ...owner,
         run: async () => {
           pending = beginSessionEffect({
-            scope,
-            identities: [sessionKey, sessionId],
-            agentId: "main",
+            ...owner,
             assertAllowed: validated,
             onInterrupt: interrupted,
           }).then(
@@ -106,19 +96,16 @@ it.each(["active", "failed"] as const)(
         },
       });
       expect(cancel).toHaveBeenCalledOnce();
-      expect(begin).not.toHaveBeenCalled();
-      expect(reclaim).not.toHaveBeenCalled();
-      // Failed Stop never begins teardown; work admitted by the surrounding mutation
-      // remains subordinate to that mutation instead of becoming a competing owner.
-      expect(acquiredInterrupted).not.toHaveBeenCalled();
+      // Cancellation failure must leave mutation-owned work active.
+      for (const callback of [begin, reclaim, acquiredInterrupted]) {
+        expect(callback).not.toHaveBeenCalled();
+      }
       expect(acquired.isActive()).toBe(true);
       expect(await pending).toEqual({ admitted: true });
       expect(interrupted).not.toHaveBeenCalled();
       expect(validated).toHaveBeenCalledOnce();
       const fresh = await beginSessionEffect({
-        scope,
-        identities: [sessionKey, sessionId],
-        agentId: "main",
+        ...owner,
         assertAllowed: () => {},
       });
       fresh.release();

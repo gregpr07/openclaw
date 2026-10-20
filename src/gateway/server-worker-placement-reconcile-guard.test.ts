@@ -50,11 +50,11 @@ function createPlacementGuard(params: {
   return guard;
 }
 
-function createFailedPlacementGuard(params: {
-  turnClaim: typeof localClaim | null;
-  activeOwnerEpoch: number | null;
-  destroyRequestedAtMs: number | null;
-}) {
+function createFailedPlacementGuard(
+  turnClaim: typeof localClaim | null = null,
+  activeOwnerEpoch: number | null = null,
+  destroyRequestedAtMs: number | null = 1,
+) {
   const resumeProvisioning = vi.fn();
   const guard = createPlacementGuard({
     placement: {
@@ -63,10 +63,10 @@ function createFailedPlacementGuard(params: {
       state: "failed",
       environmentId: "worker-cleanup",
       recoveryError: "Provider teardown required",
-      turnClaim: params.turnClaim,
-      activeOwnerEpoch: params.activeOwnerEpoch,
+      turnClaim,
+      activeOwnerEpoch,
     },
-    destroyRequestedAtMs: params.destroyRequestedAtMs,
+    destroyRequestedAtMs,
     dispatch: { resumeProvisioning, hasPendingPlacementLifecycleOperation: () => false },
   });
   return { guard, resumeProvisioning };
@@ -107,8 +107,7 @@ describe("worker placement reconciliation teardown authority", () => {
           initialPlacement.then(() => "initial placement settled"),
         ]),
       ).resolves.toBe("reconciled");
-      expect(resumeProvisioning).not.toHaveBeenCalled();
-      expect(reconcileCore).not.toHaveBeenCalled();
+      expect([resumeProvisioning.mock.calls, reconcileCore.mock.calls]).toEqual([[], []]);
     } finally {
       release.resolve();
       await Promise.all([dispatching, reconciling]);
@@ -117,11 +116,7 @@ describe("worker placement reconciliation teardown authority", () => {
   });
 
   it("allows destruction only after its exact failed owner has released all authority", async () => {
-    const { guard, resumeProvisioning } = createFailedPlacementGuard({
-      turnClaim: null,
-      activeOwnerEpoch: null,
-      destroyRequestedAtMs: 1,
-    });
+    const { guard, resumeProvisioning } = createFailedPlacementGuard();
     const reconcileCore = vi.fn(async () => {});
 
     await guard("worker-cleanup", reconcileCore);
@@ -131,36 +126,24 @@ describe("worker placement reconciliation teardown authority", () => {
   });
 
   it.each([
-    {
-      reason: "a retained local turn claim",
-      turnClaim: localClaim,
-      activeOwnerEpoch: null,
-      destroyRequestedAtMs: 1,
-    },
-    {
-      reason: "an active owner epoch",
-      turnClaim: null,
-      activeOwnerEpoch: 2,
-      destroyRequestedAtMs: 1,
-    },
-    {
-      reason: "no durable destruction request",
-      turnClaim: null,
-      activeOwnerEpoch: null,
-      destroyRequestedAtMs: null,
-    },
-  ])(
-    "keeps failed-placement cleanup fenced with $reason",
-    async ({ reason: _reason, ...params }) => {
-      const { guard, resumeProvisioning } = createFailedPlacementGuard(params);
+    ["a retained local turn claim", localClaim, null, 1],
+    ["an active owner epoch", null, 2, 1],
+    ["no durable destruction request", null, null, null],
+  ] as const)(
+    "keeps failed-placement cleanup fenced with %s",
+    async (_reason, turnClaim, activeOwnerEpoch, destroyRequestedAtMs) => {
+      const { guard, resumeProvisioning } = createFailedPlacementGuard(
+        turnClaim,
+        activeOwnerEpoch,
+        destroyRequestedAtMs,
+      );
       const reconcileCore = vi.fn(async () => {});
 
       await expect(guard("worker-cleanup", reconcileCore)).rejects.toThrow(
         "provisioning owner is failed",
       );
 
-      expect(reconcileCore).not.toHaveBeenCalled();
-      expect(resumeProvisioning).not.toHaveBeenCalled();
+      expect([reconcileCore.mock.calls, resumeProvisioning.mock.calls]).toEqual([[], []]);
     },
   );
 });
