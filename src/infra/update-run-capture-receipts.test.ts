@@ -110,14 +110,17 @@ function mutate(update: (run: UpdateRunRecord) => void) {
   return mutateRunInTransaction(ownedDatabase(), record().runId, update, { env });
 }
 
+function addDiagnostics(run: UpdateRunRecord, count: number, prefix: string, detail: string) {
+  for (let index = 0; index < count; index++) {
+    upsertStep(run, { step: `${prefix}:${index}`, status: "completed", detail });
+  }
+}
+
 beforeEach(async () => {
   root = await fs.realpath(tempDirs.make("update-receipts-"));
   const stateDir = path.join(root, "state");
-  const handoffDir = path.join(root, "handoff");
   await fs.mkdir(stateDir, { mode: 0o700 });
-  await fs.mkdir(handoffDir, { mode: 0o700 });
   expect(await fs.realpath(stateDir)).toBe(stateDir);
-  expect(await fs.realpath(handoffDir)).toBe(handoffDir);
   env = {
     HOME: root,
     USERPROFILE: root,
@@ -146,29 +149,15 @@ describe("durable update capture receipts", () => {
         dataAtRisk,
       } as const;
       const input = { ...record(), verification: { recovery } };
-      for (let index = 0; index < 120; index++) {
-        upsertStep(input, {
-          step: `finalize:fixture:${index}`,
-          status: "completed",
-          detail: "diagnostic ".repeat(45),
-        });
-      }
+      addDiagnostics(input, 120, "finalize:fixture", "diagnostic ".repeat(45));
       persist(input);
       const row = storedRow();
-      // v2026.10.2 and v2026.10.3 share this strict unsafe-recovery schema.
+      // Shipped readers reject new recovery fields; this fixture uses one historical reason.
       const shippedVerification = z.object({
         recovery: z.strictObject({
           serviceRestartSafe: z.literal(false),
           packageRollbackVerified: z.boolean().optional(),
-          reason: z.enum([
-            "source-rollback-failed",
-            "state-migration-started",
-            "manager-unavailable",
-            "deps-install-failed",
-            "build-failed",
-            "rollback-checkout-dirty",
-            "runtime-verification-failed",
-          ]),
+          reason: z.literal("runtime-verification-failed"),
         }),
       });
       const { dataAtRisk: _risk, ...publicRecovery } = recovery;
@@ -210,33 +199,22 @@ describe("durable update capture receipts", () => {
 
   it("keeps database recovery locations when later diagnostics exhaust the history budget", () => {
     const summaries = [
-      {
-        step: "diagnostic:database snapshot",
-        status: "completed" as const,
-        detail: "Databases snapshotted at /backup.databases",
-      },
-      {
-        step: "diagnostic:database migration writes",
-        status: "completed" as const,
-        detail: `Post-migration write inventory: 100 databases; SHA-256 ${"e".repeat(64)}. Snapshots: /backup.databases.`,
-      },
-      {
-        step: "diagnostic:database rollback",
-        status: "completed" as const,
-        detail: "Restored databases; migrated originals retained beside their paths",
-      },
-    ];
+      ["database snapshot", "Databases snapshotted at /backup.databases"],
+      [
+        "database migration writes",
+        `Post-migration write inventory: 100 databases; SHA-256 ${"e".repeat(64)}. Snapshots: /backup.databases.`,
+      ],
+      ["database rollback", "Restored databases; migrated originals retained beside their paths"],
+    ].map(([name, detail]) => ({
+      step: `diagnostic:${name}`,
+      status: "completed" as const,
+      detail,
+    }));
     mutate((run) => {
       for (const summary of summaries) {
         upsertStep(run, summary);
       }
-      for (let index = 0; index < 150; index++) {
-        upsertStep(run, {
-          step: `diagnostic:${index}`,
-          status: "completed",
-          detail: "validation detail ".repeat(50),
-        });
-      }
+      addDiagnostics(run, 150, "diagnostic", "validation detail ".repeat(50));
     });
     reopen();
     const recovered = read();
@@ -313,8 +291,7 @@ describe("durable update capture receipts", () => {
       persist(input);
       reopen();
       const recovered = read();
-      expect(recovered.origin.updateRecoveryCapture).toEqual(retained);
-      expect(recovered.origin.driver).toEqual(record().origin.driver);
+      expect(recovered.origin).toEqual({ ...record().origin, updateRecoveryCapture: retained });
       expect(recovered).toMatchObject({ status: "failed", finishedAtMs: 2 });
       expect(recovered.updatedAtMs).toBeGreaterThan(2);
       if (retained) {
@@ -340,46 +317,42 @@ describe("durable update capture receipts", () => {
     },
   );
 
-  it("bounds disposable diagnostics without shrinking operational receipts", () => {
+  it.each([false, true])("bounds diagnostics without shrinking receipts (full=%s)", (full) => {
     const capture = receipt();
-    const diagnostics = {
-      sessionKey: "s".repeat(20_000),
-      doctorHint: "d".repeat(20_000),
-      nextAction: "n".repeat(20_000),
-      requester: {
-        channel: "c".repeat(20_000),
-        accountId: "a".repeat(20_000),
-        senderId: "i".repeat(20_000),
-        authorizationSource: "o".repeat(20_000),
-      },
-    };
+    const driver = record().origin.driver;
+    if (full) {
+      const size = Buffer.byteLength(JSON.stringify({ driver, updateRecoveryCapture: capture }));
+      capture.warnings[0]!.message += "w".repeat(16 * 1024 - size);
+    }
+    const diagnostics = full
+      ? { nextAction: "diagnostic" }
+      : {
+          sessionKey: "s".repeat(20_000),
+          doctorHint: "d".repeat(20_000),
+          nextAction: "n".repeat(20_000),
+          requester: {
+            channel: "c".repeat(20_000),
+            accountId: "a".repeat(20_000),
+            senderId: "i".repeat(20_000),
+            authorizationSource: "o".repeat(20_000),
+          },
+        };
     const input = {
       ...record(),
-      origin: { ...record().origin, ...diagnostics, updateRecoveryCapture: capture },
+      origin: { driver, ...diagnostics, updateRecoveryCapture: capture },
     };
     expect(Buffer.byteLength(JSON.stringify(input.origin))).toBeGreaterThan(16 * 1024);
     persist(input);
     const row = storedRow();
     expect(typeof row?.origin_json).toBe("string");
-    expect(Buffer.byteLength(String(row?.origin_json))).toBeLessThanOrEqual(16 * 1024);
-    expect(read().origin.updateRecoveryCapture).toEqual(capture);
-  });
-
-  it("preserves full-capacity receipts while evicting diagnostics", () => {
-    const capture = receipt();
-    const driver = record().origin.driver;
-    const size = Buffer.byteLength(JSON.stringify({ driver, updateRecoveryCapture: capture }));
-    capture.warnings[0]!.message += "w".repeat(16 * 1024 - size);
-    persist({
-      ...record(),
-      origin: { driver, updateRecoveryCapture: capture, nextAction: "diagnostic" },
-    });
-    const row = storedRow();
-    expect(Buffer.byteLength(String(row?.origin_json))).toBe(16 * 1024);
+    const bytes = Buffer.byteLength(String(row?.origin_json));
+    expect(bytes).toBeLessThanOrEqual(16 * 1024);
     const recovered = read();
     expect(recovered.origin.updateRecoveryCapture).toEqual(capture);
-    expect(recovered.origin.driver).toEqual(driver);
-    expect(recovered.origin.nextAction).toBeUndefined();
+    if (full) {
+      expect(bytes).toBe(16 * 1024);
+      expect(recovered.origin).toEqual({ driver, updateRecoveryCapture: capture });
+    }
   });
 
   it.each(["hash", "path", "oversized"] as const)(
