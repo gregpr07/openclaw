@@ -1,6 +1,5 @@
-import { vi, type MockInstance } from "vitest";
+import { vi } from "vitest";
 import { runGuidedOnboarding, type GuidedOnboardingDeps } from "./onboard-guided.js";
-import type { GuidedOnboardingHandoff } from "./onboard-interactive-runner.js";
 
 export type GuidedOrchestrationFixture = GuidedOnboardingDeps & {
   createPrompter?: typeof import("../wizard/clack-prompter.js").createClackPrompter;
@@ -11,7 +10,11 @@ export type GuidedOrchestrationFixture = GuidedOnboardingDeps & {
   runBrowserHandoff?: typeof import("./onboard-browser-handoff.js").runBrowserHatchHandoff;
   launchHatchTui?: typeof import("../tui/tui-launch.js").launchTuiCli;
   runForegroundGateway?: typeof import("./onboard-quickstart-host.js").runQuickstartForegroundGateway;
-  observeHandoff?: (handoff: GuidedOnboardingHandoff) => void;
+  observeHandoff?: (
+    handoff: Parameters<
+      typeof import("./onboard-interactive-runner.js").runGuidedOnboardingHandoff
+    >[0],
+  ) => void;
 };
 
 export async function runGuidedOnboardingWithFixtures(
@@ -19,56 +22,79 @@ export async function runGuidedOnboardingWithFixtures(
   runtime: Parameters<typeof runGuidedOnboarding>[1],
   fixtures: GuidedOrchestrationFixture = {},
 ) {
-  const { observeHandoff } = fixtures;
-  const restore: Array<{ mockRestore(): void }> = [];
-  async function replace<T extends (...args: never[]) => unknown>(
-    value: Parameters<MockInstance<T>["mockImplementation"]>[0] | undefined,
-    target: () => Promise<MockInstance<T>>,
-  ) {
-    if (value) {
-      restore.push((await target()).mockImplementation(value));
-    }
-  }
+  const {
+    createPrompter,
+    listManualOptions,
+    applySetup,
+    runMemorySetupFlow,
+    runAppRecommendations,
+    runBrowserHandoff,
+    launchHatchTui,
+    runForegroundGateway,
+    observeHandoff,
+    ...servingDeps
+  } = fixtures;
+  const restore: Array<() => void> = [];
   try {
     if (observeHandoff) {
       const owner = await import("./onboard-interactive-runner.js");
       const runHandoff = owner.runGuidedOnboardingHandoff;
-      restore.push(
-        vi.spyOn(owner, "runGuidedOnboardingHandoff").mockImplementation((...args) => {
-          observeHandoff(args[0]);
-          return runHandoff(...args);
-        }),
-      );
+      const spy = vi.spyOn(owner, "runGuidedOnboardingHandoff").mockImplementation((...args) => {
+        observeHandoff(args[0]);
+        return runHandoff(...args);
+      });
+      restore.push(() => spy.mockRestore());
     }
-    await replace(fixtures.createPrompter, async () =>
-      vi.spyOn(await import("../wizard/clack-prompter.js"), "createClackPrompter"),
-    );
-    await replace(fixtures.listManualOptions, async () =>
-      vi.spyOn(
-        await import("../system-agent/setup-inference.js"),
-        "listManualSetupInferenceOptions",
-      ),
-    );
-    await replace(fixtures.applySetup, async () =>
-      vi.spyOn(await import("../system-agent/setup-apply.js"), "applySystemAgentSetup"),
-    );
-    await replace(fixtures.runMemorySetupFlow, async () =>
-      vi.spyOn(await import("../flows/memory-setup.js"), "runMemorySetupFlow"),
-    );
-    await replace(fixtures.runAppRecommendations, async () =>
-      vi.spyOn(await import("../wizard/setup.app-recommendations.js"), "setupAppRecommendations"),
-    );
-    await replace(fixtures.runBrowserHandoff, async () =>
-      vi.spyOn(await import("./onboard-browser-handoff.js"), "runBrowserHatchHandoff"),
-    );
-    await replace(fixtures.launchHatchTui, async () =>
-      vi.spyOn(await import("../tui/tui-launch.js"), "launchTuiCli"),
-    );
-    await replace(fixtures.runForegroundGateway, async () =>
-      vi.spyOn(await import("./onboard-quickstart-host.js"), "runQuickstartForegroundGateway"),
-    );
-    return await runGuidedOnboarding(opts, runtime, fixtures);
+    if (createPrompter) {
+      const owner = await import("../wizard/clack-prompter.js");
+      const spy = vi.spyOn(owner, "createClackPrompter").mockImplementation(createPrompter);
+      restore.push(() => spy.mockRestore());
+    }
+    if (listManualOptions) {
+      const owner = await import("../system-agent/setup-inference.js");
+      const spy = vi
+        .spyOn(owner, "listManualSetupInferenceOptions")
+        .mockImplementation(listManualOptions);
+      restore.push(() => spy.mockRestore());
+    }
+    if (applySetup) {
+      const owner = await import("../system-agent/setup-apply.js");
+      const spy = vi.spyOn(owner, "applySystemAgentSetup").mockImplementation(applySetup);
+      restore.push(() => spy.mockRestore());
+    }
+    if (runMemorySetupFlow) {
+      const owner = await import("../flows/memory-setup.js");
+      const spy = vi.spyOn(owner, "runMemorySetupFlow").mockImplementation(runMemorySetupFlow);
+      restore.push(() => spy.mockRestore());
+    }
+    if (runAppRecommendations) {
+      const owner = await import("../wizard/setup.app-recommendations.js");
+      const spy = vi
+        .spyOn(owner, "setupAppRecommendations")
+        .mockImplementation(runAppRecommendations);
+      restore.push(() => spy.mockRestore());
+    }
+    if (runBrowserHandoff) {
+      const owner = await import("./onboard-browser-handoff.js");
+      const spy = vi.spyOn(owner, "runBrowserHatchHandoff").mockImplementation(runBrowserHandoff);
+      restore.push(() => spy.mockRestore());
+    }
+    if (launchHatchTui) {
+      const owner = await import("../tui/tui-launch.js");
+      const spy = vi.spyOn(owner, "launchTuiCli").mockImplementation(launchHatchTui);
+      restore.push(() => spy.mockRestore());
+    }
+    if (runForegroundGateway) {
+      const owner = await import("./onboard-quickstart-host.js");
+      const spy = vi
+        .spyOn(owner, "runQuickstartForegroundGateway")
+        .mockImplementation(runForegroundGateway);
+      restore.push(() => spy.mockRestore());
+    }
+    return await runGuidedOnboarding(opts, runtime, servingDeps);
   } finally {
-    restore.toReversed().forEach((mock) => mock.mockRestore());
+    for (const reset of restore.toReversed()) {
+      reset();
+    }
   }
 }
