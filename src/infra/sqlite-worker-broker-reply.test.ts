@@ -8,31 +8,11 @@ import { createDeferredCore } from "../shared/deferred.js";
 import { encodeOpenClawStateWorkerError } from "../state/openclaw-state-worker-error.js";
 import { receiveSqliteWorkerReply } from "./sqlite-worker-broker-reply.js";
 import type { Actor, Job } from "./sqlite-worker-broker.types.js";
-import type { SqliteWorkerCloseReceipt, SqliteWorkerReply } from "./sqlite-worker-contract.js";
+import type { SqliteWorkerCloseReceipt } from "./sqlite-worker-contract.js";
 import { SqliteWorkerSlotCustody } from "./sqlite-worker-request-custody.js";
 import { createSqliteWorkerTransferOwner } from "./sqlite-worker-transfer.js";
 
-function unexpected(): never {
-  throw new Error("Unexpected reply dispatch or settlement");
-}
-
-function createJob(type: "execute" | "execute-frame" | "close"): Job {
-  return {
-    request:
-      type === "close"
-        ? { type, id: 1, actor: 1 }
-        : { type, id: 1, actor: 1, input: new Uint8Array() },
-    custody: new SqliteWorkerSlotCustody().createRequest(),
-    observation: { started() {}, completed() {} },
-    bytes: 0,
-    result: createDeferredCore().promise,
-    resolve: unexpected,
-    reject: unexpected,
-    detach: unexpected,
-  };
-}
-
-it.each(["valid", "framed", "close", "malformed"])(
+it.each(["valid", "framed", "close", "mismatched", "unsafe", "malformed"])(
   "publishes worker receipts before settling its %s reply",
   async (kind) => {
     const key = "openclaw.sqliteNativeRuntimeAdmission";
@@ -43,11 +23,20 @@ it.each(["valid", "framed", "close", "malformed"])(
       const sqlite = await import("./node-sqlite.js");
       sqlite.requireNodeSqlite();
       const receipt: unknown = getEnvironmentData(key);
-      assert(isRecord(receipt));
+      assert(isRecord(receipt) && isRecord(receipt.runtime));
       const forwarded =
-        kind === "malformed" ? { ...receipt, extensionLoadingSupported: "yes" } : receipt;
+        kind === "mismatched"
+          ? { ...receipt, runtime: { ...receipt.runtime, pid: process.pid + 1 } }
+          : kind === "unsafe"
+            ? { ...receipt, version: "3.51.2" }
+            : kind === "malformed"
+              ? { ...receipt, extensionLoadingSupported: "yes" }
+              : receipt;
       setEnvironmentData(key, undefined);
       const nativeQueries = vi.spyOn(DatabaseSync.prototype, "prepare");
+      const unexpected = () => {
+        throw new Error("Runtime admission must not add a request or fail the operation");
+      };
       const actor: Pick<Actor, "id" | "closeReceipt"> = { id: 1 };
       const closeReceipt: SqliteWorkerCloseReceipt = {
         identity: { key: "fixture", canonicalPath: "/fixture/state.sqlite" },
@@ -67,9 +56,23 @@ it.each(["valid", "framed", "close", "malformed"])(
           },
         },
       };
-      const job = createJob(kind === "close" ? "close" : "execute");
+      const job: Job = {
+        custody: new SqliteWorkerSlotCustody().createRequest(),
+        observation: { started() {}, completed() {} },
+        request:
+          kind === "close"
+            ? { type: "close", id: 1, actor: 1 }
+            : { type: "execute", id: 1, actor: 1, input: new Uint8Array() },
+        bytes: 0,
+        result: createDeferredCore().promise,
+        resolve: unexpected,
+        reject: unexpected,
+        detach: unexpected,
+      };
       const finish = vi.fn(() => {
-        expect(getEnvironmentData(key)).toEqual(kind === "malformed" ? undefined : receipt);
+        expect(getEnvironmentData(key)).toEqual(
+          kind === "valid" || kind === "framed" || kind === "close" ? receipt : undefined,
+        );
         if (kind === "close") {
           expect(actor.closeReceipt).toMatchObject({
             incarnation: "closed-incarnation",
@@ -80,26 +83,37 @@ it.each(["valid", "framed", "close", "malformed"])(
       const postMessage = vi.fn();
       const slot = { actors: new Set([actor]), current: job, worker: { postMessage } };
       const owner = { fail: unexpected, finish, dispatch() {} };
-      const reply = (
-        value: unknown,
-        extra: Pick<Extract<SqliteWorkerReply, { ok: true }>, "transfer" | "closeReceipt"> = {},
-      ) =>
-        receiveSqliteWorkerReply(
-          slot,
-          { id: 1, ok: true, value: serialize(value), nativeRuntimeAdmission: forwarded, ...extra },
-          owner,
-        );
       if (kind === "framed") {
         const producer = createSqliteWorkerTransferOwner();
         const handle = producer.start([{ kind: "result", value: "committed" }].values(), {
           kinds: ["result"],
         });
-        reply(handle, { transfer: "start" });
+        receiveSqliteWorkerReply(
+          slot,
+          {
+            id: 1,
+            ok: true,
+            value: serialize(handle),
+            transfer: "start",
+            nativeRuntimeAdmission: forwarded,
+          },
+          owner,
+        );
         expect(getEnvironmentData(key)).toBeUndefined();
         let frame;
         do {
           frame = producer.next(handle.id);
-          reply(frame, { transfer: "frame" });
+          receiveSqliteWorkerReply(
+            slot,
+            {
+              id: 1,
+              ok: true,
+              value: serialize(frame),
+              transfer: "frame",
+              nativeRuntimeAdmission: forwarded,
+            },
+            owner,
+          );
           if (!frame.done) {
             expect(getEnvironmentData(key)).toBeUndefined();
             expect(finish).not.toHaveBeenCalled();
@@ -108,7 +122,17 @@ it.each(["valid", "framed", "close", "malformed"])(
         producer.end(handle.id);
         expect(postMessage).toHaveBeenCalledTimes(2);
       } else {
-        reply("committed", kind === "close" ? { closeReceipt } : {});
+        receiveSqliteWorkerReply(
+          slot,
+          {
+            id: 1,
+            ok: true,
+            value: serialize("committed"),
+            nativeRuntimeAdmission: forwarded,
+            ...(kind === "close" ? { closeReceipt } : {}),
+          },
+          owner,
+        );
         expect(postMessage).not.toHaveBeenCalled();
       }
       expect(finish).toHaveBeenCalledWith(job, undefined, "committed");
@@ -127,7 +151,19 @@ it("hydrates cached-context execute-frame errors without an explicit request con
   );
   const sharedState = encodeOpenClawStateWorkerError(original, { includeOrdinary: true });
   assert(sharedState);
-  const job = createJob("execute-frame");
+  const unexpected = () => {
+    throw new Error("Failed continuation must not dispatch or finish successfully");
+  };
+  const job: Job = {
+    custody: new SqliteWorkerSlotCustody().createRequest(),
+    observation: { started() {}, completed() {} },
+    request: { type: "execute-frame", id: 1, actor: 1, input: new Uint8Array() },
+    bytes: 0,
+    result: createDeferredCore().promise,
+    resolve: unexpected,
+    reject: unexpected,
+    detach: unexpected,
+  };
   let failure: unknown;
 
   receiveSqliteWorkerReply(
