@@ -119,7 +119,18 @@ it.each(["slack", "telegram"] as const)(
       : "Check `approvals.plugin.slack` and the connected bot workspace.";
     const setup = vi.fn(() => guidance);
     approvalChannel(channel, channelLabel, {
-      ...(native ? { native: {} } : {}),
+      ...(native
+        ? {
+            native: {
+              describeDeliveryCapabilities: () => ({
+                enabled: true,
+                preferredSurface: "origin" as const,
+                supportsOriginSurface: true,
+                supportsApproverDmSurface: false,
+              }),
+            },
+          }
+        : {}),
       getActionAvailabilityState: () => ({ kind: "enabled" }),
       getExecInitiatingSurfaceState: () => ({ kind: native ? "disabled" : "enabled" }),
       describePluginApprovalSetup: setup,

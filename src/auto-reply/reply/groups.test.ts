@@ -47,6 +47,7 @@ function setChannels(channels: Pick<ChannelPlugin, "id" | "messaging">[]) {
 type ResolveMention = NonNullable<NonNullable<ChannelPlugin["groups"]>["resolveRequireMention"]>;
 function mockRuntime(resolveRequireMention?: ResolveMention) {
   const loads = vi.fn();
+  // mock-isolation: inject channel policy and count lazy loads without booting the plugin runtime.
   vi.doMock("./groups.runtime.js", () => {
     loads();
     return {
