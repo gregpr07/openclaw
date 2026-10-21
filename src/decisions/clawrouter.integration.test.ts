@@ -7,6 +7,7 @@ import {
   decisionOptions,
 } from "../agents/decision-inference.test-support.js";
 import { acquireAgentRunPreparedModelRuntime } from "../agents/prepared-model-runtime.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { listDecisionModels } from "../gateway/server-methods/models-list-capabilities.js";
 import { withServer } from "../plugin-sdk/test-helpers/http-test-server.js";
 import { getPluginInstance } from "../plugins/plugin-instance-scope.js";
@@ -133,15 +134,24 @@ it.each(["default", "per-agent"])(
                 clawrouter: {
                   baseUrl: origin,
                   apiKey: "synthetic-router-only",
-                  api: "openai-responses" as const,
+                  api: "openai-responses",
                   request: { allowPrivateNetwork: true },
                   // Custom endpoints need an authored row; native implicit inventory is host-scoped.
-                  models: [{ id: "openai/gpt-6-luna", name: "Fixture Luna" }],
+                  models: [
+                    {
+                      id: "openai/gpt-6-luna",
+                      name: "Fixture Luna",
+                      reasoning: false,
+                      input: ["text", "image"],
+                      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                      maxTokens: 2048,
+                    },
+                  ],
                 },
               },
             },
             plugins: { allow: ["clawrouter"], slots: { memory: "none" } },
-          };
+          } satisfies OpenClawConfig;
           await withEnvAsync(
             {
               ...state.envVars,
