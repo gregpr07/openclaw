@@ -60,7 +60,7 @@ function advertiseMcpEnterpriseOnRequests(transport: Transport): void {
   };
 }
 
-export function buildMcpClientCapabilities(
+function buildMcpClientCapabilities(
   mcpAppsEnabled: boolean,
   enterpriseAuth = false,
 ): ClientCapabilities {
