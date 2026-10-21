@@ -2,7 +2,6 @@ import { once } from "node:events";
 import path from "node:path";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
-import { closeGatewayTestWebSocket } from "../../test/helpers/gateway-websocket.js";
 import { createTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { acquireTestPortBlock } from "../test-utils/port-claims.js";
 import {
@@ -20,12 +19,26 @@ type QaGatewayFixture = {
   pid: number | null;
   call(method: string, params?: unknown, options?: { timeoutMs?: number }): Promise<unknown>;
 };
+type QaGatewayFixtureOwner = {
+  start(params: {
+    repoRoot: string;
+    providerMode: "mock-openai";
+    controlUiEnabled: boolean;
+    transportBaseUrl: string;
+    command: {
+      executablePath: string;
+      argsPrefix: string[];
+      tempParentDir: string;
+      usePackagedPlugins: boolean;
+    };
+    onListening: (context: { token: string }) => Promise<void>;
+  }): Promise<QaGatewayFixture>;
+  stop(): Promise<{ process: string; errors: unknown[] }>;
+};
+
 const qaModule = "../../extensions/qa-lab/api.js";
 const { createQaGatewayChild } = (await import(qaModule)) as {
-  createQaGatewayChild(): {
-    start(params: ReturnType<typeof gatewayOptions>): Promise<QaGatewayFixture>;
-    stop(): Promise<{ process: string; errors: unknown[] }>;
-  };
+  createQaGatewayChild: () => QaGatewayFixtureOwner;
 };
 installGatewayTestHooks({ scope: "suite" });
 
@@ -37,34 +50,6 @@ let backend: Awaited<ReturnType<typeof startTestGatewayServer>> | undefined;
 let observer: WebSocket | undefined;
 let childPid: number | null;
 let token: string;
-let claimHandedOff = false;
-
-function gatewayOptions(root: string, claim: Awaited<ReturnType<typeof acquireTestPortBlock>>) {
-  return {
-    repoRoot: process.cwd(),
-    providerMode: "mock-openai" as const,
-    controlUiEnabled: false,
-    transportBaseUrl: "http://127.0.0.1:1",
-    command: {
-      executablePath: process.execPath,
-      argsPrefix: [
-        path.resolve("test/fixtures/qa-gateway-rpc-proxy.mjs"),
-        String(claim.port),
-        process.cwd(),
-        path.join(root, "proxy-events.jsonl"),
-      ],
-      tempParentDir: root,
-      usePackagedPlugins: true,
-    },
-    onListening: async (context: { token: string }) => {
-      token = context.token;
-      testState.gatewayAuth = { mode: "token", token };
-      vi.stubEnv("OPENCLAW_GATEWAY_TOKEN", token);
-      claimHandedOff = true;
-      backend = await startTestGatewayServer(claim, { auth: { mode: "token", token } });
-    },
-  };
-}
 
 async function control(action = "snapshot"): Promise<ProxySnapshot> {
   const response = await fetch(`${child.baseUrl}/__fixture`, {
@@ -85,8 +70,34 @@ beforeAll(async () => {
   const root = dirs.make("qa-rpc-replay-");
   const backendPortClaim = await acquireTestPortBlock({ offsets: [0, 1, 2, 3, 4] });
   const backendPort = backendPortClaim.port;
+  let claimHandedOff = false;
   try {
-    child = await owner.start(gatewayOptions(root, backendPortClaim));
+    child = await owner.start({
+      repoRoot: process.cwd(),
+      providerMode: "mock-openai",
+      controlUiEnabled: false,
+      transportBaseUrl: "http://127.0.0.1:1",
+      command: {
+        executablePath: process.execPath,
+        argsPrefix: [
+          path.resolve("test/fixtures/qa-gateway-rpc-proxy.mjs"),
+          String(backendPort),
+          process.cwd(),
+          path.join(root, "proxy-events.jsonl"),
+        ],
+        tempParentDir: root,
+        usePackagedPlugins: true,
+      },
+      onListening: async (context) => {
+        token = context.token;
+        testState.gatewayAuth = { mode: "token", token };
+        vi.stubEnv("OPENCLAW_GATEWAY_TOKEN", token);
+        claimHandedOff = true;
+        backend = await startTestGatewayServer(backendPortClaim, {
+          auth: { mode: "token", token },
+        });
+      },
+    });
   } finally {
     if (!claimHandedOff) {
       await backendPortClaim.release();
@@ -103,16 +114,29 @@ beforeAll(async () => {
 }, 180_000);
 
 afterAll(async () => {
-  const result = await owner
-    .stop()
-    .catch((error: unknown) => ({ process: "failed", errors: [error] }));
-  if (observer) {
-    await closeGatewayTestWebSocket(observer);
+  const cleanupErrors: unknown[] = [];
+  let stopped = false;
+  try {
+    const result = await owner.stop();
+    stopped = result.process === "confirmed-stopped";
+    cleanupErrors.push(...result.errors);
+  } catch (error) {
+    cleanupErrors.push(error);
   }
-  await backend?.close().catch((error: unknown) => result.errors.push(error));
+  if (observer && observer.readyState !== WebSocket.CLOSED) {
+    const closed = once(observer, "close");
+    observer.terminate();
+    await closed;
+  }
+  try {
+    await backend?.close();
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
   dirs.cleanup();
   vi.unstubAllEnvs();
-  expect(result).toMatchObject({ process: "confirmed-stopped", errors: [] });
+  expect(cleanupErrors).toEqual([]);
+  expect(stopped).toBe(true);
 }, 30_000);
 
 it("does not replay a committed create after losing its response", async () => {
@@ -128,11 +152,12 @@ it("does not replay a committed create after losing its response", async () => {
   await expect.soft(request).rejects.toThrow("gateway closed (1006");
   await expect.soft(request).rejects.not.toThrow("label already in use");
   const { events } = await control();
-  const ofKind = (kind: string) => events.filter((event) => event.kind === kind);
-  expect(ofKind("response-dropped")).toHaveLength(1);
+  expect(events.filter((event) => event.kind === "response-dropped")).toHaveLength(1);
   expect(child.pid).toBe(childPid);
-  expect.soft(ofKind("mutation-request")).toHaveLength(1);
-  const keys = ofKind("mutation-success").map((event) => event.key);
+  expect.soft(events.filter((event) => event.kind === "mutation-request")).toHaveLength(1);
+  const keys = events
+    .filter((event) => event.kind === "mutation-success")
+    .map((event) => event.key);
   expect.soft(keys).toHaveLength(1);
   for (const key of keys) {
     expect(typeof key).toBe("string");
