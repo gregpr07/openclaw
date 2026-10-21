@@ -23,6 +23,13 @@ function fixture({
   prerelease = false,
   actualSha = sourceSha,
   latest = tag,
+}: {
+  tag?: string;
+  distTag?: string;
+  draft?: boolean;
+  prerelease?: boolean;
+  actualSha?: string;
+  latest?: string;
 } = {}) {
   const root = tempDirs.make("release-publish-finalize-");
   const bin = join(root, "bin");

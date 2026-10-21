@@ -93,9 +93,13 @@ describe("feishu webhook route doctor migration", () => {
     if (webhookPath === expectedPath) {
       expect(result.changes).toEqual([]);
     } else {
+      const change = (scope: string) =>
+        webhookPath.trim()
+          ? `Reset invalid ${scope} to /feishu/events.`
+          : `Normalized ${scope} to its HTTP request path.`;
       expect(result.changes).toEqual([
-        "Reset invalid channels.feishu.webhookPath to /feishu/events.",
-        "Reset invalid channels.feishu.accounts.main.webhookPath to /feishu/events.",
+        change("channels.feishu.webhookPath"),
+        change("channels.feishu.accounts.main.webhookPath"),
       ]);
     }
 

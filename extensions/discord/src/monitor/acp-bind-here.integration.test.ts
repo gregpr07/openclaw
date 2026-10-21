@@ -1,7 +1,7 @@
 import { installDiscordIngressTestRuntime } from "../test-support/ingress-runtime.js";
 
 installDiscordIngressTestRuntime();
-import { expect, it, vi } from "vitest";
+import { expect, it, onTestFinished, vi } from "vitest";
 import { ChannelType } from "../internal/discord.js";
 
 const loadConfigMock = vi.hoisted(() => vi.fn());
@@ -31,6 +31,7 @@ import {
   type DiscordClient,
   type DiscordMessageEvent,
 } from "./message-handler.preflight.test-helpers.js";
+import { createNoopThreadBindingManager } from "./thread-bindings.js";
 
 const baseCfg = {
   session: { mainKey: "main", scope: "per-sender", threadBindings: { enabled: true } },
@@ -100,6 +101,8 @@ function createInMemoryDiscordBindingAdapter() {
 }
 
 it("routes the next Discord DM turn to an existing ACP session binding", async () => {
+  const threadBindings = createNoopThreadBindingManager("default");
+  onTestFinished(() => threadBindings.stop());
   sessionBindingTesting.resetSessionBindingAdaptersForTests();
   loadConfigMock.mockReset().mockReturnValue(baseCfg);
   createInMemoryDiscordBindingAdapter();
@@ -134,6 +137,7 @@ it("routes the next Discord DM turn to an existing ACP session binding", async (
       } as DiscordMessageEvent,
       client: createDmClient("dm-1"),
       botUserId: "bot-1",
+      threadBindings,
     }),
     allowFrom: ["*"],
   });

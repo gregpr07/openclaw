@@ -81,7 +81,7 @@ function brokerFixture(bootstrapFailure?: SendFailure) {
     const callback = args.find(
       (arg): arg is (error: Error | null) => void => typeof arg === "function",
     );
-    if (sendFailure?.type === message.type) {
+    if (sendFailure && sendFailure.type === message.type) {
       const error = new Error("synthetic IPC write failed");
       if (sendFailure.mode === "throw") {
         throw error;

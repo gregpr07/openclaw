@@ -7,8 +7,10 @@ const mocks = vi.hoisted(() => ({
   logDebug: vi.fn(),
 }));
 
+// mock-isolation: Deferred avatar downloads exclude real network and media-storage effects.
 vi.mock("openclaw/plugin-sdk/media-runtime", () => ({ saveRemoteMedia: mocks.saveRemoteMedia }));
 
+// mock-isolation: Capture resolver diagnostics without writing to runtime log sinks.
 vi.mock("openclaw/plugin-sdk/logging-core", () => ({ logDebug: mocks.logDebug }));
 
 const { createDiscordAvatarResolver } = await import("./message-avatar.js");

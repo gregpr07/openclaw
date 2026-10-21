@@ -19,7 +19,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   try {
     for (const server of servers.splice(0)) {
-      await promisify(server.close).call(server);
+      await promisify(server.close.bind(server))();
     }
   } finally {
     try {

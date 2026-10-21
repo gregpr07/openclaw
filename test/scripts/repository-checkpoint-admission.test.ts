@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, symlinkSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, symlinkSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -9,7 +9,7 @@ const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const admissionArgs =
   "--import ./scripts/tsx.mjs scripts/qa/repository-checkpoint-admission.ts".split(" ");
 function fixture() {
-  const campaignRoot = tempDirs.make("openclaw-qa-checkpoint-");
+  const campaignRoot = realpathSync(tempDirs.make("openclaw-qa-checkpoint-"));
   const checkpointRoot = mkdtempSync(path.join(campaignRoot, "checkpoint.git-"));
   const nodeRoot = mkdtempSync(path.join(campaignRoot, "node-"));
   const env: NodeJS.ProcessEnv = {

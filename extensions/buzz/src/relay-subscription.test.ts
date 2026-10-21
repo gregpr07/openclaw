@@ -35,6 +35,7 @@ describe("Buzz relay subscriptions", () => {
   it("does not close a subscription twice when sending fails after relay shutdown", async () => {
     const pending = createDeferred<void>();
     const { relay, sub, send } = relayFixture();
+    const close = vi.spyOn(sub, "close");
     send.mockImplementation(async () => await pending.promise);
 
     openBuzzRelaySubscription(relay, [{ kinds: [0] }], {});
@@ -43,7 +44,7 @@ describe("Buzz relay subscriptions", () => {
     pending.reject(new Error("socket closed"));
     await Promise.resolve();
 
-    expect(sub.close).not.toHaveBeenCalled();
+    expect(close).not.toHaveBeenCalled();
   });
   it("cancels a queued query while all three slots stay occupied and preserves capacity", async () => {
     vi.useFakeTimers();

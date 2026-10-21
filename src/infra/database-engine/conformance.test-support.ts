@@ -37,7 +37,7 @@ export function conformanceWorkerResult<T extends object>(
       if (code !== 0 || !result) {
         reject(new Error(`${label} worker exited ${code} without a result`));
       } else if ("error" in result) {
-        reject(new Error(String(result.error)));
+        reject(new Error(result.error));
       } else {
         resolve(result);
       }

@@ -7,6 +7,7 @@ const createFeishuClientMock = vi.fn((creds: { appId?: string } | undefined) => 
   __appId: creds?.appId,
 }));
 
+// mock-isolation: Account selection inspects client identity without creating an SDK transport.
 vi.mock("./client.js", () => ({
   createFeishuClient: (creds: { appId?: string } | undefined) => createFeishuClientMock(creds),
 }));

@@ -36,7 +36,7 @@ async function seed(entry = session(), key = sessionKey) {
 
 function buildNameParams(
   commandBodyNormalized: string,
-  overrides: { isAuthorizedSender?: boolean; commandSource?: string } = {},
+  overrides: { isAuthorizedSender?: boolean; commandSource?: "native" | "text" } = {},
 ): HandleCommandsParams {
   const params = buildCommandTestParams(
     commandBodyNormalized,
@@ -109,7 +109,7 @@ describe("name command", () => {
   });
 
   it("seeds a brand-new native session entry that is not yet persisted", async () => {
-    const params = buildNameParams("/name First native", { commandSource: "slash" });
+    const params = buildNameParams("/name First native", { commandSource: "native" });
     params.sessionEntry = session({ sessionId: "sess-native" });
 
     expect(await handleNameCommand(params, true)).toMatchObject({
@@ -119,7 +119,7 @@ describe("name command", () => {
     expect(loadSessionEntry({ storePath, sessionKey })?.label).toBe("First native");
     expect(params.sessionEntry?.label).toBe("First native");
     expect(takeCommandSessionMetadataChanges(params.ctx)).toEqual([
-      { sessionKey, reason: "command-metadata" },
+      { sessionKey, agentId: "main", reason: "command-metadata" },
     ]);
   });
 

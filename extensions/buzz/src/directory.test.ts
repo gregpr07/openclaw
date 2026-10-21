@@ -72,10 +72,10 @@ function directoryParams(overrides: BuzzConfigInput = {}) {
   return { cfg: { channels: { buzz } }, accountId: "default" };
 }
 
-function activeBus(overrides: Partial<Directory> = {}) {
+function activeBus(overrides: Partial<Directory> = {}): ActiveBus {
   return {
     directory: {
-      self: () => null,
+      self: () => ({ kind: "user", id: BOT_PUBLIC_KEY }),
       listPeers: () => [],
       listGroupMembers: () => [],
       listGroups: () => [],
