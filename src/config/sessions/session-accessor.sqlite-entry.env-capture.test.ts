@@ -32,9 +32,11 @@ vi.mock("node:sqlite", () => ({
   },
 }));
 vi.mock("../../auto-reply/internal-turn-source.js", () => ({}));
+vi.mock("../../infra/sqlite-number.js", () => ({}));
 vi.mock("../../state/openclaw-agent-db-identity.js", () => ({}));
 vi.mock("../../state/openclaw-agent-db-readonly-scope.js", () => ({}));
 vi.mock("../../state/openclaw-agent-db-readonly.js", () => ({}));
+// mock-isolation: A native write must fail instead of opening the fixture's synthetic store.
 vi.mock("../../state/openclaw-agent-db-transaction.js", () => ({
   runOpenClawAgentWriteWithYieldingAdmission: () => {
     throw new Error("native entry writes are outside this worker environment-capture test");
@@ -47,6 +49,7 @@ vi.mock("../../state/openclaw-agent-db.js", () => ({
   resolveOpenClawAgentSqlitePath: (options: OpenClawAgentDatabaseOptions) =>
     options.path ?? `${options.env?.OPENCLAW_STATE_DIR}/${options.agentId}.sqlite`,
 }));
+// mock-isolation: The capture producer reaches the worker boundary without acquiring real leases.
 vi.mock("../../state/openclaw-agent-execution.js", () => ({
   captureOpenClawAgentDatabaseExecution: () => ({ release: async () => {} }),
   supportsOpenClawAgentDatabaseExecution: () => true,
@@ -57,16 +60,25 @@ vi.mock("../future-version-guard.js", () => ({
 vi.mock("../paths.js", async () => ({
   resolveStateDir: (await import("../state-dir.js")).resolveStateDir,
 }));
+vi.mock("./internal-session-key.js", () => ({}));
 vi.mock("./metadata.js", () => ({}));
 vi.mock("./session-accessor.sqlite-entry-cache.js", () => ({}));
-vi.mock("./session-accessor.sqlite-entry-store.js", () => ({}));
+vi.mock("./session-accessor.sqlite-entry-equality.js", () => ({}));
+// mock-isolation: Synthetic capture paths must not load the native entry store or open SQLite.
+vi.mock("./session-accessor.sqlite-entry-store.js", () => ({
+  readSessionEntrySelectionSnapshot: () => [],
+  writeSessionEntry: (_database: unknown, _key: string, entry: InternalSessionEntry) => entry,
+}));
 vi.mock("./session-accessor.sqlite-exact-read.js", () => ({}));
 vi.mock("./session-accessor.sqlite-history.js", () => ({}));
-vi.mock("./session-accessor.sqlite-identity.js", () => ({}));
+vi.mock("./session-accessor.sqlite-identity.js", () => ({
+  prepareSessionIdentityPublication: () => () => {},
+}));
 vi.mock("./session-accessor.sqlite-initial-entry.js", () => ({}));
 vi.mock("./session-accessor.sqlite-maintenance-kick.js", () => ({
   kickSessionEntryMaintenanceAfterWrite: boundary.maintain,
 }));
+vi.mock("./session-accessor.sqlite-normalize.js", () => ({}));
 vi.mock("./session-accessor.sqlite-scope.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./session-accessor.sqlite-scope.js")>()),
   resolveSqliteTranscriptArchiveDirectory: () => "/synthetic/archive",
@@ -74,14 +86,17 @@ vi.mock("./session-accessor.sqlite-scope.js", async (importOriginal) => ({
 }));
 vi.mock("./session-accessor.sqlite-status.js", () => ({}));
 vi.mock("./session-canonical-key.js", () => ({ assertCanonicalSessionKeyWrite() {} }));
+vi.mock("./session-entry-lineage.js", () => ({}));
 // mock-isolation: Observe captured worker inputs without starting persistence on synthetic paths.
 vi.mock("./session-entry-patch.js", () => ({ patchSessionEntryInWorker: boundary.worker }));
+vi.mock("./session-entry-provenance.js", () => ({}));
 vi.mock("./session-history-eviction.js", () => ({
   kickSessionHistoryDiskBudgetMaintenance: boundary.history,
 }));
 vi.mock("./session-store-path.js", () => ({
   resolveSessionStorePathForScope: () => "/synthetic/store",
 }));
+vi.mock("./types.js", () => ({}));
 
 afterEach(() => {
   boundary.ready = Promise.resolve();
@@ -89,56 +104,78 @@ afterEach(() => {
 });
 
 it.each([
-  ["win32", "plain", "OpenClaw_State_Dir", "OpenClaw_Config_Readonly"],
-  ["win32", "precloned", "OpenClaw_State_Dir", "OpenClaw_Config_Readonly"],
-  ["linux", "plain", "OPENCLAW_STATE_DIR", "OPENCLAW_CONFIG_READONLY"],
-  ["linux", "plain", "OpenClaw_State_Dir", "OpenClaw_Config_Readonly"],
-] as const)(
-  "retains %s %s session-write environment with %s",
-  async (platform, input, key, readonlyKey) => {
-    await withMockedPlatform(platform, async () => {
-      const root = path.resolve("/synthetic/captured");
-      const home = path.resolve("/synthetic/home");
-      const rawEnv = { [key]: root, [readonlyKey]: "1", HOME: home, OPENCLAW_TEST_FAST: "1" };
-      const env = input === "precloned" ? cloneEnvWithPlatformSemantics(rawEnv) : rawEnv;
-      const scope = { agentId: "main", sessionKey: "agent:main:capture", env };
-      const caseSensitiveMiss = platform === "linux" && key !== "OPENCLAW_STATE_DIR";
-      const expectedRoot = caseSensitiveMiss ? path.join(home, ".openclaw") : root;
-      const expectedReadonly = caseSensitiveMiss ? undefined : "1";
-      const ready = createDeferredCore();
-      boundary.ready = ready.promise;
-      const update = vi.fn((entry: InternalSessionEntry) => ({ ...entry, label: "captured" }));
-      const write = patchSessionEntryCore(scope, update, {
-        fallbackEntry: { sessionId: "session", updatedAt: 1 },
-        replaceEntry: true,
-      });
-      try {
-        const queued = boundary.queue.mock.calls[0]?.[0];
-        expect(queued?.path).toBe(`${expectedRoot}/main.sqlite`);
-        expect(queued?.env?.OPENCLAW_STATE_DIR).toBe(expectedRoot);
-        expect(queued?.env?.OPENCLAW_CONFIG_READONLY).toBe(expectedReadonly);
-        expect(env[key]).toBe(root);
-        expect(Object.keys(env)).toEqual(Object.keys(rawEnv));
-        expect(update).not.toHaveBeenCalled();
-        expect(boundary.worker).not.toHaveBeenCalled();
-        env[key] = "/synthetic/changed";
-        env[readonlyKey] = "0";
-        scope.env = { OPENCLAW_STATE_DIR: "/synthetic/replaced" };
-        ready.resolve();
-        await expect(write).resolves.toMatchObject({ sessionId: "session", label: "captured" });
-        expect(boundary.worker).toHaveBeenCalledOnce();
-        const committed = boundary.worker.mock.calls[0]?.[0].database;
-        expect(committed?.path).toBe(`${expectedRoot}/main.sqlite`);
-        expect(committed?.env?.OPENCLAW_STATE_DIR).toBe(expectedRoot);
-        expect(committed?.env?.OPENCLAW_CONFIG_READONLY).toBe(expectedReadonly);
-        expect(committed?.env).toBe(queued?.env);
-        expect(boundary.maintain.mock.calls[0]?.[0].scope.env).toBe(queued?.env);
-        expect(boundary.history.mock.calls[0]?.[0].env).toBe(queued?.env);
-        expect(update).toHaveBeenCalledOnce();
-      } finally {
-        ready.resolve();
-        await write.catch(() => undefined);
-      }
-    });
+  {
+    platform: "win32",
+    key: "OpenClaw_State_Dir",
+    readonlyKey: "OpenClaw_Config_Readonly",
+    input: "plain",
   },
-);
+  {
+    platform: "win32",
+    key: "OpenClaw_State_Dir",
+    readonlyKey: "OpenClaw_Config_Readonly",
+    input: "precloned",
+  },
+  {
+    platform: "linux",
+    key: "OPENCLAW_STATE_DIR",
+    readonlyKey: "OPENCLAW_CONFIG_READONLY",
+    input: "plain",
+  },
+  {
+    platform: "linux",
+    key: "OpenClaw_State_Dir",
+    readonlyKey: "OpenClaw_Config_Readonly",
+    input: "plain",
+  },
+] as const)("retains $input session-write environment on $platform with $key", async (fixture) => {
+  await withMockedPlatform(fixture.platform, async () => {
+    const root = path.resolve("/synthetic/captured");
+    const home = path.resolve("/synthetic/home");
+    const rawEnv = {
+      [fixture.key]: root,
+      [fixture.readonlyKey]: "1",
+      HOME: home,
+      OPENCLAW_TEST_FAST: "1",
+    };
+    const env = fixture.input === "precloned" ? cloneEnvWithPlatformSemantics(rawEnv) : rawEnv;
+    const scope = { agentId: "main", sessionKey: "agent:main:capture", env };
+    const caseSensitiveMiss = fixture.platform === "linux" && fixture.key !== "OPENCLAW_STATE_DIR";
+    const expectedRoot = caseSensitiveMiss ? path.join(home, ".openclaw") : root;
+    const expectedReadonly = caseSensitiveMiss ? undefined : "1";
+    const ready = createDeferredCore();
+    boundary.ready = ready.promise;
+    const update = vi.fn((entry: InternalSessionEntry) => ({ ...entry, label: "captured" }));
+    const write = patchSessionEntryCore(scope, update, {
+      fallbackEntry: { sessionId: "session", updatedAt: 1 },
+      replaceEntry: true,
+    });
+    try {
+      const queued = boundary.queue.mock.calls[0]?.[0];
+      expect(queued?.path).toBe(`${expectedRoot}/main.sqlite`);
+      expect(queued?.env?.OPENCLAW_STATE_DIR).toBe(expectedRoot);
+      expect(queued?.env?.OPENCLAW_CONFIG_READONLY).toBe(expectedReadonly);
+      expect(env[fixture.key]).toBe(root);
+      expect(Object.keys(env)).toEqual(Object.keys(rawEnv));
+      expect(update).not.toHaveBeenCalled();
+      expect(boundary.worker).not.toHaveBeenCalled();
+      env[fixture.key] = "/synthetic/changed";
+      env[fixture.readonlyKey] = "0";
+      scope.env = { OPENCLAW_STATE_DIR: "/synthetic/replaced" };
+      ready.resolve();
+      await expect(write).resolves.toMatchObject({ sessionId: "session", label: "captured" });
+      expect(boundary.worker).toHaveBeenCalledOnce();
+      const committed = boundary.worker.mock.calls[0]?.[0].database;
+      expect(committed?.path).toBe(`${expectedRoot}/main.sqlite`);
+      expect(committed?.env?.OPENCLAW_STATE_DIR).toBe(expectedRoot);
+      expect(committed?.env?.OPENCLAW_CONFIG_READONLY).toBe(expectedReadonly);
+      expect(committed?.env).toBe(queued?.env);
+      expect(boundary.maintain.mock.calls[0]?.[0].scope.env).toBe(queued?.env);
+      expect(boundary.history.mock.calls[0]?.[0].env).toBe(queued?.env);
+      expect(update).toHaveBeenCalledOnce();
+    } finally {
+      ready.resolve();
+      await write.catch(() => undefined);
+    }
+  });
+});

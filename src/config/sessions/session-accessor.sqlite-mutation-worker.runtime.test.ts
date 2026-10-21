@@ -6,7 +6,7 @@ import { expect, it, vi } from "vitest";
 import type { OpenClawAgentDatabaseWriteAdmission } from "../../state/openclaw-agent-db.js";
 import { runReclamationWorkerPort } from "./session-accessor.sqlite-mutation-worker.runtime.js";
 import type {
-  SqliteReclamationWorkerCloseRequest as CloseRequest,
+  SqliteReclamationWorkerCloseRequest,
   SqliteReclamationWorkerRequest,
 } from "./session-accessor.sqlite-reclamation-worker.types.js";
 
@@ -30,7 +30,12 @@ vi.mock("../../state/openclaw-agent-canonical-validation-receipt.js", () => ({})
 vi.mock("../../state/openclaw-agent-db-readonly-open.js", () => ({}));
 vi.mock("../../state/openclaw-state-db-cache.js", () => ({}));
 vi.mock("../../state/openclaw-agent-db-identity.js", () => ({
-  readOpenClawAgentDatabaseIdentity: () => ({ identity: "1:2" }),
+  readOpenClawAgentDatabaseIdentity: () => ({
+    identity: "1:2",
+    birthtime: "1",
+    incarnation: "fixture-incarnation",
+    filename: "/fixture/agent.sqlite",
+  }),
   createOpenClawAgentDatabaseClaim: () => ({ assertCurrent() {}, release() {} }),
 }));
 vi.mock("../../state/openclaw-agent-db-lease.js", () => ({
@@ -68,13 +73,14 @@ vi.mock("./session-accessor.sqlite-reclamation.js", () => ({
 
 it("keeps idle collection after buffered admission replies and cancels it for the next request", async () => {
   const { port1: parentPort, port2: worker } = new MessageChannel();
-  const post = (message: unknown) => parentPort.postMessage(message, []);
   const replies = on(parentPort, "message");
   const databaseOptions = { agentId: "fixture", path: "/fixture/agent.sqlite", env: {} };
   const coordination = {
     actorId: "fixture",
     databasePath: "/fixture/state.sqlite",
-    stateContext: { environment: { OPENCLAW_STATE_DIR: "/fixture" } },
+    stateContext: {
+      environment: { OPENCLAW_STATE_DIR: "/fixture" },
+    },
   };
   const running = runReclamationWorkerPort(worker, databaseOptions);
   let operationId = 0;
@@ -89,21 +95,31 @@ it("keeps idle collection after buffered admission replies and cancels it for th
     return reply;
   };
   const request = () =>
-    post({
-      type: "reclaim",
-      operationId: ++operationId,
-      plan: {
-        kind: "maintenance-finalize",
-        agentId: databaseOptions.agentId,
-        databaseOptions,
-        entries: [],
-        materializedPlans: [],
-      },
-      coordination,
-    } satisfies SqliteReclamationWorkerRequest);
+    parentPort.postMessage(
+      {
+        type: "reclaim",
+        operationId: ++operationId,
+        plan: {
+          kind: "maintenance-finalize",
+          agentId: databaseOptions.agentId,
+          databaseOptions,
+          entries: [],
+          materializedPlans: [],
+        },
+        coordination,
+      } satisfies SqliteReclamationWorkerRequest,
+      [],
+    );
   const admit = (reply: Record<string, unknown>) => {
     pendingAdmission = undefined;
-    post({ type: "admission", operationId: reply.operationId, allowed: true });
+    parentPort.postMessage(
+      {
+        type: "admission",
+        operationId: reply.operationId,
+        allowed: true,
+      },
+      [],
+    );
   };
   try {
     request();
@@ -125,7 +141,14 @@ it("keeps idle collection after buffered admission replies and cancels it for th
     if (pendingAdmission) {
       admit(pendingAdmission);
     }
-    post({ type: "close", operationId: ++operationId, coordination } satisfies CloseRequest);
+    parentPort.postMessage(
+      {
+        type: "close",
+        operationId: ++operationId,
+        coordination,
+      } satisfies SqliteReclamationWorkerCloseRequest,
+      [],
+    );
     try {
       await running;
     } finally {
