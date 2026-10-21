@@ -361,6 +361,7 @@ it.each(["card", "detail"])(
     );
     const image = container.querySelector(`${selector} img`)!;
     expect(image.getAttribute("referrerpolicy")).toBe("no-referrer");
+    expect(image.getAttribute("crossorigin")).toBe("anonymous");
     image.dispatchEvent(new Event("error"));
     await waitForSolid(() => expect(container.querySelector(`${selector} img`)).toBeNull());
     expect(container.querySelector(`${selector} svg`)).not.toBeNull();

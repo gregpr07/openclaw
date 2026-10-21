@@ -11,6 +11,7 @@ export function ClawArtwork(props: { src?: string }) {
           <Show when={!failed()} fallback={<Icon name="box" />}>
             <img
               src={src}
+              crossorigin="anonymous"
               alt=""
               loading="lazy"
               decoding="async"
