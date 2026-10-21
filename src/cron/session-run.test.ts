@@ -155,7 +155,10 @@ describe("scheduled session prompts", () => {
     const params = input();
     params.cfg = { agents: { defaults: { userTimezone: "America/Los_Angeles" } } };
     await runCronSessionTurn(params);
-    const text = fixture.enqueue.mock.calls[0]?.[0];
+    vi.setSystemTime(new Date("2026-10-20T16:10:00Z"));
+    const text = await fixture.enqueue.mock.calls[0]?.[1].scheduledAutomation?.preparePrompt?.(
+      params.cfg,
+    );
     expect(text).toContain("[cron:job-1 test] Check the report.");
     expect(text).toMatch(/Current time: .*9:00.*\(America\/Los_Angeles\)/);
     expect(text).toContain("Reference UTC: 2026-10-20 16:00 UTC");
@@ -234,7 +237,9 @@ describe("scheduled session prompts", () => {
       params.sessionKey = sessionKey;
       params.job.sessionTarget = `session:${sessionKey}`;
       await runCronSessionTurn(params);
-      const text = fixture.enqueue.mock.calls[0]?.[0];
+      const text = await fixture.enqueue.mock.calls[0]?.[1].scheduledAutomation?.preparePrompt?.(
+        params.cfg,
+      );
       expect(text).toContain(`Source: ${source}`);
       expect(text).toMatch(
         /<<<EXTERNAL_UNTRUSTED_CONTENT id="[^"]+">>>[\s\S]*Check the report\.[\s\S]*<<<END_EXTERNAL_UNTRUSTED_CONTENT id="[^"]+">>>[\s\S]*This is an unattended scheduled run/,
@@ -250,7 +255,9 @@ describe("scheduled session prompts", () => {
     params.job.sessionTarget = `session:${params.sessionKey}`;
     params.cfg = { hooks: { gmail: { allowUnsafeExternalContent: true } } };
     await runCronSessionTurn(params);
-    const text = fixture.enqueue.mock.calls[0]?.[0];
+    const text = await fixture.enqueue.mock.calls[0]?.[1].scheduledAutomation?.preparePrompt?.(
+      params.cfg,
+    );
     expect(text).toContain("[cron:job-1 test] Check the report.");
     expect(text).not.toContain("EXTERNAL_UNTRUSTED_CONTENT");
     expect(text).not.toContain("the job's instructions win");

@@ -3,7 +3,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core/expect";
 import { expect, it, vi } from "vitest";
-import { createDeferred, withinTest } from "../../../test/helpers/promise.js";
+import {
+  awaitGateBeforeSettlement,
+  createDeferred,
+  withinTest,
+} from "../../../test/helpers/promise.js";
 import {
   createAdmittedRunOperatorAuthority,
   readAdmittedRunOperatorAuthority,
@@ -28,6 +32,7 @@ import {
 import { readSessionEntryInWorker } from "../../config/sessions/session-entry-read-writable.js";
 import { makeCronJob } from "../../cron/delivery.test-helpers.js";
 import { captureCronInferenceBinding } from "../../cron/inference-binding.runtime.js";
+import { runCronSessionTurn } from "../../cron/session-run.js";
 import { peekSystemEventEntries, resetSystemEventsForTest } from "../../infra/system-events.js";
 import { drainGlobalSingletonLifecycleState } from "../../shared/global-singleton.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
@@ -597,6 +602,108 @@ it.for([
     );
   },
 );
+
+it("rebuilds queued Gmail content under the readmitted external-content policy", async ({
+  signal,
+}) => {
+  await withOpenClawTestState(
+    { label: "scheduled-gmail-readmission", env: { OPENCLAW_TEST_FAST: "0" } },
+    async (state) => {
+      const config = completionConfig(state.workspaceDir);
+      config.hooks = { gmail: { allowUnsafeExternalContent: true } };
+      setRuntimeConfigSnapshot(config);
+      await state.writeConfig(config);
+      openOpenClawStateDatabase();
+      const scope = { agentId: "main", sessionKey: "agent:main:hook:gmail:readmission" };
+      await replaceSessionEntry(scope, {
+        sessionId: "gmail-readmission",
+        lifecycleRevision: "original",
+        permissionMode: "full",
+        updatedAt: Date.now(),
+      });
+      const firstStarted = createDeferred();
+      const releaseFirst = createDeferred();
+      const queued = createDeferred();
+      const prompts: string[] = [];
+      runEmbeddedAgentMock.mockReset().mockImplementation(async (params) => {
+        prompts.push(params.prompt);
+        await startRun(params);
+        if (prompts.length === 1) {
+          firstStarted.resolve();
+          await releaseFirst.promise;
+        }
+        return { payloads: [{ text: "NO_REPLY" }], meta: { durationMs: 1 } };
+      });
+      const first = enqueueSessionEventForHost("First admitted work", {
+        ...scope,
+        source: "task",
+        expectedTarget: await captureSessionEventTargetForHost(scope.agentId, scope.sessionKey),
+        abortSignal: signal,
+        deliver: false,
+      });
+      let scheduled: ReturnType<typeof runCronSessionTurn> | undefined;
+      try {
+        await withinTest(
+          awaitGateBeforeSettlement(
+            firstStarted.promise,
+            first.settled,
+            "first turn never started",
+          ),
+          signal,
+        );
+        scheduled = runCronSessionTurn({
+          ...scope,
+          cfg: config,
+          job: makeCronJob({
+            id: "gmail-policy-readmission",
+            name: "Queued Gmail report",
+            sessionTarget: `session:${scope.sessionKey}`,
+            delivery: { mode: "none" },
+            payload: { kind: "agentTurn", message: "Summarize this synthetic email." },
+          }),
+          text: "Summarize this synthetic email.",
+          admissionSource: "operator-schedule",
+          deliveryAttemptFence: null,
+          abortSignal: signal,
+          assertCurrent() {},
+          onLaneWait(info) {
+            if (info?.waiting) {
+              queued.resolve();
+            }
+          },
+        });
+        await withinTest(
+          awaitGateBeforeSettlement(queued.promise, scheduled, "scheduled turn never queued"),
+          signal,
+        );
+        setRuntimeConfigSnapshot({
+          ...config,
+          hooks: { gmail: { allowUnsafeExternalContent: false } },
+        });
+        releaseFirst.resolve();
+        await expect(first.settled).resolves.toMatchObject({ status: "completed" });
+        await expect(scheduled).resolves.toMatchObject({ status: "ok", executionStarted: true });
+        expect(prompts).toHaveLength(2);
+        const prompt = expectDefined(prompts[1], "readmitted scheduled prompt");
+        expect(prompt).toMatch(
+          /<<<EXTERNAL_UNTRUSTED_CONTENT id="[^"]+">>>[\s\S]*Summarize this synthetic email\.[\s\S]*<<<END_EXTERNAL_UNTRUSTED_CONTENT id="[^"]+">>>/,
+        );
+        expect(prompt).toContain("Job ID: gmail-policy-readmission");
+        expect(prompt).toContain("Queued Gmail report");
+        expect(prompt).toContain("Source: Email");
+        expect(prompt).toContain("Current time:");
+        expect(prompt).toContain("Reference UTC:");
+        expect(prompt.match(/This is an unattended scheduled run\./g)).toHaveLength(1);
+        expect(peekSystemEventEntries(scope.sessionKey)).toEqual([]);
+      } finally {
+        releaseFirst.resolve();
+        await Promise.allSettled([first.settled, scheduled]);
+        await drainGlobalSingletonLifecycleState("restart");
+        resetSystemEventsForTest();
+      }
+    },
+  );
+});
 
 it.for(["transport", "agent"] as const)(
   "records a scheduled %s failure with its cause and usage",

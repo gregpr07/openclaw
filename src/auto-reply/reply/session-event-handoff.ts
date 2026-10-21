@@ -483,12 +483,15 @@ export function enqueueSessionEventForHost(
       await prepareCurrent();
       settings = narrowSessionEventSettings(settings, generationLease.readSessionSettings());
       settingsAdmitted = true;
-      assertCurrent();
+      const promptText = options.scheduledAutomation?.preparePrompt
+        ? await options.scheduledAutomation.preparePrompt(cfg)
+        : eventText;
+      assertEffectCurrent();
       const ctx = buildSessionEventContext({
         cfg,
         agentId,
         sessionKey,
-        text: eventText,
+        text: promptText,
         options,
         occurrenceId,
         deliveryContext: route,

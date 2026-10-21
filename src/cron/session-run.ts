@@ -93,17 +93,9 @@ export async function runCronSessionTurn(
   const externalSource =
     (job.payload.kind === "agentTurn" ? job.payload.externalContentSource : undefined) ??
     resolveHookExternalContentSource(baseSessionKey);
-  const { commandBody: text } = await buildCronCommandBody({
-    job,
-    cfg: params.cfg,
-    message: params.text,
-    baseSessionKey,
-    hookExternalContentSource: externalSource,
-    ...resolveCronStyleNow(params.cfg, Date.now()),
-  });
-  assertCurrent();
+  const promptTimeMs = Date.now();
   let sessionId: string | undefined;
-  const receipt = enqueueSessionEvent(text, {
+  const receipt = enqueueSessionEvent(params.text, {
     agentId: params.agentId,
     sessionKey: params.sessionKey,
     source: "cron",
@@ -118,6 +110,17 @@ export async function runCronSessionTurn(
       controlUiAdmin,
       admissionSource: params.admissionSource,
       prepare: params.prepare,
+      preparePrompt: async (cfg) => {
+        const { commandBody } = await buildCronCommandBody({
+          job,
+          cfg,
+          message: params.text,
+          baseSessionKey,
+          hookExternalContentSource: externalSource,
+          ...resolveCronStyleNow(cfg, promptTimeMs),
+        });
+        return commandBody;
+      },
       executionIdentity: params.executionIdentity,
       deliveryAttemptFence: params.deliveryAttemptFence,
       assertCurrent,

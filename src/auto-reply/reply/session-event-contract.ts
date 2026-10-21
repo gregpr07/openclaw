@@ -11,6 +11,7 @@ import type {
 import type { ResolvedToolPromptFinalizer } from "../../agents/resolved-tool-prompt.types.js";
 import type { SessionEntryCreationOperation } from "../../config/sessions/session-accessor.sqlite-entry-cache.types.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type {
   CronAgentExecutionPhaseUpdate,
   CronRunOutcome,
@@ -133,6 +134,8 @@ export type ScheduledSessionAutomation = {
   assertCurrent: () => void;
   /** Refresh durable occurrence authority before admission or an asynchronous effect. */
   prepare?: () => Promise<void>;
+  /** Rebuild source wrapping with the config selected for each admission attempt. */
+  preparePrompt?: (cfg: OpenClawConfig) => Promise<string>;
   onLaneWait?: (info: { waiting: boolean }) => void;
   onExecutionStarted?: (info: {
     runId: string;
