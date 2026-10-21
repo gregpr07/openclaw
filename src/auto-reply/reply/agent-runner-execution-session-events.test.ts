@@ -6,6 +6,8 @@ import {
 } from "../../../test/helpers/promise.js";
 import type { RunCliAgentParams } from "../../agents/cli-runner/types.js";
 import type { RunEmbeddedAgentInternalParams } from "../../agents/embedded-agent-runner/run/internal-params.js";
+import { finalizeCronPromptForResolvedTools } from "../../cron/isolated-agent/run-delivery-trace.js";
+import { resolveCronSourceDeliveryPlan } from "../../cron/isolated-agent/source-delivery-plan.js";
 import * as cronInference from "../../cron/run-inference.js";
 import type { CronAgentExecutionPhaseUpdate } from "../../cron/types.js";
 import { onAgentEvent, type AgentEventPayload } from "../../infra/agent-events.js";
@@ -79,6 +81,77 @@ function expectedCompletionEvidence(runtime: "embedded" | "cli") {
 }
 
 describe("ordinary session event execution", () => {
+  it.each(["embedded", "cli"] as const)(
+    "retains scheduled destination guidance in the %s turn without changing the system prefix",
+    async (runtime) => {
+      const followupRun = createFollowupRun();
+      const automation = createScheduledAutomation();
+      const resolvedDelivery = {
+        ok: true as const,
+        channel: "telegram",
+        to: "scheduled-chat",
+        accountId: "scheduled-account",
+        threadId: "42",
+      };
+      const sourceDelivery = resolveCronSourceDeliveryPlan({
+        deliveryPlan: { source: "delivery", mode: "announce", requested: true },
+        resolvedDelivery,
+      });
+      automation.finalizePromptForResolvedTools = (params) =>
+        finalizeCronPromptForResolvedTools({
+          ...params,
+          deliveryRequested: true,
+          resolvedDelivery,
+          sourceDelivery,
+        });
+      followupRun.run.scheduledAutomation = automation;
+      followupRun.run.extraSystemPrompt = "Existing shared session instructions";
+      followupRun.run.extraSystemPromptStatic = "Stable shared session instructions";
+      const observed: { prompt: string; messageToolAvailable: boolean }[] = [];
+      let observedSystemPrompt: string | undefined;
+      let observedStaticSystemPrompt: string | undefined;
+      const inspectCandidate = async (
+        params: RunEmbeddedAgentInternalParams | RunCliAgentParams,
+      ) => {
+        for (const messageToolAvailable of [true, false]) {
+          const prompt =
+            params.finalizePromptForResolvedTools?.({
+              prompt: params.prompt,
+              messageToolAvailable,
+            }) ?? params.prompt;
+          observed.push({ prompt, messageToolAvailable });
+        }
+        observedSystemPrompt = params.extraSystemPrompt;
+        return { payloads: [{ text: "done" }], meta: {} };
+      };
+      if (runtime === "cli") {
+        useCliFallback(followupRun);
+        state.runCliAgentMock.mockImplementationOnce((params: RunCliAgentParams) => {
+          observedStaticSystemPrompt = params.extraSystemPromptStatic;
+          return inspectCandidate(params);
+        });
+      } else {
+        state.runEmbeddedAgentMock.mockImplementationOnce(inspectCandidate);
+      }
+      const result = await executeAgentTurn(createMinimalRunAgentTurnParams({ followupRun }));
+      expect(result.outcome).toMatchObject({ kind: "settled", status: "ok" });
+      expect(observed).toHaveLength(2);
+      for (const { prompt, messageToolAvailable } of observed) {
+        expect(prompt).toContain("fix it");
+        expect(prompt).toContain("delivered automatically");
+        if (messageToolAvailable) {
+          expect(prompt).toContain('"target":"scheduled-chat"');
+        } else {
+          expect(prompt).not.toContain("Message delivery destination metadata");
+        }
+      }
+      expect(observedSystemPrompt).toBe("Existing shared session instructions");
+      if (runtime === "cli") {
+        expect(observedStaticSystemPrompt).toBe("Stable shared session instructions");
+      }
+    },
+  );
+
   it.for([
     {
       label: "declared fallback",

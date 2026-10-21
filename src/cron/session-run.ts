@@ -11,6 +11,7 @@ import { parseAgentSessionKey } from "../routing/session-key.js";
 import { resolveHookExternalContentSource } from "../security/external-content-source.js";
 import {
   buildCronDeliveryTrace,
+  finalizeCronPromptForResolvedTools,
   resolveCronDeliveryContext,
 } from "./isolated-agent/run-delivery-trace.js";
 import { buildCronCommandBody } from "./run-prompt.js";
@@ -122,6 +123,14 @@ export async function runCronSessionTurn(
       assertCurrent,
       beforeDeliver,
       sourceDelivery: delivery.sourceDelivery,
+      finalizePromptForResolvedTools: (candidate) =>
+        finalizeCronPromptForResolvedTools({
+          ...candidate,
+          deliveryRequested: delivery.deliveryRequested,
+          resolvedDelivery: delivery.resolvedDelivery,
+          sourceDelivery: delivery.sourceDelivery,
+          messageToolFormatPrompt: delivery.messageToolFormatPrompt,
+        }),
       onLaneWait: params.onLaneWait,
       onExecutionStarted: (info) => {
         sessionId = info.sessionId;

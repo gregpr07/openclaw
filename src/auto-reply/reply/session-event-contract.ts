@@ -8,6 +8,7 @@ import type {
   EmbeddedAgentRunMeta,
   EmbeddedAgentRunPayload,
 } from "../../agents/embedded-agent-runner/result.types.js";
+import type { ResolvedToolPromptFinalizer } from "../../agents/embedded-agent-runner/run/params.js";
 import type { SessionEntryCreationOperation } from "../../config/sessions/session-accessor.sqlite-entry-cache.types.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type {
@@ -144,6 +145,7 @@ export type ScheduledSessionAutomation = {
   onExecutionPhase?: (info: CronAgentExecutionPhaseUpdate) => void;
   beforeDeliver?: () => Promise<void>;
   sourceDelivery?: SourceDeliveryPlan;
+  finalizePromptForResolvedTools?: ResolvedToolPromptFinalizer;
 };
 
 /** Producer callbacks stay bound to the queued occurrence, not a later dispatcher. */

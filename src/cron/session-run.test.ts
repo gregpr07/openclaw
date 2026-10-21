@@ -162,6 +162,68 @@ describe("scheduled session prompts", () => {
   });
 
   it.each([
+    { mode: "announce", messageToolAvailable: true },
+    { mode: "announce", messageToolAvailable: false },
+    { mode: "none", messageToolAvailable: true },
+    { mode: "none", messageToolAvailable: false },
+  ] as const)(
+    "finalizes $mode delivery guidance with message tool available=$messageToolAvailable",
+    async ({ mode, messageToolAvailable }) => {
+      const deliveryPlan = {
+        source: "delivery" as const,
+        mode,
+        requested: mode === "announce",
+      };
+      const resolvedDelivery = {
+        ok: true as const,
+        mode: "explicit" as const,
+        channel: "telegram",
+        to: "scheduled-chat",
+        accountId: "scheduled-account",
+        threadId: "42",
+      };
+      fixture.delivery.mockResolvedValue({
+        deliveryPlan,
+        deliveryRequested: deliveryPlan.requested,
+        resolvedDelivery,
+        sourceDelivery: resolveCronSourceDeliveryPlan({ deliveryPlan, resolvedDelivery }),
+        deliverySystemPrompt:
+          mode === "announce" ? "Routed formatting already supplied" : undefined,
+        messageToolFormatPrompt: mode === "none" ? "Message-only channel formatting" : undefined,
+      });
+      const params = input();
+      params.job.delivery = { mode, channel: "telegram", to: "scheduled-chat" };
+      await runCronSessionTurn(params);
+      const options = fixture.enqueue.mock.calls[0]?.[1];
+      const candidatePrompt = "Instructions after candidate preparation";
+      const prompt =
+        options?.scheduledAutomation?.finalizePromptForResolvedTools?.({
+          prompt: candidatePrompt,
+          messageToolAvailable,
+        }) ?? candidatePrompt;
+      expect(prompt).toContain(candidatePrompt);
+      expect(prompt).not.toContain("Routed formatting already supplied");
+      if (mode === "announce") {
+        expect(prompt).toContain("delivered automatically");
+        if (messageToolAvailable) {
+          expect(prompt).toContain("with an explicit target");
+          expect(prompt).toContain('"target":"scheduled-chat"');
+          expect(prompt).toContain('"accountId":"scheduled-account"');
+          expect(prompt).toContain('"threadId":"42"');
+        } else {
+          expect(prompt).not.toContain("Use the message tool");
+          expect(prompt).not.toContain("Message delivery destination metadata");
+        }
+      } else if (messageToolAvailable) {
+        expect(prompt).toContain("Message-only channel formatting");
+        expect(prompt).not.toContain("delivered automatically");
+      } else {
+        expect(prompt).toBe(candidatePrompt);
+      }
+    },
+  );
+
+  it.each([
     ["hook:gmail:message", "Email"],
     ["agent:main:hook:gmail:message", "Email"],
     ["agent:main:hook:custom:message", "Webhook"],
